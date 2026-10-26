@@ -129,6 +129,7 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
     try:
         # import ในฟังก์ชัน เพื่อให้แอปเปิดได้แม้ยังไม่ได้ติดตั้งไลบรารีนี้ (จะแจ้งเตือนตอนใช้งานจริงเท่านั้น)
         from office365.runtime.auth.client_credential import ClientCredential
+        from office365.runtime.client_request_exception import ClientRequestException
         from office365.sharepoint.client_context import ClientContext
     except ImportError as error:
         logger.error("ยังไม่ได้ติดตั้งไลบรารี Office365: %s", error)
@@ -156,7 +157,9 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
         # โฟลเดอร์ปลายทางต้องมีอยู่แล้วบน SharePoint (ใช้ path แบบเทียบจาก root ของ Site)
         target_folder = client_context.web.get_folder_by_server_relative_path(settings["folder_path"])
         target_folder.upload_file(stored_file_name, file_bytes).execute_query()
-    except Exception as error:  # noqa: BLE001 — ไลบรารีโยนหลายชนิด error จึงจับรวมแล้วแปลเป็นข้อความไทย
+    # ดักเฉพาะ Error ที่คาดว่าจะเกิด: ClientRequestException (SharePoint ตอบ 401/403/404 ฯลฯ ซึ่งเป็น OSError อยู่แล้ว),
+    # OSError (เน็ตหลุด/DNS/timeout), ValueError (URL หรือ Client ID รูปแบบผิด), KeyError (ตอบกลับไม่ครบ)
+    except (ClientRequestException, OSError, ValueError, KeyError) as error:
         logger.error("อัปโหลดขึ้น SharePoint ไม่สำเร็จ (โฟลเดอร์ %s): %s", settings["folder_path"], error, exc_info=True)
         raise SharePointError(
             "อัปโหลดขึ้น SharePoint ไม่สำเร็จ: ตรวจว่า (1) SHAREPOINT_URL ถูกต้อง "

@@ -24,6 +24,7 @@ import streamlit as st
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 from config.constants import CATEGORY_OPTIONS
+from config.logging_setup import get_logger
 from data.database import (
     STATUS_PENDING,
     STATUS_RECEIVED,
@@ -38,6 +39,9 @@ from utils.local_storage import LocalStorageError, save_document_locally
 # from utils.sharepoint_api import SharePointError, upload_document_to_sharepoint
 from utils.text_extractor import extract_fields_from_file
 from ui_common import build_css, render_equipment_table
+
+# บันทึกลง logs/app.log
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่ (Configuration)
@@ -791,7 +795,9 @@ def render_table_card(
                     st.session_state[SESSION_KEY_STATUS_MESSAGES] = apply_table_edits(
                         display_table, [t["id"] for t in visible_transactions], editor_state
                     )
-                except Exception as error:  # noqa: BLE001 - กันทุกกรณี ไม่ให้ตารางพังทั้งหน้า
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
+                    # error ของแถวเดี่ยว ๆ apply_table_edits จัดการเองแล้ว ที่หลุดมาถึงนี่คือข้อมูลตารางผิดรูปแบบทั้งก้อน
+                    logger.error("บันทึกการแก้ไขตารางไม่สำเร็จ: %s", error, exc_info=True)
                     st.session_state[SESSION_KEY_STATUS_MESSAGES] = [
                         ("error", f"❌ บันทึกการเปลี่ยนแปลงไม่สำเร็จ: ลองรีเฟรชหน้าเว็บ รายละเอียด: {error}")
                     ]

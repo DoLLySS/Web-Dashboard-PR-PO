@@ -13,6 +13,7 @@ import streamlit as st
 from data.database import init_db
 from pages_ui import dashboard, overview
 from sidebar_ui import MenuItem, render_sidebar
+from config.logging_setup import get_logger
 from config.styles import inject_global_styles
 
 # ---------------------------------------------------------------------------
@@ -37,6 +38,10 @@ DEFAULT_RANGE_DAYS: int = 30
 # ---------------------------------------------------------------------------
 # ฟังก์ชัน
 # ---------------------------------------------------------------------------
+
+
+# บันทึกลง logs/app.log
+logger = get_logger(__name__)
 
 
 def render_date_filter() -> tuple[date, date]:
@@ -108,7 +113,9 @@ def main() -> None:
 
     try:
         selected_menu_item.render(start_date, end_date)
-    except Exception as error:  # noqa: BLE001 - ดักทุก error เพื่อไม่ให้หน้าจอขาวทั้งหน้า
+    except Exception as error:  # noqa: BLE001 - จุดดักสุดท้ายของทั้งแอป (ตั้งใจให้กว้าง) กันหน้าจอขาวทั้งหน้า
+        # บันทึก traceback เต็มลง logs/app.log ให้ทีม IT ย้อนดูได้ (เดิมแสดงบนหน้าจออย่างเดียว)
+        logger.exception("แสดงหน้า '%s' ไม่สำเร็จ", selected_menu_item.label)
         st.error(
             f"❌ แสดงหน้า '{selected_menu_item.label}' ไม่สำเร็จ: ลองรีเฟรชหน้าเว็บ "
             f"หากยังเกิดซ้ำให้แจ้งทีม IT พร้อมข้อความนี้\n\nรายละเอียด: {error}"

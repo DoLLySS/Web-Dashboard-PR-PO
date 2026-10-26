@@ -73,6 +73,11 @@ ADDED_COLUMNS: dict[str, str] = {
     "unit_price": "REAL",  # ราคาสุทธิที่รวม Discount แล้ว (บาท)
 }
 
+# ไฟล์ฐานข้อมูลที่เตรียมตาราง/คอลัมน์/index เสร็จแล้วในรอบการทำงานนี้ของโปรแกรม
+# (Streamlit รันสคริปต์ใหม่ทุกครั้งที่ผู้ใช้กดอะไรสักอย่าง ถ้าไม่จำไว้ init_db จะเขียนฐานข้อมูลซ้ำทุกครั้ง
+# ซึ่งแย่งล็อกกับผู้ใช้คนอื่นจนเกิด "database is locked")
+_initialized_db_paths: set[Path] = set()
+
 CREATE_TABLE_SQL: str = f"""
 CREATE TABLE IF NOT EXISTS transactions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,7 +163,9 @@ def _get_connection() -> Iterator[sqlite3.Connection]:
     try:
         yield conn
         conn.commit()
-    except Exception:
+    except BaseException:
+        # BaseException = รวมกรณี Streamlit สั่ง rerun/stop กลางทางด้วย เพื่อให้ยกเลิกงานที่ค้างเสมอ
+        # (แล้วโยนต่อ ไม่กลบ Error) และ finally ด้านล่างปิด connection ทุกกรณี
         conn.rollback()
         raise
     finally:
@@ -199,11 +206,15 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
 def init_db() -> bool:
     """สร้างตาราง transactions ถ้ายังไม่มี (เรียกซ้ำได้โดยไม่ลบข้อมูลเดิม)
 
-    ควรเรียกครั้งเดียวตอนเริ่มแอป เช่นบนสุดของ app.py
+    ควรเรียกตอนเริ่มแอป เช่นบนสุดของ app.py (เรียกทุกรอบได้ ฟังก์ชันจำไว้ว่าเตรียมแล้ว จะไม่เขียนฐานข้อมูลซ้ำ)
+    ถ้าไฟล์ฐานข้อมูลถูกลบระหว่างแอปทำงาน จะเตรียมใหม่ให้อัตโนมัติ
 
     Returns:
         True ถ้าพร้อมใช้งาน, False ถ้าเกิด Error (จะแสดง st.error ให้แล้ว)
     """
+    if DB_PATH in _initialized_db_paths and DB_PATH.exists():
+        return True
+
     try:
         with _get_connection() as conn:
             conn.execute(CREATE_TABLE_SQL)
@@ -215,6 +226,8 @@ def init_db() -> bool:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(invoice_status)"
             )
+        _initialized_db_paths.add(DB_PATH)
+        logger.info("เตรียมฐานข้อมูลเรียบร้อย: %s", DB_PATH)
         return True
     except (sqlite3.Error, OSError) as error:
         _show_db_error("เตรียมฐานข้อมูล", error)

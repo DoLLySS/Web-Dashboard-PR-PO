@@ -11,6 +11,7 @@
 """
 
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -18,11 +19,31 @@ from typing import Any, BinaryIO, Optional, Union
 
 import pandas as pd
 import pdfplumber
+from pdfplumber.utils.exceptions import PdfminerException
 
 from config.logging_setup import get_logger
 
 # บันทึกลง logs/app.log (ดู config/logging_setup.py)
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# ชนิด Error ที่ "คาดว่าจะเกิด" (ดักเฉพาะเจาะจง เพื่อไม่กลบบั๊กจริงในโค้ดของเราเอง)
+# ถ้าเจอ Error ชนิดใหม่ที่ไม่อยู่ในรายการ แอปจะแสดงข้อความผิดพลาดให้เห็น แทนที่จะเงียบหาย ให้เพิ่มชนิดนั้นที่นี่
+# ---------------------------------------------------------------------------
+
+# อ่าน PDF: ไม่พบไฟล์/เปิดไม่ได้ (OSError รวม FileNotFoundError), PDF เสียหรือไม่ใช่ PDF (PdfminerException)
+PDF_READ_ERRORS: tuple[type[Exception], ...] = (OSError, PdfminerException, ValueError, TypeError)
+# อ่าน Excel: ไม่พบไฟล์ (OSError), ไฟล์เสีย/ว่าง/ผิดชนิด (ValueError, BadZipFile, KeyError), ขาด library (ImportError)
+EXCEL_READ_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+    ImportError,
+    zipfile.BadZipFile,
+)
+# ค้นหาฟิลด์ด้วย RegEx: pattern ผิด (re.error), แปลงตัวเลข/วันที่ไม่ได้ (ValueError), ข้อความไม่ใช่ str (TypeError)
+FIND_ERRORS: tuple[type[Exception], ...] = (re.error, ValueError, TypeError, IndexError)
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: กฎการค้นหา (แก้ที่นี่เมื่อเอกสารของผู้ขายรูปแบบไม่ตรง)
@@ -232,7 +253,7 @@ def extract_text_from_pdf(pdf_source: Union[str, BinaryIO]) -> str:
                 # extract_text คืน None ถ้าหน้านั้นไม่มีข้อความ (เช่นหน้าสแกน)
                 page_texts.append(page.extract_text() or "")
         return "\n".join(page_texts)
-    except Exception as error:  # noqa: BLE001 - pdfplumber โยน error หลายชนิด ต้องดักให้หมด
+    except PDF_READ_ERRORS as error:
         logger.warning("อ่านไฟล์ PDF ไม่สำเร็จ: %s", error, exc_info=True)
         return ""
 
@@ -292,7 +313,7 @@ def extract_text_from_excel(excel_source: Union[str, BinaryIO]) -> str:
                 if non_empty_texts:
                     text_lines.append(EXCEL_CELL_SEPARATOR.join(non_empty_texts))
         return "\n".join(text_lines)
-    except Exception as error:  # noqa: BLE001 - เปิดไฟล์ไม่ได้/ไฟล์เสีย/ขาด library ต้องไม่ทำให้แอปพัง
+    except EXCEL_READ_ERRORS as error:
         logger.warning("อ่านไฟล์ Excel ไม่สำเร็จ: %s", error, exc_info=True)
         return ""
 
@@ -352,7 +373,7 @@ def find_tax_id(text: str) -> str:
             if is_valid_thai_tax_id(candidate):
                 return candidate
         return all_candidates[0] if all_candidates else ""
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หา Tax ID ไม่สำเร็จ: %s", error)
         return ""
 
@@ -384,7 +405,7 @@ def find_total_amount(text: str) -> str:
                 amount = float(matches[-1].replace(",", ""))
                 return f"{amount:.2f}"
         return ""
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หายอดรวมไม่สำเร็จ: %s", error)
         return ""
 
@@ -431,7 +452,7 @@ def find_vendor(text: str) -> str:
                 if vendor_name:
                     return vendor_name
         return ""
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาชื่อผู้ขายไม่สำเร็จ: %s", error)
         return ""
 
@@ -498,7 +519,7 @@ def find_tel(text: str) -> str:
     try:
         tel_number = _find_pattern_after_label(text, TEL_LABELS, TEL_NUMBER_PATTERN)
         return re.sub(r"\s+", " ", tel_number)
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาเบอร์โทรไม่สำเร็จ: %s", error)
         return ""
 
@@ -514,7 +535,7 @@ def find_pr_run_no(text: str) -> str:
     """
     try:
         return _find_pattern_after_label(text, PR_NO_LABELS, DOCUMENT_NO_PATTERN)
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาเลขที่ PR ไม่สำเร็จ: %s", error)
         return ""
 
@@ -554,7 +575,7 @@ def find_pr_request_date(text: str) -> str:
         if len(date_parts) != 3:
             return ""
         return _normalize_date_to_iso(*date_parts)
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาวันที่ PR ไม่สำเร็จ: %s", error)
         return ""
 
@@ -570,7 +591,7 @@ def find_qt_no(text: str) -> str:
     """
     try:
         return _find_pattern_after_label(text, QT_NO_LABELS, DOCUMENT_NO_PATTERN)
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาเลขที่ Quotation ไม่สำเร็จ: %s", error)
         return ""
 
@@ -588,7 +609,7 @@ def find_description(text: str) -> str:
     """
     try:
         return _find_text_after_label(text, DESCRIPTION_LABELS)
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หารายละเอียดอุปกรณ์ไม่สำเร็จ: %s", error)
         return ""
 
@@ -613,7 +634,7 @@ def find_unit_price(text: str) -> str:
             if matches:
                 return f"{float(matches[-1].replace(',', '')):.2f}"
         return ""
-    except Exception as error:  # noqa: BLE001 - กันทุกกรณีไม่ให้ระบบพัง
+    except FIND_ERRORS as error:
         logger.warning("หาราคาสุทธิไม่สำเร็จ: %s", error)
         return ""
 
