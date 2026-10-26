@@ -11,7 +11,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 from data.database import init_db
-from pages_ui import dashboard, overview, settings
+from pages_ui import dashboard, overview
 from sidebar_ui import MenuItem, render_sidebar
 from styles import inject_global_styles
 
@@ -27,9 +27,6 @@ MENU_GROUPS: dict[str, list[MenuItem]] = {
     "Dashboard": [
         MenuItem("Overview", ":material/description:", overview.render, "ภาพรวมรายการ PR/PO และใบกำกับภาษี"),  # ไอคอนรูปเอกสาร
         MenuItem("Dashboard", ":material/bar_chart:", dashboard.render, "สรุปยอดซื้อและแนวโน้ม"),  # ไอคอนรูปกราฟ
-    ],
-    "Organization": [
-        MenuItem("Setting", ":material/settings:", settings.render, "ตั้งค่าระบบ"),  # ไอคอนเฟือง
     ],
 }
 

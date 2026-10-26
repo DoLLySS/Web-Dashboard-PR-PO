@@ -17,8 +17,7 @@ Project ฝึกงาน/
 ├── generate_mock_data.py   # สร้างข้อมูลจำลอง 18 แถว (ข้ามถ้าตารางมีข้อมูลแล้ว)
 ├── pages_ui/
 │   ├── overview.py         # แจ้งเตือนค้าง 14 วัน, ตาราง+ตัวกรอง+Total Price, แท็บ กรอก Form/Upload File, Quantity of equipment
-│   ├── dashboard.py        # Price (ช่วงเวลา + Detail Graph), Equipment, Vendor, Export CSV
-│   └── settings.py         # โครงเปล่า
+│   └── dashboard.py        # Price (ช่วงเวลา + Detail Graph), Equipment, Vendor, Export CSV
 ├── .streamlit/config.toml  # ธีมของ Streamlit (สีหลัก/พื้นหลัง/สีหัวตาราง)
 ├── requirements.txt, .env.example, .gitignore, README.md
 ├── planning.md             # แผนเดิม (บางส่วนล้าสมัย ให้ยึด README.md เป็นหลัก)

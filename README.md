@@ -124,8 +124,7 @@ Project ฝึกงาน/
 ├── sidebar_ui.py          # หน้าตา Sidebar: โลโก้, ชื่อเว็บ, เมนูแบบจัดกลุ่ม, สี/CSS
 ├── pages_ui/
 │   ├── overview.py        # หน้า Overview: แจ้งเตือน + ฟอร์ม + ตาราง
-│   ├── dashboard.py       # หน้า Dashboard: Metric + กราฟ + Top Vendors
-│   └── settings.py        # หน้า Setting (โครงเปล่า)
+│   └── dashboard.py       # หน้า Dashboard: Metric + กราฟ + Top Vendors
 ├── .streamlit/config.toml # ตั้งค่าธีมสว่างของ Streamlit
 ├── utils/
 │   ├── text_extractor.py  # อ่าน PDF / Excel แล้วหา Tax ID / ผู้ขาย / เลขที่ PR / Net Price ฯลฯ
