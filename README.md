@@ -9,21 +9,20 @@
 
 | หน้า | ฟีเจอร์ |
 |---|---|
-| **Overview** | ฟอร์มเพิ่มรายการ (วันที่, ผู้ขาย, Tax ID, PO, หมวดหมู่, ราคา) + แนบไฟล์ PDF/รูป, ช่องค้นหา, ตารางข้อมูล, **แจ้งเตือนเมื่อใบกำกับภาษีค้างเกิน 14 วัน** |
-| **Dashboard** | ตัวเลขสรุป, กราฟเส้นแนวโน้มยอดซื้อแยกตามหมวดหมู่, ตาราง Top 10 ผู้ขาย |
+| **Overview** | ฟอร์มเพิ่มรายการ (ผู้ขาย, เบอร์โทร, Tax ID, เลขที่ PR, วันที่ PR, QT No., รายละเอียด, Net Price, หมวดหมู่ ฯลฯ) + แนบไฟล์ PDF / Excel / รูป, ช่องค้นหา, ตารางแก้ไขได้, **แจ้งเตือนเมื่อใบกำกับภาษีค้างเกิน 14 วัน** |
+| **Dashboard** | การ์ด **ยอดรวมค่าใช้จ่ายทั้งหมด** (รวม Net Price), กราฟเส้นแนวโน้มราคา, สรุปอุปกรณ์, กราฟแท่ง **Top Vendors by Spend** และตารางผู้ขาย |
 | **Date Filter** | ตัวกรองช่วงวันที่มุมขวาบน ใช้กับทั้งสองหน้า (ค่าเริ่มต้นคือย้อนหลัง 30 วัน) |
 
 **สถานะของฟีเจอร์ (ตรงไปตรงมา)**
 
 | ฟีเจอร์ | สถานะ |
 |---|---|
-| บันทึก / ค้นหา / แจ้งเตือน / Dashboard | ✅ ใช้งานได้ |
-| ดึงข้อความจาก PDF (`utils/text_extractor.py`) | ✅ ต่อกับฟอร์มแล้ว: อัปโหลด PDF ในกล่อง "Upload P/O to Purchase" จะเติม TaxID / Vendor / ยอดรวมให้ (ต้องตรวจก่อนกด Upload) |
-| เปลี่ยนสถานะใบกำกับภาษี | ✅ คลิกคอลัมน์ Status ในตาราง Overview แล้วเลือก Completed จาก dropdown บันทึกลงฐานข้อมูลทันที (เลือกกลับเป็น Pending เพื่อยกเลิกได้) |
-| ลบรายการ | ✅ ติ๊กช่องหน้าแถวในตาราง Overview แล้วกดไอคอนถังขยะ/ปุ่ม Delete ลบออกจากฐานข้อมูลทันที (กู้คืนไม่ได้) |
-| แก้ไขช่องข้อมูลอื่นนอกจากสถานะผ่านตาราง | ⚠️ โค้ดรองรับแล้ว แต่ปิดไว้ (เปิดที่ `EDITABLE_TABLE_COLUMNS` ใน `pages_ui/overview.py` แต่ช่องที่แก้ได้จะไม่มีสีสลับแถว) |
-| เชื่อม SharePoint | ❌ ยังไม่ได้ทำ (ดูหัวข้อ .env ด้านล่าง) |
-| OCR สำหรับ PDF สแกน / รูปภาพ | ❌ ยังไม่ได้ทำ |
+| บันทึก / ค้นหา / แก้ไข / ลบ / แจ้งเตือน / Dashboard | ✅ ใช้งานได้ |
+| ดึงข้อความจากไฟล์ PDF และ Excel (`.xlsx`, `.xls`) ลงฟอร์มอัตโนมัติ | ✅ ใช้งานได้ (ต้องตรวจค่าก่อนกด Upload ทุกครั้ง ถ้าอ่านไม่ได้ ระบบแจ้งให้กรอกเอง) |
+| เก็บไฟล์เอกสารในเครื่อง (`data/local_uploads/`) | ✅ ใช้งานได้ |
+| เชื่อม SharePoint | 🟡 เขียนโค้ดไว้แล้วแต่ **ปิดไว้** รอสิทธิ์จากทีม IT (ดูหัวข้อ "การเตรียมตัวสำหรับ SharePoint") |
+| OCR สำหรับ PDF สแกน / รูปภาพ | ❌ ยังไม่ได้ทำ (ต้องกรอกเอง) |
+| ทดสอบบนเบราว์เซอร์จริงหลายเครื่อง / หลายผู้ใช้พร้อมกัน | ⚠️ ยังไม่ได้ทดสอบ ทดสอบอัตโนมัติด้วย Streamlit AppTest เท่านั้น |
 
 ---
 
@@ -61,7 +60,14 @@ pip install -r requirements.txt
 ```powershell
 python -m streamlit run app.py
 ```
+(หรือพิมพ์สั้น ๆ ว่า `streamlit run app.py` ถ้าเครื่องหาคำสั่ง `streamlit` เจอ)
+
 เบราว์เซอร์จะเปิดที่ http://localhost:8501 ครั้งแรกระบบจะสร้างไฟล์ `data/masterlist.db` ให้เอง
+
+**6. (ไม่บังคับ) ใส่ข้อมูลจำลองเพื่อลองใช้ระบบ** — ทำเฉพาะตอนฐานข้อมูลยังว่าง
+```powershell
+python generate_mock_data.py
+```
 
 > 💡 ใช้ `python -m streamlit ...` แทนการพิมพ์ `streamlit ...` ตรง ๆ เพราะบางเครื่อง PowerShell หาคำสั่ง `streamlit` ไม่เจอ (error: *'streamlit' is not recognized*)
 
@@ -77,28 +83,33 @@ python -m streamlit run app.py
 
 ---
 
-## ⚙️ การตั้งค่าไฟล์ .env สำหรับเชื่อมต่อ SharePoint
+## 🔐 การเตรียมตัวสำหรับ SharePoint
 
-> ⚠️ **ตอนนี้โค้ดยังไม่มีส่วนเชื่อม SharePoint และยังไม่อ่านไฟล์ `.env`** ระบบรันได้ปกติโดยไม่ต้องมี `.env`
-> หัวข้อนี้คือ "ค่าที่เตรียมไว้" สำหรับตอนที่ทีมเริ่มทำฟีเจอร์ SharePoint (ชื่อ Key เป็นข้อเสนอ เปลี่ยนได้ตามที่ทีมตกลง)
+ตอนนี้ไฟล์ที่อัปโหลดถูกเก็บในเครื่องที่ `data/local_uploads/` และระบบ **รันได้ปกติโดยไม่ต้องมีไฟล์ `.env`**
+โค้ดเชื่อม SharePoint เขียนเสร็จแล้วใน `utils/sharepoint_api.py` แต่ยังปิดการเรียกใช้อยู่ เมื่อทีม IT ได้รับสิทธิ์แล้วให้ทำตามนี้
 
-**วิธีเตรียมไฟล์**
+**ขั้นที่ 1 — ใส่รหัสในไฟล์ `.env`**
 1. คัดลอก `.env.example` เป็น `.env` (อยู่โฟลเดอร์เดียวกับ `app.py`)
-2. กรอกค่าตามตารางด้านล่าง
-3. **ห้ามนำ `.env` ขึ้น Git หรือส่งต่อในแชท** (`.gitignore` ตั้งไว้ให้ข้ามไฟล์นี้แล้ว)
-
-**Key ที่ต้องใส่** (สมมติว่าเชื่อมแบบ App Registration ของ Microsoft Entra ID / Azure AD)
+2. กรอกค่าจริงตามตาราง
+3. **ห้ามนำ `.env` ขึ้น Git หรือส่งต่อในแชท** (`.gitignore` กันไฟล์นี้ไว้แล้ว ส่วน `.env.example` เป็นข้อมูลปลอมทั้งหมด)
 
 | Key | ความหมาย | หาได้จากที่ไหน |
 |---|---|---|
-| `SHAREPOINT_TENANT_ID` | รหัสองค์กร (Tenant) | Azure Portal → Microsoft Entra ID → Overview → *Tenant ID* |
-| `SHAREPOINT_CLIENT_ID` | รหัสแอปที่ลงทะเบียน | Azure Portal → App registrations → แอปของเรา → *Application (client) ID* |
-| `SHAREPOINT_CLIENT_SECRET` | รหัสลับของแอป (**เป็นความลับ**) | App registrations → Certificates & secrets → New client secret (มีวันหมดอายุ ควรจดไว้) |
-| `SHAREPOINT_SITE_URL` | URL ของ SharePoint Site | เช่น `https://yourcompany.sharepoint.com/sites/IT` |
-| `SHAREPOINT_FOLDER_PATH` | โฟลเดอร์ปลายทางเก็บไฟล์ | เช่น `Shared Documents/PR-PO` |
+| `SHAREPOINT_URL` | URL ของ SharePoint Site เช่น `https://yourcompany.sharepoint.com/sites/IT` | ผู้ดูแล SharePoint |
+| `SHAREPOINT_CLIENT_ID` | รหัสแอปที่ลงทะเบียน | Azure Portal → App registrations → *Application (client) ID* |
+| `SHAREPOINT_CLIENT_SECRET` | รหัสลับของแอป (**เป็นความลับ** มีวันหมดอายุ) | App registrations → Certificates & secrets |
+| `SHAREPOINT_USERNAME` / `SHAREPOINT_PASSWORD` | วิธีสำรอง: ล็อกอินด้วยบัญชีผู้ใช้ (ใช้ไม่ได้ถ้าเปิด MFA) | บัญชีของทีม IT |
+| `SHAREPOINT_FOLDER_PATH` | (ไม่บังคับ) โฟลเดอร์ปลายทาง ต้องมีอยู่แล้ว ค่าเริ่มต้น `Shared Documents/PR-PO` | ผู้ดูแล SharePoint |
 
-ผู้ดูแล Azure ของบริษัทต้องให้สิทธิ์แอป (เช่น `Sites.Selected` หรือ `Sites.ReadWrite.All`) และกด *Grant admin consent* ก่อน
-เมื่อเริ่มทำฟีเจอร์ ให้ถอดเครื่องหมาย `#` ของ `python-dotenv` และไลบรารี SharePoint ใน `requirements.txt`
+ผู้ดูแล Azure ต้องให้สิทธิ์แอป (เช่น `Sites.Selected` หรือ `Sites.ReadWrite.All`) และกด *Grant admin consent* ก่อน
+
+**ขั้นที่ 2 — ปลดคอมเมนต์โค้ด**
+- `pages_ui/overview.py` ฟังก์ชัน `save_document_and_get_path()`: เปิด `import` ของ `utils.sharepoint_api` ใกล้บรรทัด 37 และเปลี่ยนไปเรียก `upload_document_to_sharepoint()` ตามคอมเมนต์ "SharePoint ปิดไว้" ในฟังก์ชันนั้น
+- `utils/sharepoint_api.py`: โค้ดวิธีหลัก (Client ID/Secret) ทำงานอยู่แล้ว **ปลดคอมเมนต์เฉพาะเมื่อต้องใช้วิธีสำรอง** (Username/Password) ตามขั้นตอนในคอมเมนต์ของไฟล์
+
+**ขั้นที่ 3 — ทดสอบ** ลองอัปโหลดไฟล์ทดสอบ 1 ไฟล์ แล้วตรวจว่าไฟล์ขึ้นในโฟลเดอร์บน SharePoint และไอคอนไฟล์ในตารางเปิดลิงก์ได้ ถ้า error ระบบจะแสดงข้อความภาษาไทยบอกสาเหตุที่ควรตรวจ
+
+> ⚠️ ยังไม่เคยทดสอบกับ SharePoint จริง (ไม่มีสิทธิ์ตอนพัฒนา) อาจต้องปรับเล็กน้อยตอนต่อจริง
 
 ---
 
@@ -117,13 +128,14 @@ Project ฝึกงาน/
 │   └── settings.py        # หน้า Setting (โครงเปล่า)
 ├── .streamlit/config.toml # ตั้งค่าธีมสว่างของ Streamlit
 ├── utils/
-│   ├── text_extractor.py  # อ่าน PDF แล้วหา Tax ID / ยอดรวม / ผู้ขาย
+│   ├── text_extractor.py  # อ่าน PDF / Excel แล้วหา Tax ID / ผู้ขาย / เลขที่ PR / Net Price ฯลฯ
 │   ├── local_storage.py   # บันทึกไฟล์เอกสารลง data/local_uploads/
-│   └── sharepoint_api.py  # เตรียมไว้เชื่อม SharePoint ในอนาคต (ยังไม่ถูกเรียกใช้)
+│   └── sharepoint_api.py  # โค้ดเชื่อม SharePoint (เขียนแล้ว แต่ปิดการเรียกใช้ไว้)
 ├── data/
 │   ├── database.py        # ที่เดียวที่เขียน SQL: สร้างตาราง + เพิ่ม/ดู/แก้/ลบ
 │   ├── masterlist.db      # (สร้างอัตโนมัติ ไม่ขึ้น Git) ฐานข้อมูล
 │   └── local_uploads/     # (สร้างอัตโนมัติ ไม่ขึ้น Git) ไฟล์เอกสารที่อัปโหลด
+├── generate_mock_data.py  # สร้างข้อมูลจำลองไว้ลองระบบ
 ├── requirements.txt       # รายการ Library พร้อมเวอร์ชัน
 ├── .env.example           # แม่แบบไฟล์ตั้งค่า SharePoint
 └── planning.md            # เอกสารวางแผนและ Coding Standards ของทีม
@@ -147,7 +159,7 @@ Project ฝึกงาน/
 
 ### ข้อควรรู้ในการดูแลระบบ
 
-- **สำรองข้อมูล:** คัดลอกโฟลเดอร์ `data/` (ทั้งไฟล์ `.db` และ `uploads/`) เก็บไว้เป็นระยะ
+- **สำรองข้อมูล:** คัดลอกโฟลเดอร์ `data/` (ทั้งไฟล์ `.db` และ `local_uploads/`) เก็บไว้เป็นระยะ
 - **วันที่:** เก็บในฐานข้อมูลเป็น ค.ศ. (`YYYY-MM-DD`) หน้าจอแสดงเป็น `วัน/เดือน/ปี` ค.ศ.
 - **ใช้พร้อมกันหลายคน:** SQLite รองรับผู้ใช้จำนวนน้อยได้ แต่ถ้าวางไฟล์ `.db` บนโฟลเดอร์แชร์ที่หลายคนเขียนพร้อมกัน อาจเจอ error "database is locked" แนะนำให้รันระบบบนเครื่องเดียวแล้วให้คนอื่นเข้าผ่านเบราว์เซอร์
 - **Coding Standards:** Type Hint ทุกฟังก์ชัน, Docstring และ Comment เป็นภาษาไทย, ครอบ try-except พร้อมข้อความที่เข้าใจง่าย (รายละเอียดใน `planning.md`)

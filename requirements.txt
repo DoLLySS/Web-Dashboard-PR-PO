@@ -1,10 +1,16 @@
 # Library ที่ระบบต้องใช้ (ติดตั้งด้วย: pip install -r requirements.txt)
-# ทดสอบแล้วกับ Python 3.11
+# ทดสอบแล้วกับ Python 3.11 — ถ้าจะอัปเกรดเวอร์ชัน ให้ทดสอบหน้า Overview/Dashboard ก่อนใช้งานจริง
+
+# --- เว็บและการแสดงผล ---
 streamlit==1.66.1      # เว็บ UI (app.py, pages_ui/)
-pandas==2.2.3          # จัดการตารางข้อมูล (pages_ui/)
+pandas==2.2.3          # จัดการตารางข้อมูล (pages_ui/ และอ่าน Excel ใน text_extractor.py)
 plotly==7.1.0          # กราฟใน Dashboard (pages_ui/dashboard.py)
-pdfplumber==0.11.10    # อ่านข้อความจาก PDF (text_extractor.py)
-python-dotenv==1.2.4    # อ่านไฟล์ .env (sharepoint_api.py)
-Office365-REST-Python-Client==3.3.0   # เชื่อม SharePoint (sharepoint_api.py)
-openpyxl==3.1.5        # อ่านไฟล์ Excel .xlsx (text_extractor.py ผ่าน pandas)
-xlrd==2.0.2            # อ่านไฟล์ Excel .xls เก่า (text_extractor.py ผ่าน pandas)
+
+# --- อ่านไฟล์เอกสาร (utils/text_extractor.py) ---
+pdfplumber==0.11.10    # อ่านข้อความจาก PDF
+openpyxl==3.1.5        # อ่านไฟล์ Excel .xlsx
+xlrd==2.0.2            # อ่านไฟล์ Excel .xls เก่า
+
+# --- SharePoint (utils/sharepoint_api.py — ติดตั้งไว้ล่วงหน้า แม้ยังไม่เปิดใช้) ---
+python-dotenv==1.2.4                  # อ่านรหัสจากไฟล์ .env
+Office365-REST-Python-Client==3.3.0   # เชื่อม SharePoint

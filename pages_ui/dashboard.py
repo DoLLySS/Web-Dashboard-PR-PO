@@ -47,6 +47,11 @@ UNSPECIFIED_CATEGORY_LABEL: str = "ไม่ระบุ"
 # แสดง Top Vendors กี่อันดับ
 TOP_VENDOR_LIMIT: int = 10
 
+# กราฟ Top Vendors by Spend: สีแท่ง, ความสูงต่อแท่ง (px) และความสูงขั้นต่ำของกราฟ
+VENDOR_BAR_COLOR: str = "#2E6FD8"
+VENDOR_CHART_ROW_HEIGHT: int = 32
+VENDOR_CHART_MIN_HEIGHT: int = 160
+
 # ถ้าช่วงวันที่ที่เลือกยาวเกินกี่วัน กราฟแนวโน้มจะรวมเป็นรายเดือนแทนรายวัน
 DAILY_CHART_MAX_DAYS: int = 62
 
@@ -78,6 +83,9 @@ PAGE_CSS_RULES: str = """
 .st-key-dashboard_export button:hover { background: var(--ui-inner-bg); color: var(--ui-text); border-color: var(--ui-text); }
 /* ตัวเลขยอดรวมในการ์ด Price */
 .st-key-price_inner [data-testid="stMetricValue"] { font-size: var(--app-metric-value); font-weight: 800; }
+/* การ์ดยอดรวมค่าใช้จ่าย: ตัวเลขใหญ่แบบเดียวกับการ์ด Price และไม่มีกรอบซ้อน */
+.st-key-spend_inner [data-testid="stMetricValue"] { font-size: var(--app-metric-value); font-weight: 800; }
+.st-key-spend_inner [data-testid="stMetric"] { border: none; box-shadow: none; background: transparent; padding: 0; }
 /* st.metric ในกล่องนี้ไม่ต้องมีกรอบ/เงาซ้อน (กล่องด้านนอกมีอยู่แล้ว) */
 .st-key-price_inner [data-testid="stMetric"] { border: none; box-shadow: none; background: transparent; padding: 0; }
 """
@@ -156,6 +164,46 @@ def build_trend_table(
     total_trend = trend_table.groupby("period", as_index=False)["total_price"].sum()
     total_trend["category"] = TOTAL_LINE_LABEL  # ตั้งชื่อเส้นเดียวให้ Tooltip อ่านง่าย
     return total_trend
+
+
+def get_spend_table(transaction_table: pd.DataFrame) -> pd.DataFrame:
+    """เลือกเฉพาะรายการที่มีราคา Net Price (unit_price) เพื่อใช้คำนวณค่าใช้จ่าย
+
+    Args:
+        transaction_table: ตารางจาก load_transaction_table
+
+    Returns:
+        DataFrame เฉพาะแถวที่ unit_price เป็นตัวเลข (ว่างถ้าไม่มีข้อมูลราคา
+        หรือฐานข้อมูลเก่ายังไม่มีคอลัมน์ unit_price) จะไม่ทำให้เกิด Error
+    """
+    if transaction_table.empty or "unit_price" not in transaction_table.columns:
+        return transaction_table.iloc[0:0]
+    spend_table = transaction_table.assign(
+        unit_price=pd.to_numeric(transaction_table["unit_price"], errors="coerce")  # ค่าที่อ่านไม่ได้ = ว่าง
+    )
+    return spend_table.dropna(subset=["unit_price"])
+
+
+def build_vendor_spend_table(transaction_table: pd.DataFrame) -> pd.DataFrame:
+    """สรุปค่าใช้จ่าย (Net Price) แยกตามผู้ขาย สำหรับกราฟ Top Vendors by Spend
+
+    Args:
+        transaction_table: ตารางจาก load_transaction_table
+
+    Returns:
+        DataFrame คอลัมน์ vendor / spend เรียงจากยอดสูงสุด จำกัด TOP_VENDOR_LIMIT อันดับ
+        (ว่างถ้าไม่มีข้อมูลราคา)
+    """
+    spend_table = get_spend_table(transaction_table)
+    if spend_table.empty:
+        return pd.DataFrame(columns=["vendor", "spend"])
+    return (
+        spend_table.groupby("vendor", as_index=False)["unit_price"]
+        .sum()
+        .rename(columns={"unit_price": "spend"})
+        .sort_values("spend", ascending=False)
+        .head(TOP_VENDOR_LIMIT)
+    )
 
 
 def build_top_vendor_table(transaction_table: pd.DataFrame) -> pd.DataFrame:
@@ -347,8 +395,58 @@ def render_equipment_card(start_date: date, end_date: date) -> None:
             )
 
 
+def build_vendor_spend_figure(vendor_spend_table: pd.DataFrame) -> go.Figure:
+    """สร้างกราฟแท่งแนวนอน Top Vendors by Spend
+
+    Args:
+        vendor_spend_table: ตารางจาก build_vendor_spend_table (ต้องไม่ว่าง)
+
+    Returns:
+        Figure ของ Plotly พร้อมส่งให้ st.plotly_chart
+    """
+    figure = px.bar(
+        vendor_spend_table,  # ตารางข้อมูลที่ใช้วาด
+        x="spend",  # แกน X: ค่าใช้จ่ายรวม (Net Price)
+        y="vendor",  # แกน Y: ชื่อผู้ขาย
+        orientation="h",  # แท่งแนวนอน ชื่อบริษัทยาวอ่านง่ายกว่า
+        text="spend",  # แสดงตัวเลขที่ปลายแท่ง
+        labels={"spend": "ค่าใช้จ่าย (บาท)", "vendor": "ผู้ขาย"},  # ชื่อใน Tooltip
+    )
+    figure.update_traces(
+        marker_color=VENDOR_BAR_COLOR,  # สีแท่ง (แก้ที่ค่าคงที่ด้านบนไฟล์)
+        texttemplate="%{x:,.2f}",  # ตัวเลขมี , คั่นหลัก ทศนิยม 2 ตำแหน่ง
+        hovertemplate="%{y}<br>%{x:,.2f} บาท<extra></extra>",  # ข้อความ Tooltip
+    )
+    figure.update_xaxes(title_text="", tickformat=",.0f", rangemode="tozero")  # แกน X เริ่มที่ 0
+    figure.update_yaxes(title_text="", autorange="reversed")  # กลับแกน Y ให้อันดับ 1 อยู่บนสุด
+    figure.update_layout(
+        margin={"l": 0, "r": 0, "t": 10, "b": 0},  # ระยะขอบกราฟ (ซ้าย ขวา บน ล่าง)
+        font={"family": FONT_FAMILY, "color": PALETTE["text"]},  # ฟอนต์ให้ตรงกับธีมกลาง
+        height=max(VENDOR_CHART_MIN_HEIGHT, VENDOR_CHART_ROW_HEIGHT * len(vendor_spend_table)),  # สูงตามจำนวนแท่ง
+    )
+    return figure
+
+
+def render_spend_metric(transaction_table: pd.DataFrame) -> None:
+    """วาดการ์ดสรุป 'ยอดรวมค่าใช้จ่ายทั้งหมด' (ผลรวม Net Price / unit_price)
+
+    Args:
+        transaction_table: ตารางจาก load_transaction_table
+    """
+    spend_table = get_spend_table(transaction_table)
+    # ถ้ายังไม่มีข้อมูลราคาเลย แสดง 'ยังไม่มีข้อมูล' แทนที่จะแสดง 0.00
+    spend_text = "ยังไม่มีข้อมูล" if spend_table.empty else f"{spend_table['unit_price'].sum():,.2f} บาท"
+    with st.container(key="spend_card"):
+        with st.container(key="spend_inner"):
+            st.metric(
+                "ยอดรวมค่าใช้จ่ายทั้งหมด",
+                spend_text,
+                help="ผลรวม Net Price (unit_price) ของรายการในช่วงวันที่ที่เลือก",
+            )
+
+
 def render_vendor_card(transaction_table: pd.DataFrame) -> None:
-    """วาดการ์ด Vendor: รายชื่อบริษัท (Company) เรียงตามยอดซื้อ
+    """วาดการ์ด Vendor: กราฟ Top Vendors by Spend + รายชื่อบริษัท (Company) เรียงตามยอดซื้อ
 
     Args:
         transaction_table: ตารางจาก load_transaction_table
@@ -359,6 +457,12 @@ def render_vendor_card(transaction_table: pd.DataFrame) -> None:
             if transaction_table.empty:
                 st.info("ยังไม่มีข้อมูลผู้ขายในช่วงวันที่ที่เลือก")
                 return
+            st.caption("Top Vendors by Spend (Net Price)")
+            vendor_spend_table = build_vendor_spend_table(transaction_table)
+            if vendor_spend_table.empty:
+                st.info("ยังไม่มีข้อมูลราคา (Net Price) จึงยังสร้างกราฟค่าใช้จ่ายไม่ได้")
+            else:
+                st.plotly_chart(build_vendor_spend_figure(vendor_spend_table), width="stretch")
             st.dataframe(
                 build_top_vendor_table(transaction_table),
                 width="stretch",
@@ -396,7 +500,10 @@ def render(start_date: date, end_date: date) -> None:
 
     # ส่วนที่ 1: ปุ่ม Export 📥 ขวาบน (ดาวน์โหลด CSV ตามช่วงวันที่ของ Date Filter)
     export_csv = build_export_csv(start_date, end_date)
-    _, export_column = st.columns([3, 1])
+    transaction_table = load_transaction_table(start_date, end_date)
+    spend_column, export_column = st.columns([3, 1], vertical_alignment="center")
+    with spend_column:
+        render_spend_metric(transaction_table)  # การ์ดยอดรวมค่าใช้จ่ายทั้งหมด (ซ้าย)
     export_column.download_button(
         "Export 📥",
         data=export_csv,
@@ -406,7 +513,6 @@ def render(start_date: date, end_date: date) -> None:
         key="dashboard_export",
     )
 
-    transaction_table = load_transaction_table(start_date, end_date)
     left_column, right_column = st.columns(PAGE_COLUMN_RATIO, gap="medium")
 
     # ส่วนที่ 2: ฝั่งซ้าย = การ์ด Price (บน) + การ์ด Equipment (ล่าง)
