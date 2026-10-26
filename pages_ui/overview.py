@@ -182,7 +182,29 @@ SESSION_KEY_SUCCESS_MESSAGE: str = "overview_success_message"  # ข้อคว
 SESSION_KEY_STATUS_MESSAGES: str = "overview_status_messages"  # ผลการเปลี่ยนสถานะในตาราง [(ระดับ, ข้อความ)]
 SESSION_KEY_EDITOR_VERSION: str = "overview_editor_version"  # เลขเวอร์ชันของตาราง ใช้ล้างสถานะการแก้ไขหลังบันทึก
 SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ ใช้เคลียร์ฟอร์มหลังบันทึก
-SESSION_KEY_PURCHASE_FILE_ID: str = "overview_purchase_file_id"  # ไฟล์ Purchase ที่ประมวลผลแล้ว
+# --- หน้าต่างเพิ่มข้อมูลแบบ 2 ขั้นตอน ---
+# ขั้นที่ 1 = ถามข้อมูลเบื้องต้น, ขั้นที่ 2 = ฟอร์มหลัก/อัปโหลด (รีเซ็ตเป็น 1 ทุกครั้งที่เปิดหน้าต่างและหลังบันทึกสำเร็จ)
+FORM_STEP_QUESTIONS: int = 1
+FORM_STEP_MAIN_FORM: int = 2
+SESSION_KEY_FORM_STEP: str = "form_step"  # ขั้นตอนปัจจุบันของหน้าต่าง
+SESSION_KEY_ENTRY_ITEM: str = "overview_entry_item"  # ประเภท (Item) ที่เลือกในขั้นที่ 1
+SESSION_KEY_ENTRY_HAS_INVOICE: str = "overview_entry_has_invoice"  # สถานะใบกำกับภาษีที่เลือกในขั้นที่ 1
+# key ของปุ่มเลือกในขั้นที่ 1 (ใช้อ่านค่าตอนกด "ถัดไป")
+WIDGET_KEY_STEP1_ITEM: str = "overview_step1_item"
+WIDGET_KEY_STEP1_INVOICE: str = "overview_step1_invoice"
+
+# ตัวเลือกของขั้นที่ 1: ประเภทใช้ค่าเดียวกับ dropdown Item ในฟอร์ม (ตัด "อื่น ๆ" ออก เลือกในฟอร์มขั้นที่ 2 ได้)
+STEP1_ITEM_OPTIONS: list[str] = [option for option in CATEGORY_OPTIONS if option != "อื่น ๆ"]
+INVOICE_CHOICE_HAS: str = "มีใบกำกับภาษี"  # -> บันทึกเป็น STATUS_RECEIVED
+INVOICE_CHOICE_NOT_YET: str = "ยังไม่มีใบกำกับภาษี"  # -> บันทึกเป็น STATUS_PENDING
+INVOICE_CHOICE_OPTIONS: list[str] = [INVOICE_CHOICE_HAS, INVOICE_CHOICE_NOT_YET]
+# ตัวเลือกสถานะใบกำกับภาษี -> ค่าที่เก็บในฐานข้อมูล
+INVOICE_CHOICE_TO_DB: dict[str, str] = {
+    INVOICE_CHOICE_HAS: STATUS_RECEIVED,
+    INVOICE_CHOICE_NOT_YET: STATUS_PENDING,
+}
+
+SESSION_KEY_PURCHASE_FILE_ID: str ="overview_purchase_file_id"  # ไฟล์ Purchase ที่ประมวลผลแล้ว
 SESSION_KEY_PURCHASE_NOTICE: str = "overview_purchase_notice"  # ข้อความผลการดึงข้อมูลจากไฟล์
 SESSION_KEY_LOCAL_FILE_ID: str = "overview_local_file_id"  # ไฟล์ในกล่อง Upload ที่บันทึกลงเครื่องแล้ว
 SESSION_KEY_LOCAL_NOTICE: str = "overview_local_notice"  # ผลการบันทึกไฟล์ (ระดับ, ข้อความ)
@@ -210,6 +232,13 @@ PAGE_CSS_RULES: str = """
 [data-testid="stMainBlockContainer"] { padding-left: 16px !important; padding-right: 16px !important; }
 .st-key-table_card { padding-left: 12px !important; padding-right: 12px !important; }
 .st-key-table_inner { padding-left: 8px !important; padding-right: 8px !important; }
+
+/* 1.2) แถวหัวข้อตาราง + ปุ่มเพิ่มข้อมูล: ปุ่มเต็มความกว้างคอลัมน์ขวา (ชิดขอบขวาเท่ากับกล่องตาราง)
+        หัวข้อไม่มีระยะบน/ล่างเกิน เพื่อให้อยู่ตรงกลางแนวเดียวกับปุ่ม และดึงแถวนี้ให้ชิดกล่องค้นหาด้านล่าง */
+.st-key-table_header_row [data-testid="stButton"],
+.st-key-table_header_row [data-testid="stButton"] button { width: 100% !important; }
+.st-key-table_header_row h3 { padding: 0 !important; margin: 0 !important; }
+.st-key-table_header_row { margin-bottom: -8px; }
 
 /* 2) กล่องขาวครอบตาราง: ตัดมุมตารางให้มน 8px + เส้นขอบบาง */
 .st-key-table_inner [data-testid="stDataFrame"] {
@@ -666,15 +695,17 @@ def render_table_card(
         end_date: วันที่สิ้นสุดจาก Date Filter
     """
     with st.container(key="table_card"):
+        # แถบตัวกรองแถวเดียว: ช่องค้นหา (กว้างสุด) + dropdown Item + dropdown Vendor
+        # ถ้าจะเพิ่มตัวกรองใหม่ ให้เพิ่มสัดส่วนใน st.columns ด้านล่าง แล้วเพิ่มเงื่อนไขกรองต่อจาก selected_vendor
+        search_column, item_column, vendor_column = st.columns([3, 1.3, 1.7])
+
         # ช่องค้นหา: ค้นในชื่อผู้ขาย, เลข PO, เลขรัน PR, Tax ID (ดู database.get_transactions)
-        search_keyword = st.text_input(
+        search_keyword = search_column.text_input(
             "Search bar",
-            placeholder="Search bar (ผู้ขาย, เลข PO, เลขรัน PR, Tax ID)",
+            placeholder="🔍 ค้นหา (ผู้ขาย, เลข PO, เลขรัน PR, Tax ID)",
             label_visibility="collapsed",
         ).strip()
 
-        # dropdown กรอง Item (หมวดหมู่) และ Vendor แถวเดียวกัน
-        item_column, vendor_column = st.columns(2)
         selected_item = item_column.selectbox(
             "Item", [ALL_ITEMS_LABEL, *CATEGORY_OPTIONS], label_visibility="collapsed"
         )
@@ -693,6 +724,9 @@ def render_table_card(
             visible_transactions = [t for t in visible_transactions if t.get("category") == selected_item]
         if selected_vendor != ALL_VENDORS_LABEL:
             visible_transactions = [t for t in visible_transactions if t["vendor"] == selected_vendor]
+
+        # เส้นคั่นระหว่างตัวกรองกับตาราง ให้สายตาแยกส่วนได้ชัด
+        st.divider()
 
         if not visible_transactions:
             st.info("ไม่พบรายการในช่วงวันที่ที่เลือก")
@@ -931,6 +965,79 @@ def render_upload_section(form_counter: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def go_to_main_form_step(form_counter: int) -> None:
+    """Callback ปุ่ม "ถัดไป": จำคำตอบขั้นที่ 1 แล้วตั้งเป็นค่าเริ่มต้นของฟอร์มขั้นที่ 2
+
+    ใช้เป็น on_click เพื่อให้ทำงานก่อนหน้าต่างถูกวาดใหม่ (ตั้งค่าช่องฟอร์มได้ก่อนช่องถูกสร้าง จึงไม่เกิด Error)
+    ถ้าจะให้คำตอบขั้นที่ 1 เติมช่องอื่นเพิ่ม: เพิ่มบรรทัด st.session_state[_field_key("ชื่อช่อง", form_counter)] = ... ตรงนี้
+
+    Args:
+        form_counter: ตัวนับของฟอร์มปัจจุบัน (ใช้สร้าง key ของช่อง)
+    """
+    selected_item: Optional[str] = st.session_state.get(WIDGET_KEY_STEP1_ITEM)
+    selected_invoice_choice: Optional[str] = st.session_state.get(WIDGET_KEY_STEP1_INVOICE)
+    if selected_item is None or selected_invoice_choice is None:
+        return  # ยังเลือกไม่ครบ (ปุ่มถัดไปถูกปิดไว้แล้ว กันซ้ำอีกชั้น)
+
+    # เก็บคำตอบไว้ใน key ธรรมดา (ค่าของปุ่มเลือกจะหายเมื่อไม่ได้วาดในรอบถัดไป)
+    st.session_state[SESSION_KEY_ENTRY_ITEM] = selected_item
+    st.session_state[SESSION_KEY_ENTRY_HAS_INVOICE] = selected_invoice_choice
+    # ตั้งค่าเริ่มต้นให้ช่องในฟอร์ม ผู้ใช้ไม่ต้องเลือกซ้ำ
+    st.session_state[_field_key("category", form_counter)] = selected_item
+    st.session_state[_field_key("invoice_choice", form_counter)] = selected_invoice_choice
+    st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_MAIN_FORM
+
+
+def go_back_to_questions_step() -> None:
+    """Callback ปุ่ม "ย้อนกลับ": กลับไปขั้นที่ 1 (ค่าที่กรอกในฟอร์มขั้นที่ 2 จะถูกล้าง)"""
+    st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
+
+
+def render_questions_step(form_counter: int) -> None:
+    """วาดขั้นที่ 1: ถามประเภท (Item) และสถานะใบกำกับภาษี แล้วปุ่ม "ถัดไป"
+
+    ถ้าจะเพิ่มคำถามใหม่: เพิ่ม st.segmented_control ตรงนี้ แล้วอ่านค่าใน go_to_main_form_step
+
+    Args:
+        form_counter: ตัวนับของฟอร์มปัจจุบัน (ส่งต่อให้ callback)
+    """
+    st.caption("ขั้นตอนที่ 1 / 2 — ข้อมูลเบื้องต้น")
+
+    st.markdown("**ประเภทของ PR/PO (Item):**")
+    selected_item = st.segmented_control(
+        "ประเภทของ PR/PO (Item)",
+        STEP1_ITEM_OPTIONS,
+        selection_mode="single",
+        default=st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0]),
+        key=WIDGET_KEY_STEP1_ITEM,
+        label_visibility="collapsed",
+    )
+
+    st.markdown("**สถานะใบกำกับภาษี:**")
+    selected_invoice_choice = st.segmented_control(
+        "สถานะใบกำกับภาษี",
+        INVOICE_CHOICE_OPTIONS,
+        selection_mode="single",
+        default=st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET),
+        key=WIDGET_KEY_STEP1_INVOICE,
+        label_visibility="collapsed",
+    )
+
+    # segmented_control กดซ้ำเพื่อยกเลิกการเลือกได้ (ค่าเป็น None) จึงปิดปุ่มถัดไปไว้จนกว่าจะเลือกครบ
+    is_answered = selected_item is not None and selected_invoice_choice is not None
+    if not is_answered:
+        st.caption("⚠️ กรุณาเลือกให้ครบทั้ง 2 ข้อ")
+    st.button(
+        "ถัดไป ➡️",
+        type="primary",
+        width="stretch",
+        disabled=not is_answered,
+        on_click=go_to_main_form_step,
+        args=(form_counter,),
+        key="step1_next_button",
+    )
+
+
 def _labeled_text_input(label_text: str, field_name: str, form_counter: int) -> str:
     """วาดแถวฟิลด์: ป้ายชื่อด้านซ้าย ช่องกรอกด้านขวา (ตามดีไซน์) แล้วคืนค่าที่กรอก
 
@@ -983,6 +1090,16 @@ def render_entry_form(form_counter: int) -> None:
                 key=_field_key("date", form_counter),
                 label_visibility="collapsed",
             )
+            # สถานะใบกำกับภาษี: ค่าเริ่มต้นมาจากขั้นที่ 1 (ตั้งไว้ใน go_to_main_form_step) แก้ได้ที่นี่
+            invoice_label_column, invoice_input_column = st.columns([1.35, 2], vertical_alignment="center")
+            invoice_label_column.markdown('<div class="field-label">ใบกำกับภาษี :</div>', unsafe_allow_html=True)
+            invoice_choice = invoice_input_column.selectbox(
+                "สถานะใบกำกับภาษี",
+                INVOICE_CHOICE_OPTIONS,
+                index=1,  # ถ้าไม่มีค่าจากขั้นที่ 1 ให้เป็น "ยังไม่มีใบกำกับภาษี"
+                key=_field_key("invoice_choice", form_counter),
+                label_visibility="collapsed",
+            )
 
         # ข้อมูลจากเอกสาร PR / Quotation (Master-List, ไม่บังคับ): ระบบเติมให้จากไฟล์ PDF ผู้ใช้ตรวจ/แก้ได้
         # ถ้าจะเพิ่มฟิลด์ใหม่: เพิ่มช่องตรงนี้ + ส่งค่าเข้า add_transaction ด้านล่าง
@@ -1023,8 +1140,11 @@ def render_entry_form(form_counter: int) -> None:
             "Upload PO", type=ALLOWED_FILE_TYPES, key=_field_key("form_file", form_counter)
         )
 
-        # ส่วนที่ 3: ปุ่ม Upload (บันทึกข้อมูล)
-        is_submitted = st.form_submit_button("Upload", type="primary", width="stretch")
+        # ส่วนที่ 3: ปุ่ม ย้อนกลับ + บันทึกข้อมูล (ปุ่มย้อนกลับต้องเป็น form_submit_button เพราะอยู่ในฟอร์ม
+        # และใช้ on_click ทำงานก่อนหน้าถูกวาดใหม่ จึงไม่เกิด Error ตอนเปลี่ยนหน้า)
+        back_column, save_column = st.columns([1, 2])
+        back_column.form_submit_button("⬅️ ย้อนกลับ", on_click=go_back_to_questions_step, width="stretch")
+        is_submitted = save_column.form_submit_button("บันทึกข้อมูล", type="primary", width="stretch")
 
     if not is_submitted:
         return
@@ -1060,6 +1180,7 @@ def render_entry_form(form_counter: int) -> None:
         email=email or None,
         contact_name=contact_name or None,
         file_path=final_file_path,
+        invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
         sharepoint_url=sharepoint_url or None,  # ลิงก์ที่กรอกเอง (ไม่บังคับ) ยังใช้ได้ตามเดิม
         pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
         qt_no=qt_no or None,
@@ -1075,6 +1196,7 @@ def render_entry_form(form_counter: int) -> None:
         f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {new_transaction_id})"
     )
     st.session_state[SESSION_KEY_FORM_COUNTER] = form_counter + 1
+    st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS  # เปิดครั้งหน้าเริ่มที่ขั้นที่ 1 เสมอ
     st.rerun()
 
 
@@ -1095,6 +1217,19 @@ def render_entry_dialog(form_counter: int) -> None:
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน
     """
+    # ขั้นตอนปัจจุบัน (ค่าเริ่มต้น = ขั้นที่ 1) ถ้ายังไม่มีคำตอบจากขั้นที่ 1 ห้ามข้ามไปขั้นที่ 2
+    current_step: int = st.session_state.get(SESSION_KEY_FORM_STEP, FORM_STEP_QUESTIONS)
+    if current_step == FORM_STEP_MAIN_FORM and SESSION_KEY_ENTRY_ITEM not in st.session_state:
+        current_step = FORM_STEP_QUESTIONS
+
+    if current_step == FORM_STEP_QUESTIONS:
+        render_questions_step(form_counter)
+        return
+
+    st.caption(
+        f"ขั้นตอนที่ 2 / 2 — {st.session_state[SESSION_KEY_ENTRY_ITEM]} · "
+        f"{st.session_state[SESSION_KEY_ENTRY_HAS_INVOICE]}"
+    )
     with st.container(key="right_panel"):  # key นี้ใช้ให้ CSS ข้อ 1 จับแท็บ
         form_tab, upload_tab = st.tabs(["กรอก Form", "Upload File"])
 
@@ -1108,16 +1243,25 @@ def render_entry_dialog(form_counter: int) -> None:
 
 
 def render_add_button(form_counter: int) -> None:
-    """วาดปุ่ม "เพิ่มข้อมูล / อัปโหลดเอกสาร" (ชิดขวา เหนือตาราง) กดแล้วเปิดหน้าต่างฟอร์ม/อัปโหลด
+    """วาดแถบหัวเรื่องของตาราง: ชื่อส่วน (ซ้าย) + ปุ่ม "เพิ่มข้อมูล / อัปโหลดเอกสาร" (ขวา)
+
+    กดปุ่มแล้วเปิดหน้าต่างฟอร์ม/อัปโหลด (ชื่อหน้าหลักและ Date Filter วาดโดย app.py แล้ว)
 
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน (ส่งต่อให้หน้าต่าง)
     """
-    _, button_column = st.columns([3, 1])
-    if button_column.button(
-        "➕ เพิ่มข้อมูล / อัปโหลดเอกสาร", type="primary", width="stretch", key="open_entry_dialog"
-    ):
-        render_entry_dialog(form_counter)
+    # key="table_header_row" ใช้ให้ CSS (PAGE_CSS_RULES ข้อ 1.2) จับแถวนี้ เพื่อชิดปุ่มขวาและลดช่องว่างใต้หัวข้อ
+    # vertical_alignment="center" ทำให้ปุ่มอยู่กึ่งกลางแนวตั้งเสมอกับชื่อส่วน ไม่ต้องใช้เว้นบรรทัดช่วย
+    # สัดส่วน [8, 2]: ปรับตัวเลขเพื่อเปลี่ยนความกว้างปุ่ม (ปุ่มจะเต็มความกว้างของคอลัมน์ขวาเสมอ)
+    with st.container(key="table_header_row"):
+        title_column, button_column = st.columns([8, 2], vertical_alignment="center")
+        title_column.subheader("ตารางข้อมูล Master-List")
+        if button_column.button(
+            "➕ เพิ่มข้อมูล / อัปโหลดเอกสาร", type="primary", width="stretch", key="open_entry_dialog"
+        ):
+            # เปิดหน้าต่างทุกครั้งเริ่มที่ขั้นที่ 1 (รวมกรณีปิดด้วยปุ่ม x ระหว่างขั้นที่ 2)
+            st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
+            render_entry_dialog(form_counter)
 
 
 def render_equipment_summary(start_date: date, end_date: date) -> None:
