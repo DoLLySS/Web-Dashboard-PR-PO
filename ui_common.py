@@ -12,15 +12,15 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from config import EQUIPMENT_CATEGORIES
+from config.constants import EQUIPMENT_CATEGORIES
 from data.database import get_category_counts
-from styles import PALETTE, RADIUS_PX, SHADOW
+from config.styles import PALETTE, RADIUS_PX, SHADOW
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: ธีมสีและความมน (แก้ที่นี่)
 # ---------------------------------------------------------------------------
 
-# สีมาจากธีมกลาง (styles.PALETTE) เปลี่ยนธีมทั้งระบบได้ที่ styles.py
+# สีมาจากธีมกลาง (config.styles.PALETTE) เปลี่ยนธีมทั้งระบบได้ที่ config/styles.py
 THEME_COLORS: dict[str, str] = {
     "card-bg": PALETTE["surface"],  # พื้นการ์ดด้านนอก (ขาว + เงาบาง)
     "inner-bg": PALETTE["bg"],  # พื้นกล่องด้านใน (Tertiary #F8FAFC)
@@ -42,7 +42,7 @@ BASE_CSS_RULES: str = """
 [class*="st-key-"][class*="_card"] {
     background: var(--ui-card-bg);
     border-radius: CARD_RADIUS;
-    padding: var(--app-card-padding);  /* ระยะห่างภายในการ์ด เปลี่ยนตามขนาดจอ (styles.py) */
+    padding: var(--app-card-padding);  /* ระยะห่างภายในการ์ด เปลี่ยนตามขนาดจอ (config/styles.py) */
     box-shadow: CARD_SHADOW;  /* เงาบาง ๆ ให้การ์ดลอยขึ้น */
 }
 /* กล่องขาวด้านใน: container ที่ key ลงท้ายด้วย _inner */

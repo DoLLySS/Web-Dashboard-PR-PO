@@ -11,7 +11,7 @@ from typing import Callable
 
 import streamlit as st
 
-from styles import PALETTE, RADIUS_PX
+from config.styles import PALETTE, RADIUS_PX
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: ข้อความและโลโก้ (แก้ที่นี่)

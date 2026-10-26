@@ -21,9 +21,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import EQUIPMENT_CATEGORIES
+from config.constants import EQUIPMENT_CATEGORIES
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
-from styles import FONT_FAMILY, PALETTE
+from config.styles import FONT_FAMILY, PALETTE
 from ui_common import build_css
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ PAGE_COLUMN_RATIO: list[int] = [3, 2]
 
 # CSS เฉพาะหน้า Dashboard (กฎกลางของการ์ดอยู่ที่ ui_common.py)
 PAGE_CSS_RULES: str = """
-/* (ปุ่ม ช่องกรอก และมุม 8px มาจากธีมกลาง styles.py แล้ว) */
+/* (ปุ่ม ช่องกรอก และมุม 8px มาจากธีมกลาง config/styles.py แล้ว) */
 /* ปุ่ม Export: ชิดขวา กว้างพอดีข้อความ พื้นขาว ขอบสีเข้ม (ตามดีไซน์) */
 .st-key-dashboard_export [data-testid="stDownloadButton"] { display: flex; justify-content: flex-end; }
 .st-key-dashboard_export button {

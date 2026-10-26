@@ -1,6 +1,6 @@
 """ไฟล์หลักของระบบ IT PR/PO & Tax Invoice MasterList (ตัวควบคุม / Router)
 
-หน้าที่ของไฟล์นี้มีแค่ 3 อย่าง: ตั้งค่าหน้าเว็บ, ฉีดธีม (styles.py), วาด Sidebar + แถบหัวหน้า (ชื่อหน้า + Date Filter), และเรียกหน้าที่ถูกเลือก
+หน้าที่ของไฟล์นี้มีแค่ 3 อย่าง: ตั้งค่าหน้าเว็บ, ฉีดธีม (config/styles.py), วาด Sidebar + แถบหัวหน้า (ชื่อหน้า + Date Filter), และเรียกหน้าที่ถูกเลือก
 ห้ามใส่เนื้อหาของหน้าจอหรือ SQL ในไฟล์นี้ ให้ไปแก้ในโฟลเดอร์ pages_ui/ หรือ database.py
 
 วิธีรัน: streamlit run app.py
@@ -13,7 +13,7 @@ import streamlit as st
 from data.database import init_db
 from pages_ui import dashboard, overview
 from sidebar_ui import MenuItem, render_sidebar
-from styles import inject_global_styles
+from config.styles import inject_global_styles
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่
@@ -80,7 +80,7 @@ def render_page_header(menu_item: MenuItem) -> tuple[date, date]:
     Returns:
         (วันที่เริ่ม, วันที่สิ้นสุด) จาก Date Filter
     """
-    # key="page_header" ใช้ให้ CSS ใน styles.py จับแถบนี้ได้ (บนจอแคบ ตัวกรองวันที่จะตกลงมาอยู่บรรทัดล่าง)
+    # key="page_header" ใช้ให้ CSS ใน config/styles.py จับแถบนี้ได้ (บนจอแคบ ตัวกรองวันที่จะตกลงมาอยู่บรรทัดล่าง)
     with st.container(key="page_header"):
         title_column, filter_column = st.columns([3, 2], vertical_alignment="center")
         with title_column:
@@ -95,7 +95,7 @@ def main() -> None:
     """จุดเริ่มต้นของแอป: ตั้งค่าหน้า, เตรียม DB, แล้วส่งต่อให้หน้าที่ถูกเลือก"""
     st.set_page_config(page_title="IT PR/PO MasterList", page_icon="📋", layout="wide")
 
-    # ฉีด CSS ธีมกลาง (ฟอนต์ สี ความมน เงา) ให้ทั้งระบบ ต้องทำก่อนวาดส่วนอื่น (โค้ดอยู่ใน styles.py)
+    # ฉีด CSS ธีมกลาง (ฟอนต์ สี ความมน เงา) ให้ทั้งระบบ ต้องทำก่อนวาดส่วนอื่น (โค้ดอยู่ใน config/styles.py)
     inject_global_styles()
 
     # ถ้าเตรียมฐานข้อมูลไม่สำเร็จ init_db จะแสดง error ให้แล้ว จึงหยุดการทำงานต่อ

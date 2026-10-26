@@ -8,10 +8,10 @@
 ```
 Project ฝึกงาน/
 ├── app.py                  # Router: ฉีดธีม, Sidebar, แถบหัวหน้า (ชื่อหน้า + Date Filter), เรียกหน้าที่เลือก
-├── styles.py               # ธีมกลาง: ฟอนต์ สี ความมน เงา + Responsive 4 ช่วงจอ + ซ่อนเมนู/Footer ของ Streamlit
+├── config/styles.py        # ธีมกลาง: ฟอนต์ สี ความมน เงา + Responsive 4 ช่วงจอ + ซ่อนเมนู/Footer ของ Streamlit
 ├── sidebar_ui.py           # Sidebar: โลโก้ + ชื่อเว็บ + เมนูแบบจัดกลุ่ม (MenuItem)
 ├── ui_common.py            # CSS การ์ดที่ใช้ร่วมกัน + ตาราง Quantity of equipment
-├── config.py               # ค่าคงที่ร่วม: CATEGORY_OPTIONS, EQUIPMENT_CATEGORIES
+├── config/constants.py     # ค่าคงที่ร่วม: CATEGORY_OPTIONS, EQUIPMENT_CATEGORIES
 ├── database.py             # SQLite (ที่เดียวที่เขียน SQL): CRUD, นับ/สรุปตามหมวด, migration คอลัมน์ใหม่อัตโนมัติ
 ├── text_extractor.py       # อ่าน PDF (pdfplumber) หา Tax ID / ยอดรวม / ผู้ขาย (คืน "" ถ้าหาไม่เจอ)
 ├── generate_mock_data.py   # สร้างข้อมูลจำลอง 18 แถว (ข้ามถ้าตารางมีข้อมูลแล้ว)
@@ -46,7 +46,7 @@ Project ฝึกงาน/
 - ปุ่ม Detail Graph/ช่วงเวลา ทำงานแล้ว แต่ปุ่ม Export บนมือถือยังไม่เต็มความกว้าง
 - ฟอร์มซ่อนช่องราคา/หมวดหมู่ไว้ในแถบ "รายละเอียดเพิ่มเติม" ถ้าไม่กรอก ราคา = 0 ทำให้ยอดรวมต่ำกว่าจริง
 - ยังไม่ได้ทดสอบบนมือถือ/iPad จริง (ทดสอบแค่จำลองขนาดจอ)
-- ค่า `.streamlit/config.toml` และ CSS ผูกกับ Streamlit 1.66.1 (ถ้าอัปเกรดแล้วสไตล์หลุด ดู `data-testid` ใน styles.py)
+- ค่า `.streamlit/config.toml` และ CSS ผูกกับ Streamlit 1.66.1 (ถ้าอัปเกรดแล้วสไตล์หลุด ดู `data-testid` ใน config/styles.py)
 
 ## 4. Next Step เมื่อกลับมาทำงาน
 

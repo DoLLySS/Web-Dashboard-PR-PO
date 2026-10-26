@@ -5,3 +5,7 @@ __pycache__/
 data/*.db
 data/*.db-*
 data/local_uploads/
+
+# ไฟล์ Log ที่ระบบสร้างขึ้น (เก็บเฉพาะโฟลเดอร์ logs/ ไว้ด้วย .gitkeep)
+logs/*
+!logs/.gitkeep

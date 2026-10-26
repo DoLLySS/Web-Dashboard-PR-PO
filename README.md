@@ -118,9 +118,12 @@ python generate_mock_data.py
 ```
 Project ฝึกงาน/
 ├── app.py                 # ตัวควบคุมหลัก (Router): Sidebar + Date Filter + เรียกหน้าที่เลือก
-├── config.py              # ค่าคงที่ที่ใช้หลายหน้า (หมวดหมู่)
+├── config/
+│   ├── constants.py       # ค่าคงที่ที่ใช้หลายหน้า (หมวดหมู่)
+│   └── styles.py          # ธีมกลางของทั้งระบบ: ฟอนต์ สี ความมน เงา + CSS (ฉีดจาก app.py)
+├── logs/                  # เตรียมไว้เก็บไฟล์ Log (ไฟล์ในนี้ไม่ขึ้น Git)
+├── assets/                # รูปโลโก้ (logo.png) ไอคอน หรือ CSS
 ├── ui_common.py           # ธีมการ์ด (CSS) + ตารางสรุปอุปกรณ์ ที่ใช้ร่วมกัน
-├── styles.py              # ธีมกลางของทั้งระบบ: ฟอนต์ สี ความมน เงา + CSS (ฉีดจาก app.py)
 ├── sidebar_ui.py          # หน้าตา Sidebar: โลโก้, ชื่อเว็บ, เมนูแบบจัดกลุ่ม, สี/CSS
 ├── pages_ui/
 │   ├── overview.py        # หน้า Overview: แจ้งเตือน + ฟอร์ม + ตาราง
@@ -147,9 +150,9 @@ Project ฝึกงาน/
 | ต้องการ | แก้ที่ |
 |---|---|
 | เปลี่ยนจำนวนวันแจ้งเตือนใบกำกับภาษี (14 วัน) | `OVERDUE_DAYS_LIMIT` บนสุดของ `pages_ui/overview.py` |
-| เพิ่ม/ลบหมวดหมู่ในฟอร์ม | `CATEGORY_OPTIONS` ใน `config.py` **และ** เพิ่มสีใน `CATEGORY_COLORS` ของ `pages_ui/dashboard.py` |
+| เพิ่ม/ลบหมวดหมู่ในฟอร์ม | `CATEGORY_OPTIONS` ใน `config/constants.py` **และ** เพิ่มสีใน `CATEGORY_COLORS` ของ `pages_ui/dashboard.py` |
 | เปลี่ยนชื่อเว็บ / โลโก้ (วางไฟล์ `assets/logo.png`) / สี Sidebar | ค่าคงที่ต้นไฟล์ `sidebar_ui.py` |
-| เปลี่ยนสี/ฟอนต์/ความมน/เงาของทั้งระบบ | `PALETTE`, `FONT_FAMILY`, `RADIUS_PX` ใน `styles.py` (และสีหัวตารางใน `.streamlit/config.toml`) |
+| เปลี่ยนสี/ฟอนต์/ความมน/เงาของทั้งระบบ | `PALETTE`, `FONT_FAMILY`, `RADIUS_PX` ใน `config/styles.py` (และสีหัวตารางใน `.streamlit/config.toml`) |
 | เปลี่ยนสีกราฟ | `CATEGORY_COLORS` บนสุดของ `pages_ui/dashboard.py` |
 | เพิ่มช่องกรอกในฟอร์ม | `render_entry_form()` ใน `overview.py` (ดู Comment "ส่วนที่ 1-5") และถ้าเป็นคอลัมน์ใหม่ ต้องแก้ `data/database.py` + `TABLE_COLUMN_LABELS` ด้วย |
 | เพิ่มหน้าใหม่ / เมนูใหม่ | สร้างไฟล์ใน `pages_ui/` ที่มีฟังก์ชัน `render(start_date, end_date)` แล้วเพิ่ม `MenuItem` ใน `MENU_GROUPS` ของ `app.py` |

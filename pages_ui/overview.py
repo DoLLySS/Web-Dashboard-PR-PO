@@ -22,7 +22,7 @@ from typing import Any, Optional
 import pandas as pd
 import streamlit as st
 
-from config import CATEGORY_OPTIONS
+from config.constants import CATEGORY_OPTIONS
 from data.database import (
     STATUS_PENDING,
     STATUS_RECEIVED,
@@ -193,7 +193,7 @@ SESSION_KEY_LOCAL_PATH: str = "overview_local_path"  # ที่อยู่ไ�
 # ---------------------------------------------------------------------------
 
 PAGE_CSS_RULES: str = """
-/* (สี ฟอนต์ ช่องกรอก ปุ่ม และมุม 8px ของทั้งระบบมาจากธีมกลาง styles.py แล้ว ที่นี่เหลือเฉพาะส่วนที่เป็นของหน้านี้) */
+/* (สี ฟอนต์ ช่องกรอก ปุ่ม และมุม 8px ของทั้งระบบมาจากธีมกลาง config/styles.py แล้ว ที่นี่เหลือเฉพาะส่วนที่เป็นของหน้านี้) */
 
 /* 1) แท็บ [กรอก Form | Upload File]: แถบสีอ่อน แท็บที่เลือกเป็นสีฟ้าหลัก */
 .st-key-right_panel [role="tablist"] {
