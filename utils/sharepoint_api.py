@@ -14,25 +14,26 @@
 พร้อมข้อความภาษาไทย ให้หน้า UI เป็นคนแสดงผลเอง
 """
 
-import os
 import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from dotenv import load_dotenv
+from config.logging_setup import get_logger
+from config.settings import DEFAULT_SHAREPOINT_FOLDER_PATH, get_env_text
 
-# โหลดค่าจากไฟล์ .env ที่อยู่โฟลเดอร์หลักของโปรเจค (ถัดจาก utils/ ขึ้นไป 1 ชั้น) (ไม่เขียนทับตัวแปรที่ตั้งไว้ในระบบอยู่แล้ว)
-load_dotenv(Path(__file__).parent.parent / ".env")
+# บันทึกลง logs/app.log (ห้ามเขียน Client Secret / รหัสผ่านลง Log)
+logger = get_logger(__name__)
 
 # ชื่อตัวแปรใน .env ที่ "ต้องมี" (ถ้าจะเพิ่มตัวแปรบังคับใหม่ ให้เพิ่มที่นี่และใน .env.example)
+# การโหลดไฟล์ .env ทำใน config/settings.py แล้ว
 REQUIRED_SETTING_NAMES: tuple[str, ...] = (
     "SHAREPOINT_URL",
     "SHAREPOINT_CLIENT_ID",
     "SHAREPOINT_CLIENT_SECRET",
 )
-# โฟลเดอร์ปลายทางเริ่มต้น (เทียบจาก root ของ Site)
-DEFAULT_FOLDER_PATH: str = "Shared Documents/PR-PO"
+# โฟลเดอร์ปลายทางเริ่มต้น (ใช้เมื่อไม่ใส่ SHAREPOINT_FOLDER_PATH ใน .env)
+DEFAULT_FOLDER_PATH: str = DEFAULT_SHAREPOINT_FOLDER_PATH
 
 
 class SharePointError(Exception):
@@ -48,20 +49,31 @@ def load_sharepoint_settings() -> dict[str, str]:
     Raises:
         SharePointError: ถ้าขาดค่าที่จำเป็น
     """
-    missing_names = [name for name in REQUIRED_SETTING_NAMES if not os.getenv(name, "").strip()]
+    missing_names = [name for name in REQUIRED_SETTING_NAMES if not get_env_text(name)]
     if missing_names:
+        logger.warning("ตั้งค่า SharePoint ไม่ครบ ขาด: %s", ", ".join(missing_names))
         raise SharePointError(
             "ยังไม่ได้ตั้งค่า SharePoint: ไม่พบ " + ", ".join(missing_names)
             + " ในไฟล์ .env — คัดลอก .env.example เป็น .env แล้วกรอกค่าจริง จากนั้นรีสตาร์ทแอป"
         )
 
+    # SHAREPOINT_FOLDER_PATH ไม่บังคับ: ไม่ใส่ (หรือใส่แต่ "/") จะใช้โฟลเดอร์เริ่มต้น
+    folder_path = get_env_text("SHAREPOINT_FOLDER_PATH", DEFAULT_FOLDER_PATH).strip("/") or DEFAULT_FOLDER_PATH
     return {
-        "site_url": os.environ["SHAREPOINT_URL"].strip().rstrip("/"),
-        "client_id": os.environ["SHAREPOINT_CLIENT_ID"].strip(),
-        "client_secret": os.environ["SHAREPOINT_CLIENT_SECRET"].strip(),
-        "folder_path": os.getenv("SHAREPOINT_FOLDER_PATH", DEFAULT_FOLDER_PATH).strip().strip("/")
-        or DEFAULT_FOLDER_PATH,
+        "site_url": get_env_text("SHAREPOINT_URL").rstrip("/"),
+        "client_id": get_env_text("SHAREPOINT_CLIENT_ID"),
+        "client_secret": get_env_text("SHAREPOINT_CLIENT_SECRET"),
+        "folder_path": folder_path,
     }
+
+
+def is_sharepoint_configured() -> bool:
+    """เช็คว่าตั้งค่า SharePoint ใน .env ครบหรือยัง (ไม่โยน Error ใช้เช็คก่อนเปิดฟีเจอร์ได้)
+
+    Returns:
+        True ถ้ามีค่าที่จำเป็นครบทุกตัวใน REQUIRED_SETTING_NAMES
+    """
+    return all(get_env_text(name) for name in REQUIRED_SETTING_NAMES)
 
 
 def build_safe_file_name(file_name: str) -> str:
@@ -108,6 +120,7 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
         SharePointError: ตั้งค่าไม่ครบ / ไฟล์ว่าง / เชื่อมต่อหรืออัปโหลดไม่สำเร็จ (ข้อความไทยพร้อมวิธีแก้)
     """
     if not file_bytes:
+        logger.warning("อัปโหลดไม่สำเร็จ: ไฟล์ '%s' ว่างเปล่า", file_name)
         raise SharePointError("ไฟล์ที่เลือกว่างเปล่า (0 ไบต์): เลือกไฟล์ใหม่แล้วลองอีกครั้ง")
 
     settings = load_sharepoint_settings()
@@ -118,6 +131,7 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
         from office365.runtime.auth.client_credential import ClientCredential
         from office365.sharepoint.client_context import ClientContext
     except ImportError as error:
+        logger.error("ยังไม่ได้ติดตั้งไลบรารี Office365: %s", error)
         raise SharePointError(
             "ยังไม่ได้ติดตั้งไลบรารี SharePoint: รัน pip install -r requirements.txt แล้วรีสตาร์ทแอป"
             f"\n\nรายละเอียดทางเทคนิค: {error}"
@@ -137,12 +151,13 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
         #                 from office365.runtime.auth.user_credential import UserCredential
         # ข้อควรระวัง: บัญชีที่เปิด MFA หรือองค์กรที่ปิด legacy auth จะล็อกอินวิธีนี้ไม่ได้
         # client_context = ClientContext(settings["site_url"]).with_credentials(
-        #     UserCredential(os.environ["SHAREPOINT_USERNAME"], os.environ["SHAREPOINT_PASSWORD"])
+        #     UserCredential(get_env_text("SHAREPOINT_USERNAME"), get_env_text("SHAREPOINT_PASSWORD"))
         # )
         # โฟลเดอร์ปลายทางต้องมีอยู่แล้วบน SharePoint (ใช้ path แบบเทียบจาก root ของ Site)
         target_folder = client_context.web.get_folder_by_server_relative_path(settings["folder_path"])
         target_folder.upload_file(stored_file_name, file_bytes).execute_query()
     except Exception as error:  # noqa: BLE001 — ไลบรารีโยนหลายชนิด error จึงจับรวมแล้วแปลเป็นข้อความไทย
+        logger.error("อัปโหลดขึ้น SharePoint ไม่สำเร็จ (โฟลเดอร์ %s): %s", settings["folder_path"], error, exc_info=True)
         raise SharePointError(
             "อัปโหลดขึ้น SharePoint ไม่สำเร็จ: ตรวจว่า (1) SHAREPOINT_URL ถูกต้อง "
             "(2) Client ID/Secret ถูกต้องและยังไม่หมดอายุ (3) App ได้สิทธิ์เขียนใน Site นี้ "
@@ -150,4 +165,5 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
             f"\n\nรายละเอียดทางเทคนิค: {error}"
         ) from error
 
+    logger.info("อัปโหลดไฟล์ '%s' ขึ้น SharePoint สำเร็จ", stored_file_name)
     return build_file_url(settings["site_url"], settings["folder_path"], stored_file_name)

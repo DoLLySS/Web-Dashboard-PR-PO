@@ -14,6 +14,11 @@ from typing import Any, Iterator, Optional
 
 import streamlit as st
 
+from config.logging_setup import get_logger
+from config.settings import DEFAULT_DB_TIMEOUT_SECONDS, get_env_int
+
+logger = get_logger(__name__)
+
 # ---------------------------------------------------------------------------
 # ค่าคงที่
 # ---------------------------------------------------------------------------
@@ -22,7 +27,8 @@ import streamlit as st
 DB_PATH: Path = Path(__file__).parent / "masterlist.db"
 
 # รอสูงสุดกี่วินาทีถ้าฐานข้อมูลถูกคนอื่นล็อกอยู่ ก่อนจะถือว่า Error
-DB_TIMEOUT_SECONDS: int = 10
+# ปรับได้ผ่าน DB_TIMEOUT_SECONDS ใน .env (ไม่ใส่ = ค่าเริ่มต้นใน config/settings.py)
+DB_TIMEOUT_SECONDS: int = get_env_int("DB_TIMEOUT_SECONDS", DEFAULT_DB_TIMEOUT_SECONDS)
 
 # สถานะใบกำกับภาษี
 STATUS_PENDING: str = "รอใบกำกับภาษี"
@@ -108,6 +114,9 @@ def _show_db_error(action: str, error: Exception) -> None:
         ไม่มีค่าคืน (แสดงผลบนหน้าจอด้วย st.error)
     """
     message = str(error).lower()
+
+    # บันทึกลง logs/app.log พร้อมรายละเอียด Error เต็ม ๆ เพื่อให้ทีม IT ย้อนดูได้ภายหลัง
+    logger.error("%sไม่สำเร็จ: %s", action, error, exc_info=error)
 
     if isinstance(error, sqlite3.IntegrityError):
         hint = "ข้อมูลซ้ำหรือไม่ครบตามเงื่อนไข ให้ตรวจช่องที่จำเป็น (วันที่, ผู้ขาย) แล้วลองใหม่"
@@ -200,6 +209,7 @@ def init_db() -> bool:
             conn.execute(CREATE_TABLE_SQL)
             # ไฟล์ฐานข้อมูลเดิมที่สร้างก่อนมีคอลัมน์ tel/email/contact_name ต้องเพิ่มคอลัมน์ให้ก่อน
             _add_missing_columns(conn)
+            logger.debug("ตรวจ/เพิ่มคอลัมน์ที่ขาดในตาราง transactions เรียบร้อย")
             # index ช่วยให้กรองตามวันที่/สถานะเร็วขึ้นเมื่อข้อมูลเยอะ
             conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)")
             conn.execute(
@@ -294,7 +304,9 @@ def add_transaction(
                     unit_price,
                 ),
             )
-            return cursor.lastrowid
+            new_transaction_id = cursor.lastrowid
+        logger.info("เพิ่มรายการใหม่ id=%s (ผู้ขาย: %s)", new_transaction_id, vendor.strip())
+        return new_transaction_id
     except (sqlite3.Error, OSError, AttributeError) as error:
         _show_db_error("บันทึกข้อมูล", error)
         return None
@@ -441,6 +453,7 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
         # อนุญาตเฉพาะคอลัมน์ในรายการที่กำหนด เพราะชื่อคอลัมน์ใส่ ? ไม่ได้
         invalid = set(fields) - UPDATABLE_COLUMNS
         if invalid:
+            logger.error("แก้ไขรายการ id=%s ถูกปฏิเสธ: ไม่รู้จักคอลัมน์ %s", transaction_id, sorted(invalid))
             st.error(
                 f"❌ แก้ไขข้อมูลไม่สำเร็จ: ไม่รู้จักคอลัมน์ {', '.join(sorted(invalid))} "
                 "(แจ้งทีมพัฒนาให้ตรวจชื่อคอลัมน์ที่ส่งเข้ามา)"
@@ -455,7 +468,10 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
             updated = cursor.rowcount > 0
 
         if not updated:
+            logger.warning("แก้ไขไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
             st.warning(f"⚠️ ไม่พบรายการ id = {transaction_id}")
+        else:
+            logger.info("แก้ไขรายการ id=%s คอลัมน์: %s", transaction_id, ", ".join(sorted(fields)))
         return updated
     except (sqlite3.Error, OSError) as error:
         _show_db_error("แก้ไขข้อมูล", error)
@@ -494,7 +510,10 @@ def delete_transaction(transaction_id: int) -> bool:
             deleted = cursor.rowcount > 0
 
         if not deleted:
+            logger.warning("ลบไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
             st.warning(f"⚠️ ไม่พบรายการ id = {transaction_id}")
+        else:
+            logger.info("ลบรายการ id=%s", transaction_id)
         return deleted
     except (sqlite3.Error, OSError) as error:
         _show_db_error("ลบข้อมูล", error)

@@ -10,7 +10,6 @@
 วิธีเพิ่มกฎค้นหาใหม่: แก้ที่ค่าคงที่ด้านบน (คำนำหน้า / รูปแบบ) ไม่ต้องแก้ logic ในฟังก์ชัน
 """
 
-import logging
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -20,7 +19,10 @@ from typing import Any, BinaryIO, Optional, Union
 import pandas as pd
 import pdfplumber
 
-logger = logging.getLogger(__name__)
+from config.logging_setup import get_logger
+
+# บันทึกลง logs/app.log (ดู config/logging_setup.py)
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: กฎการค้นหา (แก้ที่นี่เมื่อเอกสารของผู้ขายรูปแบบไม่ตรง)
@@ -231,7 +233,7 @@ def extract_text_from_pdf(pdf_source: Union[str, BinaryIO]) -> str:
                 page_texts.append(page.extract_text() or "")
         return "\n".join(page_texts)
     except Exception as error:  # noqa: BLE001 - pdfplumber โยน error หลายชนิด ต้องดักให้หมด
-        logger.warning("อ่านไฟล์ PDF ไม่สำเร็จ: %s", error)
+        logger.warning("อ่านไฟล์ PDF ไม่สำเร็จ: %s", error, exc_info=True)
         return ""
 
 
@@ -291,7 +293,7 @@ def extract_text_from_excel(excel_source: Union[str, BinaryIO]) -> str:
                     text_lines.append(EXCEL_CELL_SEPARATOR.join(non_empty_texts))
         return "\n".join(text_lines)
     except Exception as error:  # noqa: BLE001 - เปิดไฟล์ไม่ได้/ไฟล์เสีย/ขาด library ต้องไม่ทำให้แอปพัง
-        logger.warning("อ่านไฟล์ Excel ไม่สำเร็จ: %s", error)
+        logger.warning("อ่านไฟล์ Excel ไม่สำเร็จ: %s", error, exc_info=True)
         return ""
 
 
@@ -692,7 +694,13 @@ def extract_fields_from_file(file_source: Any, file_name: str) -> ExtractedField
     """
     file_extension = Path(file_name or "").suffix.lower()
     if file_extension == ".pdf":
-        return extract_fields_from_pdf(file_source)
-    if file_extension in EXCEL_EXTENSIONS:
-        return extract_fields_from_excel(file_source)
-    return ExtractedFields()
+        extracted_fields = extract_fields_from_pdf(file_source)
+    elif file_extension in EXCEL_EXTENSIONS:
+        extracted_fields = extract_fields_from_excel(file_source)
+    else:
+        logger.info("ไม่ดึงข้อมูลอัตโนมัติ: ไม่รองรับนามสกุลไฟล์ '%s'", file_extension)
+        return ExtractedFields()
+
+    if extracted_fields.missing_field_labels:
+        logger.info("ดึงข้อมูลจาก '%s' ได้ไม่ครบ: ขาด %s", file_name, ", ".join(extracted_fields.missing_field_labels))
+    return extracted_fields

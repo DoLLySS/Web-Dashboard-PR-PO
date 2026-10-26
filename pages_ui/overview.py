@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import pandas as pd
 import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 from config.constants import CATEGORY_OPTIONS
 from data.database import (
@@ -298,7 +299,7 @@ def validate_form_input(
     return problem_messages
 
 
-def save_document_and_get_path(uploaded_document) -> Optional[str]:
+def save_document_and_get_path(uploaded_document: Optional[UploadedFile]) -> Optional[str]:
     """บันทึกไฟล์ที่ผู้ใช้เลือกลง local_uploads/ แล้วคืนที่อยู่ไฟล์
 
     Args:
@@ -805,7 +806,7 @@ def render_table_card(
 # ---------------------------------------------------------------------------
 
 
-def _prefill_form_from_purchase_document(purchase_document, form_counter: int) -> str:
+def _prefill_form_from_purchase_document(purchase_document: UploadedFile, form_counter: int) -> str:
     """ดึง TaxID / Vendor จากไฟล์ PO แล้วเติมลงช่องของฟอร์ม
 
     ต้องเรียกก่อนที่ฟอร์มจะถูกวาดในรอบเดียวกัน (ดูลำดับใน render()) เพราะ Streamlit

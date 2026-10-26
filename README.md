@@ -120,6 +120,8 @@ Project ฝึกงาน/
 ├── app.py                 # ตัวควบคุมหลัก (Router): Sidebar + Date Filter + เรียกหน้าที่เลือก
 ├── config/
 │   ├── constants.py       # ค่าคงที่ที่ใช้หลายหน้า (หมวดหมู่)
+│   ├── settings.py        # อ่านค่าจาก .env พร้อมค่าเริ่มต้น (ไม่ใส่ค่าก็ไม่แครช)
+│   ├── logging_setup.py   # ตั้งค่า Logging -> logs/app.log (ใช้ get_logger(__name__))
 │   └── styles.py          # ธีมกลางของทั้งระบบ: ฟอนต์ สี ความมน เงา + CSS (ฉีดจาก app.py)
 ├── logs/                  # เตรียมไว้เก็บไฟล์ Log (ไฟล์ในนี้ไม่ขึ้น Git)
 ├── assets/                # รูปโลโก้ (logo.png) ไอคอน หรือ CSS
