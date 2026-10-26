@@ -44,6 +44,18 @@ SHAREPOINT_FOLDER_PATH=Shared Documents/PR-PO   # ไม่บังคับ
 2. อัปโหลดไฟล์ทดสอบ 1 ไฟล์ → ตรวจว่าไฟล์ขึ้นในโฟลเดอร์บน SharePoint และไอคอนไฟล์ในตารางเปิดลิงก์ได้
 3. ถ้า Error: ข้อความไทยบนหน้าจอบอกสิ่งที่ควรตรวจ และดูรายละเอียดใน `logs/app.log`
 
+## 2.5 ภารกิจหลักรอบถัดไป: AgGrid + Typography
+
+1. ยกเลิกตาราง Streamlit พื้นฐาน และติดตั้ง `streamlit-aggrid` สำหรับหน้า Overview และ Dashboard
+2. ปรับแต่ง GridOptions ขยายขนาดตัวอักษรและเพิ่มระยะห่าง (Padding) ให้ตารางอ่านง่ายและดูเป็น Enterprise
+3. อัปเกรด Typography ฝัง Global CSS ขยายขนาดฟอนต์ของ Popup, เมนู และปุ่มต่างๆ ให้สมมาตรกับหน้าจอใหญ่
+
+สถานะตอน save point: โค้ดร่างของทั้ง 3 ข้อมีอยู่แล้ว (`ui_grid.py` เป็นโมดูลตารางกลาง, `requirements.txt` ปักเวอร์ชัน `streamlit-aggrid`, ฟอนต์ตั้งใน `.streamlit/config.toml` และ `config/styles.py`)
+แต่ตอนนี้ **ทดสอบกับข้อมูลสาธิตเท่านั้น** ให้ตรวจซ้ำกับข้อมูลจริงก่อนถือว่าเสร็จ
+- หลัง pull ต้องรัน `pip install -r requirements.txt`
+- ที่จอประมาณ 1366px ถ้าเปิด sidebar จะมีแถบเลื่อนแนวนอนเล็กน้อย; คอลัมน์ Vendor/Item/Tel/PR No. ถูกตัดด้วย "…" บนจอแคบ (ชี้เมาส์ดูข้อความเต็ม)
+- ปรับความกว้างคอลัมน์ได้ที่ `TABLE_COLUMN_WIDTHS` ใน `pages_ui/overview.py` และธีมที่ `ui_grid.py`
+
 ## 3. ข้อควรระวัง / งานค้างที่รู้อยู่แล้ว
 
 - **ยังไม่เคยทดสอบกับ SharePoint จริง** อาจต้องปรับเล็กน้อยตอนต่อจริง

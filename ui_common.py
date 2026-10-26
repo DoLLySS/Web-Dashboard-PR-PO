@@ -15,6 +15,7 @@ import streamlit as st
 from config.constants import EQUIPMENT_CATEGORIES
 from data.database import get_category_counts
 from config.styles import PALETTE, RADIUS_PX, SHADOW
+from ui_grid import render_readonly_grid
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: ธีมสีและความมน (แก้ที่นี่)
@@ -101,12 +102,13 @@ def build_css(extra_rules: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_equipment_table(start_date: date, end_date: date) -> None:
+def render_equipment_table(start_date: date, end_date: date, key_prefix: str = "overview") -> None:
     """แสดงตาราง Equipment / Qty. = จำนวนรายการในแต่ละหมวด (Hardware, Software, Network, Service)
 
     Args:
         start_date: วันที่เริ่มต้นจาก Date Filter
         end_date: วันที่สิ้นสุดจาก Date Filter
+        key_prefix: คำนำหน้า key ของตาราง (ต้องต่างกันในแต่ละหน้า)
     """
     quantity_by_category = {
         row["category"]: row["quantity"]
@@ -119,4 +121,9 @@ def render_equipment_table(start_date: date, end_date: date) -> None:
             "Qty.": [quantity_by_category.get(name, 0) for name in EQUIPMENT_CATEGORIES],
         }
     )
-    st.dataframe(equipment_table, hide_index=True, width="stretch")
+    # เรียกได้ทั้งหน้า Overview และ Dashboard จึงต้องแยก key ด้วย key_prefix
+    render_readonly_grid(
+        equipment_table,
+        key=f"{key_prefix}_equipment",
+        right_aligned_columns=("Qty.",),
+    )

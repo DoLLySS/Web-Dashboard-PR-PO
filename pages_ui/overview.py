@@ -41,7 +41,9 @@ from utils.local_storage import LocalStorageError, save_document_locally
 # SharePoint ปิดไว้ — เตรียมไว้สำหรับเชื่อมต่อในอนาคต (เปิดใช้เมื่อได้สิทธิ์และตั้งค่า .env แล้ว)
 # from utils.sharepoint_api import SharePointError, upload_document_to_sharepoint
 from utils.text_extractor import extract_fields_from_file
+from st_aggrid import JsCode
 from ui_common import build_css, render_equipment_table
+from ui_grid import build_grid_options, render_readonly_grid, show_grid
 
 # บันทึกลง logs/app.log
 logger = get_logger(__name__)
@@ -91,29 +93,26 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "sharepoint_url": "ไฟล์เชื่อม SharePoint: กดไอคอนเพื่อเปิดในแท็บใหม่",
 }
 
-# ความกว้างของแต่ละคอลัมน์ (พิกเซล) ปรับให้ตารางทั้ง 13 คอลัมน์พอดีหน้าจอ ไม่มีแถบเลื่อนแนวนอน
-# (วัดจริงบน Chrome: จอ >= 1536px พอดีทั้งที่เปิด Sidebar อยู่, จอ 1280-1366px ต้องพับ Sidebar ก่อน)
-# - คอลัมน์ข้อมูลสั้น/รูปแบบตายตัว ล็อกความกว้างแคบ ๆ
-# - None = ไม่ล็อก ให้คอลัมน์นั้นยืด/หดตามพื้นที่ที่เหลือ (ตอนนี้คือ Description) ถ้าล็อกครบทุกคอลัมน์ จอกว้างจะเหลือที่ว่างท้ายตาราง
-# - ข้อความที่ยาวกว่าช่องจะถูกตัดท้าย (st.data_editor วาดด้วย canvas ไม่มีการปัดบรรทัด) ลากขอบหัวคอลัมน์เพื่อขยายชั่วคราวได้
-# - ถ้าเพิ่มคอลัมน์ใหม่ ระวังผลรวมความกว้างเกินพื้นที่: ต้องตรวจซ้ำว่ายังไม่มีแถบเลื่อน
+# ความกว้างที่ต้องการของแต่ละคอลัมน์ (พิกเซล) ตารางจะปรับคอลัมน์ให้พอดีหน้าจอเอง (fit to window) ไม่มีแถบเลื่อนแนวนอน
+# - ค่าตัวเลข = ความกว้างที่ต้องการ (px) ตารางย่อ/ขยายตามสัดส่วนให้พอดีจอ (ดู ui_grid.GRID_MIN_WIDTH_RATIO_*)
+# - None = คอลัมน์ข้อความยาว (ตอนนี้คือ Description) กว้างที่สุด ย่อได้มากสุดเมื่อจอแคบ
+# - ถ้าเพิ่มคอลัมน์ใหม่ ให้เพิ่มความกว้างขั้นต่ำที่นี่ด้วย (ผลรวมมากเกินจอ ตารางจะมีแถบเลื่อนแนวนอน)
 TABLE_COLUMN_WIDTHS: dict[str, "int | str | None"] = {
-    "date": 80, "vendor": 118, "category": 66, "total_price": 74, "invoice_status": 96,
-    "tel": 90, "tax_id": 104, "pr_run_no": 98, "pr_request_date": 78, "qt_no": 82,
-    "description": None, "unit_price": 90, "sharepoint_url": 36,
+    "date": 118, "vendor": 86, "category": 86, "total_price": 104, "invoice_status": 138,
+    "tel": 106, "tax_id": 142, "pr_run_no": 110, "pr_request_date": 118, "qt_no": 74,
+    "description": None, "unit_price": 104, "sharepoint_url": 44,
 }
+# คอลัมน์ข้อความที่ย่อได้มากเมื่อจอแคบ (ข้อความยาวถูกตัดด้วย ... ชี้เมาส์ดูเต็มได้) ส่วนคอลัมน์อื่นพยายามไม่ย่อ
+SHRINKABLE_TABLE_COLUMNS: tuple[str, ...] = ("vendor", "category", "tel", "pr_run_no")
 
 # ข้อความสถานะที่แสดงในตาราง (แก้ข้อความ/ไอคอนที่นี่)
 STATUS_LABEL_COMPLETED: str = "✅ Completed"  # ได้รับใบกำกับภาษีแล้ว
 STATUS_LABEL_PENDING: str = "⏳ Pending"  # รอใบกำกับภาษี และยังไม่เกินกำหนด
 STATUS_LABEL_OVERDUE: str = "🔴 Overdue"  # รอใบกำกับภาษี และค้างเกิน OVERDUE_DAYS_LIMIT วัน
 
-# คอลัมน์ที่ผู้ใช้แก้ไขได้โดยตรงในตาราง (ชื่อคอลัมน์ใน DB) คอลัมน์อื่นล็อกไว้ (ลบแถวทำได้เสมอ)
-# ตอนนี้เปิดแก้เฉพาะสถานะ เพื่อให้แถวสลับสีแสดงครบ: Streamlit ไม่ใส่สีพื้นให้เซลล์ที่แก้ไขได้ (ข้อจำกัดของ st.data_editor)
+# คอลัมน์ที่ผู้ใช้แก้ไขได้โดยตรงในตาราง (ดับเบิลคลิกที่ช่อง) คอลัมน์อื่นล็อกไว้ (ลบแถวทำได้เสมอ)
 # ถ้าอยากเปิดให้แก้ date / vendor / category / total_price ด้วย แค่เพิ่มชื่อคอลัมน์ในรายการนี้
-# (ระบบตรวจค่าและบันทึกให้ใน build_update_fields อยู่แล้ว) แต่ช่องที่แก้ได้จะไม่มีสีสลับแถว
-# ตอนนี้เปิดแก้คอลัมน์ Master-List ด้วย (tel, tax_id, pr_run_no, pr_request_date, qt_no, description, unit_price)
-# ผลข้างเคียง: ช่องที่แก้ได้ไม่มีสีสลับแถว ถ้าอยากได้สีสลับกลับมา ให้ลบชื่อคอลัมน์ออกจากรายการนี้
+# (ระบบตรวจค่าและบันทึกให้ใน build_update_fields อยู่แล้ว)
 # ถ้าเพิ่มคอลัมน์ใหม่ในตาราง: เพิ่มชื่อที่นี่ + เพิ่มวิธีตรวจค่าใน build_update_fields
 EDITABLE_TABLE_COLUMNS: tuple[str, ...] = (
     "invoice_status",
@@ -144,8 +143,31 @@ STATUS_LABEL_TO_DB: dict[str, str] = {
 # ไอคอนที่แสดงในคอลัมน์ไฟล์ กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่ (รายการที่ไม่มีลิงก์จะเว้นว่าง)
 FILE_LINK_ICON: str = "📁"
 
-# สีแถวสลับในตาราง (zebra) ตามดีไซน์
-TABLE_ZEBRA_COLOR: str = "#fff1cf"
+# คอลัมน์ลำดับแถว (ซ่อนในตาราง) ใช้จับคู่แถวที่ผู้ใช้แก้ไข/เลือก กลับไปหารายการในฐานข้อมูล
+ROW_POSITION_COLUMN: str = "_pos"
+
+# ตัวแสดงไอคอนลิงก์ไฟล์ในเซลล์ (JavaScript ของ AgGrid) สร้างเป็น element ทีละชิ้น ไม่ต่อสตริง HTML เพื่อกัน XSS
+# รับเฉพาะลิงก์ http/https เท่านั้น (ตรวจซ้ำอีกชั้นหลัง _valid_link_or_none ฝั่ง Python); FILE_ICON ถูกแทนด้วย FILE_LINK_ICON
+FILE_LINK_RENDERER_JS: str = r"""
+class FileLinkRenderer {
+    init(params) {
+        this.eGui = document.createElement('span');
+        if (params.value && /^https?:\/\//i.test(params.value)) {
+            const link = document.createElement('a');
+            link.href = params.value;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.title = 'เปิดไฟล์';
+            link.textContent = 'FILE_ICON';
+            this.eGui.appendChild(link);
+        }
+    }
+    getGui() { return this.eGui; }
+}
+"""
+
+# คอลัมน์วันที่ในตาราง (เก็บเป็นข้อความ "YYYY-MM-DD" แสดงเป็น DD/MM/YYYY) สีแถวสลับ/ฟอนต์ ตั้งที่ ui_grid.py
+GRID_DATE_COLUMNS: tuple[str, ...] = ("date", "pr_request_date")
 
 # ตัวเลือก "ทั้งหมด" ของ dropdown กรอง Item / Vendor
 # (เป็นตัวเลือกแรกของ dropdown จึงแสดงข้อความตามดีไซน์ว่า "Item (ประเภท)" / "Vendor" และหมายถึงไม่กรอง)
@@ -247,18 +269,32 @@ PAGE_CSS_RULES: str = """
 .st-key-entry_form_card .card-title { font-size: 18px !important; margin: 0 0 4px 0 !important; }
 .st-key-entry_form_card [data-testid="stForm"] { padding: 12px !important; }
 
-/* 1.4) ตัวอักษรใน Popup ให้ใหญ่ขึ้นอ่านง่าย (ทั้งขั้นที่ 1 และ 2): ป้ายชื่อช่อง 15px, ข้อความในช่องกรอก 14px
-        ถ้าอยากปรับขนาดอีก แก้ตัวเลข font-size ในกฎนี้ที่เดียว */
+/* 1.4) Typography ของ Popup (ทั้งขั้นที่ 1 และ 2): ใหญ่ขึ้นอย่างเห็นได้ชัด อ่านง่าย
+        ถ้าอยากปรับขนาดอีก แก้ตัวเลข font-size ในกฎนี้ที่เดียว (ไม่แตะ span เพื่อไม่ให้ไอคอนของ Streamlit เพี้ยน) */
+/* ข้อความทั่วไปใน Popup: 16px */
+div[data-testid="stDialog"] [data-testid="stMarkdownContainer"] p { font-size: 16px; line-height: 1.5; }
+/* ป้ายชื่อช่องกรอก: 16px ตัวหนา สีเข้ม */
 div[data-testid="stDialog"] label,
-div[data-testid="stDialog"] label p { font-size: 15px !important; font-weight: 500 !important; }
+div[data-testid="stDialog"] label p,
+div[data-testid="stDialog"] .field-label { font-size: 16px !important; font-weight: 600 !important; color: #1f2937 !important; }
+/* ข้อความที่พิมพ์ในช่องกรอก / กล่องเลือก: 16px */
 div[data-testid="stDialog"] input,
-div[data-testid="stDialog"] [data-baseweb="select"] { font-size: 14px !important; }
-div[data-testid="stDialog"] .field-label { font-size: 15px !important; font-weight: 500 !important; }
-/* หัวข้อคำถามขั้นที่ 1 (####) ไม่ให้ใหญ่ข่มปุ่มตัวเลือก */
-div[data-testid="stDialog"] h4 { font-size: 16px !important; font-weight: 600 !important; padding: 0 0 4px 0 !important; }
-/* เว้นช่องไฟระหว่างฟิลด์ในฟอร์มขั้นที่ 2 ไม่ให้เบียดเมื่อตัวอักษรใหญ่ขึ้น */
-.st-key-entry_form_card [data-testid="stForm"] [data-testid="stVerticalBlock"] { gap: 0.85rem !important; }
-.step-subtitle { font-size: 14px; color: #666; margin: 0 0 8px 0; }  /* ข้อความ "ขั้นตอนที่ X / 2" */
+div[data-testid="stDialog"] textarea,
+div[data-testid="stDialog"] [data-baseweb="select"] { font-size: 16px !important; }
+/* ปุ่มตัวเลือกขั้นที่ 1 (segmented control / pills): ฟอนต์ 15px และ padding อวบขึ้น */
+div[data-testid="stDialog"] [data-testid="stButtonGroup"] button { font-size: 15px !important; padding: 10px 16px !important; min-height: 44px; }
+div[data-testid="stDialog"] [data-testid="stButtonGroup"] button p { font-size: 15px !important; }
+/* ปุ่ม "ถัดไป" / "บันทึก" / "ย้อนกลับ": 16px ตัวหนา */
+div[data-testid="stDialog"] [data-testid="stButton"] button,
+div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button { font-size: 16px !important; font-weight: 700 !important; min-height: 46px; }
+div[data-testid="stDialog"] [data-testid="stButton"] button p,
+div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button p { font-size: 16px !important; font-weight: 700 !important; }
+/* หัวข้อคำถามขั้นที่ 1 (####): 18px ให้เด่นกว่าปุ่มตัวเลือก */
+div[data-testid="stDialog"] h4 { font-size: 18px !important; font-weight: 700 !important; padding: 0 0 6px 0 !important; }
+/* เว้นช่องไฟระหว่างฟิลด์ให้โปร่ง ไม่เบียดเมื่อตัวอักษรใหญ่ขึ้น */
+.st-key-entry_form_card [data-testid="stForm"] [data-testid="stVerticalBlock"] { gap: 1.1rem !important; }
+div[data-testid="stDialog"] [data-testid="stVerticalBlock"] { gap: 0.9rem; }
+.step-subtitle { font-size: 15px !important; color: #666; margin: 0 0 8px 0; }  /* ข้อความ "ขั้นตอนที่ X / 2" */
 
 /* 2) กล่องขาวครอบตาราง: ตัดมุมตารางให้มน 8px + เส้นขอบบาง */
 .st-key-table_inner [data-testid="stDataFrame"] {
@@ -434,12 +470,20 @@ def render_overdue_alert() -> None:
         f"⚠️ มีใบกำกับภาษีค้างเกิน {OVERDUE_DAYS_LIMIT} วัน จำนวน "
         f"{len(overdue_transactions)} รายการ กรุณาติดตามจากผู้ขาย"
     )
-    with st.expander("ดูรายการที่ค้าง"):
-        overdue_table = pd.DataFrame(overdue_transactions)[
-            ["id", "date", "vendor", "po_no", "total_price", "days_pending"]
-        ]
-        overdue_table.columns = ["รหัส", "วันที่", "ผู้ขาย", "เลขที่ PO", "ราคารวม (บาท)", "ค้างมาแล้ว (วัน)"]
-        st.dataframe(overdue_table, hide_index=True, width="stretch")
+    # on_change="rerun" + เช็ค .open: วาดตารางเมื่อกางออกแล้วเท่านั้น (ตาราง AgGrid ที่ถูกสร้างตอนพับอยู่จะกว้าง 0 แล้วแสดงไม่ได้)
+    overdue_expander = st.expander("ดูรายการที่ค้าง", on_change="rerun")
+    if overdue_expander.open:
+        with overdue_expander:
+            overdue_table = pd.DataFrame(overdue_transactions)[
+                ["id", "date", "vendor", "po_no", "total_price", "days_pending"]
+            ]
+            overdue_table.columns = ["รหัส", "วันที่", "ผู้ขาย", "เลขที่ PO", "ราคารวม (บาท)", "ค้างมาแล้ว (วัน)"]
+            render_readonly_grid(
+                overdue_table,
+                key="overdue_grid",
+                money_columns=("ราคารวม (บาท)",),
+                right_aligned_columns=("รหัส", "ค้างมาแล้ว (วัน)"),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +565,7 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url")) or "",
             }
         )
-    # หมายเหตุ: ตารางนี้ใช้ index ลำดับ 0,1,2,... (ไม่ใช่ id) เพราะ st.data_editor แบบ dynamic ซ่อน index ไม่ได้
+    # หมายเหตุ: ตารางนี้ใช้ index ลำดับ 0,1,2,... (ไม่ใช่ id)
     # ถ้า index ไม่ใช่ลำดับ ส่วนการรู้ว่าแถวที่ n คือรายการ id อะไร ให้ดูจากลิสต์ id ที่เรียงเหมือนกัน
     # (ดู transaction_ids ใน render_table_card / apply_table_edits)
     return pd.DataFrame(display_rows, columns=list(TABLE_COLUMNS.keys())).rename(columns=TABLE_COLUMNS)
@@ -533,7 +577,7 @@ def build_update_fields(
     """แปลงค่าที่ผู้ใช้แก้ในตาราง (หนึ่งแถว) เป็นฟิลด์ที่จะอัปเดตลงฐานข้อมูล พร้อมตรวจความถูกต้อง
 
     Args:
-        changes: ค่าที่แก้ {หัวคอลัมน์: ค่าใหม่} (จาก edited_rows ของ st.data_editor)
+        changes: ค่าที่แก้ {หัวคอลัมน์: ค่าใหม่} (จาก collect_grid_changes)
         original_row: แถวเดิมก่อนแก้ (ใช้ดูสถานะเดิม)
 
     Returns:
@@ -552,7 +596,7 @@ def build_update_fields(
             continue  # คอลัมน์ที่ล็อกไว้ ไม่รับค่า
 
         if column == "date":
-            # ค่าวันที่จาก data_editor อาจมาเป็นข้อความ ISO ("2026-10-24") หรืออ็อบเจกต์ date
+            # ค่าวันที่จากตารางอาจมาเป็นข้อความ ISO ("2026-10-24") หรืออ็อบเจกต์ date
             if not new_value:
                 raise ValueError("วันที่ห้ามว่าง")
             fields["date"] = str(new_value)[:10] if not isinstance(new_value, date) else new_value.isoformat()
@@ -583,11 +627,15 @@ def build_update_fields(
                 raise ValueError(f"Tax ID ต้องเป็นตัวเลข {TAX_ID_LENGTH} หลัก")
             fields["tax_id"] = tax_id_value or None
         elif column == "pr_request_date":
-            fields["pr_request_date"] = (
-                None if not new_value
-                else new_value.isoformat() if isinstance(new_value, date)
-                else str(new_value)[:10]
-            )
+            if not new_value:
+                fields["pr_request_date"] = None
+            elif isinstance(new_value, date):
+                fields["pr_request_date"] = new_value.isoformat()
+            else:
+                try:
+                    fields["pr_request_date"] = date.fromisoformat(str(new_value)[:10]).isoformat()
+                except ValueError:
+                    raise ValueError("วันที่ PR ต้องเป็นรูปแบบ ปปปป-ดด-วว เช่น 2026-10-24") from None
         elif column == "unit_price":
             if new_value in (None, ""):
                 fields["unit_price"] = None
@@ -614,9 +662,9 @@ def build_update_fields(
 def apply_table_edits(
     display_table: pd.DataFrame, transaction_ids: list[int], editor_state: dict[str, Any]
 ) -> list[tuple[str, str]]:
-    """ซิงก์การแก้ไข/ลบในตาราง (st.data_editor) กลับไปที่ตาราง transactions ในฐานข้อมูลทันที
+    """ซิงก์การแก้ไข/ลบในตาราง (AgGrid) กลับไปที่ตาราง transactions ในฐานข้อมูลทันที
 
-    ใช้ editor_state ซึ่งมี 3 ส่วนจาก st.session_state[key] ของ data_editor:
+    ใช้ editor_state ซึ่งมี 3 ส่วน (สร้างจากตาราง AgGrid ใน render_table_card):
       - edited_rows  : {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}}  -> อัปเดตด้วย update_transaction
       - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบด้วย delete_transaction
       - added_rows   : แถวที่ผู้ใช้กดเพิ่มในตาราง           -> ไม่รับ (ให้ใช้ฟอร์ม "กรอก Form" แทน)
@@ -625,7 +673,7 @@ def apply_table_edits(
     Args:
         display_table: ตารางที่แสดงอยู่
         transaction_ids: id ของรายการในฐานข้อมูล เรียงเหมือนแถวของ display_table (แถวที่ n = transaction_ids[n])
-        editor_state: ค่าสถานะของ data_editor (dict ที่มีคีย์ edited_rows / deleted_rows / added_rows)
+        editor_state: ค่าสถานะการแก้ไขของตาราง (dict ที่มีคีย์ edited_rows / deleted_rows / added_rows)
 
     Returns:
         list ของ (ระดับข้อความ "success" / "error" / "info", ข้อความภาษาไทย) สำหรับแจ้งผู้ใช้
@@ -697,11 +745,124 @@ def apply_table_edits(
     return messages
 
 
-def _zebra_styles(table: pd.DataFrame) -> pd.DataFrame:
-    """สร้างสไตล์แถวสลับสี (แถวที่ 1, 3, 5 ... ใส่สีพื้น) สำหรับ DataFrame.style.apply"""
-    styles = pd.DataFrame("", index=table.index, columns=table.columns)
-    styles.iloc[::2] = f"background-color: {TABLE_ZEBRA_COLOR}"
-    return styles
+def build_grid_table(display_table: pd.DataFrame) -> pd.DataFrame:
+    """แปลงตารางแสดงผล (หัวคอลัมน์เป็นป้ายไทย/อังกฤษ) เป็นตารางสำหรับ AgGrid (ชื่อคอลัมน์ = ชื่อใน DB)
+
+    ต่างจาก display_table 3 อย่าง: ชื่อคอลัมน์เป็นชื่อใน DB, วันที่เป็นข้อความ "YYYY-MM-DD" (ไม่มี = ""),
+    และมีคอลัมน์ลำดับแถว ROW_POSITION_COLUMN (ใช้จับคู่แถวตอนแก้ไข/ลบ แม้ผู้ใช้เรียงลำดับหรือกรองตาราง)
+
+    Args:
+        display_table: ตารางจาก build_table_for_display
+
+    Returns:
+        DataFrame พร้อมส่งให้ AgGrid
+    """
+    label_to_column = {label: column for column, label in TABLE_COLUMNS.items()}
+    grid_table = display_table.rename(columns=label_to_column).reset_index(drop=True)
+    for date_column in GRID_DATE_COLUMNS:
+        grid_table[date_column] = grid_table[date_column].map(
+            lambda value: value.isoformat() if isinstance(value, date) else ""
+        )
+    grid_table["unit_price"] = pd.to_numeric(grid_table["unit_price"], errors="coerce")  # ไม่มีราคา = ช่องว่าง
+    grid_table.insert(0, ROW_POSITION_COLUMN, range(len(grid_table)))
+    return grid_table
+
+
+def build_transaction_grid_options(grid_table: pd.DataFrame) -> dict[str, Any]:
+    """ตั้งค่าตาราง Master-List: คอลัมน์ไหนแก้ได้ / ชนิดข้อมูล / dropdown สถานะ / ไอคอนลิงก์ไฟล์
+
+    ถ้าเพิ่มคอลัมน์ใหม่ในตาราง: เพิ่มชื่อใน TABLE_COLUMNS แล้วกำหนดชนิดตรงนี้ (เงิน -> money_columns, วันที่ -> GRID_DATE_COLUMNS)
+
+    Args:
+        grid_table: ตารางจาก build_grid_table
+
+    Returns:
+        gridOptions สำหรับ show_grid
+    """
+    extra_column_options: dict[str, dict[str, Any]] = {
+        # คอลัมน์สถานะ: ดับเบิลคลิกแล้วเลือกจาก dropdown
+        "invoice_status": {"cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": STATUS_EDITOR_OPTIONS}},
+        "unit_price": {"cellEditor": "agNumberCellEditor", "cellEditorParams": {"min": 0}},
+        # คอลัมน์ไฟล์: แสดงเป็นไอคอน กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่ (ดู FILE_LINK_RENDERER_JS)
+        "sharepoint_url": {
+            "cellRenderer": JsCode(FILE_LINK_RENDERER_JS.replace("FILE_ICON", FILE_LINK_ICON)),
+            "sortable": False,
+            "filter": False,
+        },
+    }
+    return build_grid_options(
+        grid_table,
+        header_names=TABLE_COLUMNS,
+        column_widths=TABLE_COLUMN_WIDTHS,
+        shrinkable_columns=SHRINKABLE_TABLE_COLUMNS,
+        editable_columns=EDITABLE_TABLE_COLUMNS,
+        money_columns=("total_price", "unit_price"),
+        date_columns=GRID_DATE_COLUMNS,
+        hidden_columns=(ROW_POSITION_COLUMN,),
+        selectable=True,
+        paginated=True,
+        filterable=True,
+        extra_column_options=extra_column_options,
+    )
+
+
+def _normalize_cell_value(value: Any) -> Any:
+    """ทำให้ค่าในเซลล์เทียบกันได้: ว่าง / NaN / None ถือเป็น None, ข้อความตัดช่องว่างหัวท้าย"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+def collect_grid_changes(original_table: pd.DataFrame, grid_response: Any) -> dict[int, dict[str, Any]]:
+    """เทียบตารางที่ AgGrid ส่งกลับมากับตารางเดิม เพื่อหาเซลล์ที่ผู้ใช้แก้ไข
+
+    Args:
+        original_table: ตารางเดิมที่ส่งให้ AgGrid (จาก build_grid_table)
+        grid_response: ผลจาก show_grid (None ถ้าตารางวาดไม่สำเร็จ หรือยังไม่ส่งค่ากลับ)
+
+    Returns:
+        {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}} รูปแบบ edited_rows (ส่งต่อให้ apply_table_edits ได้เลย)
+    """
+    returned_table = getattr(grid_response, "data", None)
+    if returned_table is None or len(returned_table) == 0 or ROW_POSITION_COLUMN not in returned_table.columns:
+        return {}
+
+    returned_by_position = returned_table.drop_duplicates(ROW_POSITION_COLUMN).set_index(
+        returned_table.drop_duplicates(ROW_POSITION_COLUMN)[ROW_POSITION_COLUMN].astype(int)
+    )
+    changes_by_position: dict[int, dict[str, Any]] = {}
+    for _, original_row in original_table.iterrows():
+        position = int(original_row[ROW_POSITION_COLUMN])
+        if position not in returned_by_position.index:
+            continue
+        row_changes: dict[str, Any] = {}
+        for column in EDITABLE_TABLE_COLUMNS:
+            original_value = _normalize_cell_value(original_row[column])
+            new_value = _normalize_cell_value(returned_by_position.at[position, column])
+            if original_value != new_value:
+                row_changes[TABLE_COLUMNS[column]] = new_value
+        if row_changes:
+            changes_by_position[position] = row_changes
+    return changes_by_position
+
+
+def get_selected_positions(grid_response: Any) -> list[int]:
+    """อ่านตำแหน่งแถวที่ผู้ใช้ติ๊กเลือกในตาราง (ใช้กับปุ่มลบ)
+
+    Args:
+        grid_response: ผลจาก show_grid (None = ไม่มีแถวที่เลือก)
+
+    Returns:
+        ตำแหน่งแถวตาม ROW_POSITION_COLUMN (ว่างถ้าไม่ได้เลือก)
+    """
+    selected_rows = getattr(grid_response, "selected_rows", None)
+    if selected_rows is None or len(selected_rows) == 0:
+        return []
+    # selected_rows อาจเป็น DataFrame หรือ list ของ dict ตามเวอร์ชันของไลบรารี รองรับทั้งสองแบบ
+    records = selected_rows.to_dict("records") if isinstance(selected_rows, pd.DataFrame) else list(selected_rows)
+    return sorted({int(record[ROW_POSITION_COLUMN]) for record in records if record.get(ROW_POSITION_COLUMN) is not None})
 
 
 def render_table_card(
@@ -761,94 +922,46 @@ def render_table_card(
             summary_column.metric("Total Price (บาท)", f"{total_price:,.2f}")
             count_column.metric("จำนวนรายการ", f"{len(display_table):,}")
 
-            # ตารางแบบแก้ไข/ลบได้ (CRUD): คลิกช่องเพื่อแก้ไขค่า / เลือกแถวแล้วกดไอคอนถังขยะหรือปุ่ม Delete เพื่อลบ
+            # ตาราง AgGrid แบบแก้ไข/ลบได้ (CRUD): ดับเบิลคลิกช่องเพื่อแก้ไขค่า / ติ๊กเลือกแถวแล้วกดปุ่ม "ลบ" เพื่อลบ
             # ทุกการแก้ไขหรือลบจะถูกซิงก์ลงฐานข้อมูลทันที (ดู apply_table_edits)
-            status_label = TABLE_COLUMNS["invoice_status"]
             editor_version = st.session_state.setdefault(SESSION_KEY_EDITOR_VERSION, 0)
-            editor_key = f"transaction_editor_{editor_version}"  # เปลี่ยนเลขเมื่อบันทึกแล้ว เพื่อล้างสถานะการแก้ไขเดิม
-            # ตัวเลือกหมวดหมู่: "-" (ไม่ระบุ) + หมวดมาตรฐาน + หมวดอื่นที่มีอยู่ในข้อมูลแล้ว
-            category_options = [NO_CATEGORY_LABEL, *CATEGORY_OPTIONS]
-            category_options += sorted(set(display_table[TABLE_COLUMNS["category"]]) - set(category_options))
+            transaction_ids = [t["id"] for t in visible_transactions]  # แถวที่ n ในตาราง = transaction_ids[n]
 
-            st.data_editor(
-                display_table.style.apply(_zebra_styles, axis=None)  # แถวสลับสี
-                .format(
-                    {TABLE_COLUMNS["total_price"]: "{:,.2f}"},  # ราคา: มีคอมม่า ทศนิยม 2 ตำแหน่ง
-                    na_rep="",  # ช่องที่ไม่มีค่า (เช่น ราคาสุทธิ / วันที่ PR) แสดงเป็นช่องว่าง
-                ),
-                key=editor_key,
-                hide_index=True,
-                width="stretch",
-                # dynamic = อนุญาตให้ลบแถวได้ (Streamlit ไม่มีโหมด "ลบอย่างเดียว" จึงมีปุ่มเพิ่มแถวมาด้วย
-                # แต่แถวที่เพิ่มจะถูกยกเลิกและแจ้งให้ใช้ฟอร์มแทน)
-                num_rows="dynamic",
-                # ล็อกคอลัมน์ที่ไม่อยู่ใน EDITABLE_TABLE_COLUMNS (ลิงก์ไฟล์ใช้แก้ผ่านฟอร์ม)
-                disabled=[label for column, label in TABLE_COLUMNS.items() if column not in EDITABLE_TABLE_COLUMNS],
-                column_config={
-                    # ความกว้างแต่ละคอลัมน์ (พิกเซล หรือ small / medium / large)
-                    TABLE_COLUMNS["date"]: st.column_config.DateColumn(
-                        width=TABLE_COLUMN_WIDTHS["date"],
-                        help=TABLE_COLUMN_HELP["date"],
-                        format="DD/MM/YYYY",
-                        required=True,
-                    ),
-                    TABLE_COLUMNS["vendor"]: st.column_config.TextColumn(
-                        width=TABLE_COLUMN_WIDTHS["vendor"], help=TABLE_COLUMN_HELP["vendor"], required=True
-                    ),
-                    TABLE_COLUMNS["category"]: st.column_config.SelectboxColumn(
-                        width=TABLE_COLUMN_WIDTHS["category"],
-                        help=TABLE_COLUMN_HELP["category"],
-                        options=category_options,
-                        required=True,
-                    ),
-                    TABLE_COLUMNS["total_price"]: st.column_config.NumberColumn(
-                        width=TABLE_COLUMN_WIDTHS["total_price"],
-                        help=TABLE_COLUMN_HELP["total_price"],
-                        min_value=0.0,
-                        format="accounting",  # มีคอมม่า ทศนิยม 2 ตำแหน่ง (ใช้ได้ทั้งตอนอ่านและตอนแก้ไข)
-                        required=True,
-                    ),
-                    # คอลัมน์สถานะ: คลิกเพื่อเลือกจาก dropdown
-                    status_label: st.column_config.SelectboxColumn(
-                        width=TABLE_COLUMN_WIDTHS["invoice_status"],
-                        help=TABLE_COLUMN_HELP["invoice_status"],
-                        options=STATUS_EDITOR_OPTIONS,
-                        required=True,
-                    ),
-                    # --- คอลัมน์ Master-List: ถ้าจะเพิ่มคอลัมน์ใหม่ ให้เพิ่มการตั้งค่าที่นี่ด้วย ---
-                    **{
-                        TABLE_COLUMNS[column]: st.column_config.TextColumn(
-                            width=TABLE_COLUMN_WIDTHS[column], help=TABLE_COLUMN_HELP[column]
-                        )
-                        for column in ("tel", "tax_id", "pr_run_no", "qt_no", "description")
-                    },
-                    TABLE_COLUMNS["pr_request_date"]: st.column_config.DateColumn(
-                        width=TABLE_COLUMN_WIDTHS["pr_request_date"],
-                        help=TABLE_COLUMN_HELP["pr_request_date"],
-                        format="DD/MM/YYYY",
-                    ),
-                    TABLE_COLUMNS["unit_price"]: st.column_config.NumberColumn(
-                        width=TABLE_COLUMN_WIDTHS["unit_price"],
-                        help=TABLE_COLUMN_HELP["unit_price"],
-                        min_value=0.0,
-                        format="accounting",
-                    ),
-                    # คอลัมน์ไฟล์: แสดงเป็นไอคอน 📁 กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่
-                    TABLE_COLUMNS["sharepoint_url"]: st.column_config.LinkColumn(
-                        width=TABLE_COLUMN_WIDTHS["sharepoint_url"],
-                        display_text=FILE_LINK_ICON,
-                        help=TABLE_COLUMN_HELP["sharepoint_url"],
-                    ),
-                },
+            # ปุ่มลบอยู่เหนือตาราง แต่ต้องรู้แถวที่เลือกจากตารางก่อน จึงจองที่ไว้แล้วเติมหลังวาดตาราง
+            action_bar = st.container()
+
+            grid_table = build_grid_table(display_table)
+            # key = เลขเวอร์ชัน (เปลี่ยนเมื่อบันทึกแล้ว) + ค่าแฮชของข้อมูล: ข้อมูลที่แสดงเปลี่ยน (ค้นหา / กรอง / Date Filter)
+            # ตารางจะถูกสร้างใหม่ ไม่เอาค่าที่ส่งกลับของข้อมูลชุดเก่ามาเทียบ (กันเขียนค่าผิดแถวลงฐานข้อมูล)
+            data_hash = int(pd.util.hash_pandas_object(grid_table, index=False).sum() % 10**9)
+            grid_key = f"transaction_grid_{editor_version}_{data_hash}"
+            grid_response = show_grid(
+                grid_table,
+                build_transaction_grid_options(grid_table),
+                grid_key,
+                update_on=["cellValueChanged", "selectionChanged"],  # ส่งค่ากลับเมื่อแก้ไขเซลล์ / เปลี่ยนแถวที่เลือก
             )
 
-            # ดักจับสถานะของตาราง: edited_rows (แก้ไข) / deleted_rows (ลบ) / added_rows (เพิ่ม)
-            editor_state = st.session_state.get(editor_key, {})
-            has_changes = any(editor_state.get(name) for name in ("edited_rows", "deleted_rows", "added_rows"))
+            editor_state: dict[str, Any] = {
+                "edited_rows": collect_grid_changes(grid_table, grid_response),
+                "deleted_rows": [],
+            }
+            selected_positions = get_selected_positions(grid_response)
+            with action_bar:
+                is_delete_clicked = st.button(
+                    f"🗑️ ลบรายการที่เลือก ({len(selected_positions)})",
+                    key="delete_selected_rows",
+                    disabled=not selected_positions,
+                    help="ติ๊กช่องหน้าแถวที่ต้องการลบ แล้วกดปุ่มนี้",
+                )
+            if is_delete_clicked:
+                editor_state["deleted_rows"] = selected_positions
+
+            has_changes = bool(editor_state["edited_rows"] or editor_state["deleted_rows"])
             if has_changes:
                 try:
                     st.session_state[SESSION_KEY_STATUS_MESSAGES] = apply_table_edits(
-                        display_table, [t["id"] for t in visible_transactions], editor_state
+                        display_table, transaction_ids, editor_state
                     )
                 except (ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
                     # error ของแถวเดี่ยว ๆ apply_table_edits จัดการเองแล้ว ที่หลุดมาถึงนี่คือข้อมูลตารางผิดรูปแบบทั้งก้อน
@@ -1297,9 +1410,12 @@ def render_equipment_summary(start_date: date, end_date: date) -> None:
         start_date: วันที่เริ่มต้นจาก Date Filter
         end_date: วันที่สิ้นสุดจาก Date Filter
     """
-    with st.expander("Quantity of equipment", expanded=False):
-        with st.container(key="equipment_inner"):
-            render_equipment_table(start_date, end_date)
+    # วาดตารางเมื่อกางออกแล้วเท่านั้น (เหตุผลเดียวกับแถบ "ดูรายการที่ค้าง" ใน render_overdue_alert)
+    equipment_expander = st.expander("Quantity of equipment", expanded=False, on_change="rerun")
+    if equipment_expander.open:
+        with equipment_expander:
+            with st.container(key="equipment_inner"):
+                render_equipment_table(start_date, end_date)
 
 
 def render(start_date: date, end_date: date) -> None:

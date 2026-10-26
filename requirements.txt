@@ -5,6 +5,7 @@
 streamlit==1.66.1      # เว็บ UI (app.py, pages_ui/)
 pandas==2.2.3          # จัดการตารางข้อมูล (pages_ui/ และอ่าน Excel ใน text_extractor.py)
 plotly==7.1.0          # กราฟใน Dashboard (pages_ui/dashboard.py)
+streamlit-aggrid==1.2.1.post2  # ตารางระดับ Enterprise (ui_grid.py ใช้ในหน้า Overview และ Dashboard)
 
 # --- อ่านไฟล์เอกสาร (utils/text_extractor.py) ---
 pdfplumber==0.11.10    # อ่านข้อความจาก PDF

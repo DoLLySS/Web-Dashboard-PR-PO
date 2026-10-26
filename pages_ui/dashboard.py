@@ -25,6 +25,7 @@ from config.constants import EQUIPMENT_CATEGORIES
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
 from config.styles import FONT_FAMILY, PALETTE
 from ui_common import build_css
+from ui_grid import render_readonly_grid
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่ (Configuration)
@@ -387,11 +388,11 @@ def render_equipment_card(start_date: date, end_date: date) -> None:
     with st.container(key="equipment_card"):
         st.markdown('<span class="card-pill">Equipment</span>', unsafe_allow_html=True)
         with st.container(key="equipment_inner"):
-            st.dataframe(
+            render_readonly_grid(
                 build_equipment_list(start_date, end_date),
-                hide_index=True,
-                width="stretch",
-                column_config={"ยอดรวม (บาท)": st.column_config.NumberColumn(format="%.2f")},
+                key="dashboard_equipment",
+                money_columns=("ยอดรวม (บาท)",),
+                right_aligned_columns=("Qty.",),
             )
 
 
@@ -463,10 +464,12 @@ def render_vendor_card(transaction_table: pd.DataFrame) -> None:
                 st.info("ยังไม่มีข้อมูลราคา (Net Price) จึงยังสร้างกราฟค่าใช้จ่ายไม่ได้")
             else:
                 st.plotly_chart(build_vendor_spend_figure(vendor_spend_table), width="stretch")
-            st.dataframe(
-                build_top_vendor_table(transaction_table),
-                width="stretch",
-                column_config={"ยอดรวม (บาท)": st.column_config.NumberColumn(format="%.2f")},
+            top_vendor_table = build_top_vendor_table(transaction_table)
+            render_readonly_grid(
+                top_vendor_table,
+                key="dashboard_top_vendor",
+                money_columns=("ยอดรวม (บาท)",),
+                right_aligned_columns=("จำนวนรายการ",),
             )
 
 

@@ -28,6 +28,21 @@ GOOGLE_FONTS_URL: str = (
     "family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap"
 )
 
+# ขนาดตัวอักษรของทั้งแอป (px) แก้ตัวเลขที่นี่ที่เดียว แล้วทุกหน้าจะเปลี่ยนตาม (ใช้ผ่านตัวแปร CSS --app-fs-<ชื่อ>)
+# ถ้าจะเพิ่มระดับขนาดใหม่ ให้เพิ่มคีย์ที่นี่ แล้วเรียก var(--app-fs-<ชื่อ>) ใน GLOBAL_CSS_RULES
+TYPOGRAPHY_PX: dict[str, int] = {
+    "body": 16,  # ข้อความทั่วไป
+    "caption": 14,  # คำอธิบายตัวเล็ก
+    "label": 16,  # ป้ายชื่อช่อง
+    "input": 16,  # ข้อความในช่องกรอก/กล่องเลือก
+    "button": 16,  # ข้อความบนปุ่ม
+    "menu": 16,  # เมนูนำทางใน Sidebar
+}
+
+# ความสูงของแถวในตาราง (px) ใช้กับตาราง AgGrid ทุกตัวผ่านธีมใน ui_grid.py
+# ยิ่งสูงยิ่งโปร่ง แก้ที่นี่ที่เดียวแล้วทุกตารางเปลี่ยนตาม
+TABLE_ROW_HEIGHT_PX: int = 44
+
 # ---------------------------------------------------------------------------
 # ค่าคงที่: สี (Color Palette) รหัส HEX
 # ---------------------------------------------------------------------------
@@ -237,8 +252,7 @@ html, body, .stApp, [data-testid="stApp"],
     border-radius: RADIUS;
     overflow: hidden;  /* ตัดมุมของตารางให้มนตามกรอบ */
 }
-/* st.dataframe วาดด้วย canvas จึงสั่งสีหัวตารางผ่าน CSS ไม่ได้ ใช้ค่าจาก .streamlit/config.toml
-   (secondaryBackgroundColor = สีหัวตาราง) ส่วนตารางแบบ HTML (st.table / Styler) ใช้กฎด้านล่างนี้ */
+/* ตารางหลักของแอปใช้ AgGrid (ui_grid.py) ตั้งหน้าตาเองในธีมของตาราง กฎด้านล่างนี้ใช้กับ st.table เท่านั้น */
 [data-testid="stTable"] table { border-collapse: separate; border-spacing: 0; border-radius: RADIUS; overflow: hidden; }
 [data-testid="stTable"] thead th { background: var(--app-table-header); color: var(--app-text); }
 [data-testid="stTable"] td { color: var(--app-text); }
@@ -252,6 +266,41 @@ html, body, .stApp, [data-testid="stApp"],
 .stApp h1 { font-size: calc(2.75rem * var(--app-heading-scale)) !important; }
 .stApp h2 { font-size: calc(2.25rem * var(--app-heading-scale)) !important; }
 .stApp h3 { font-size: calc(1.75rem * var(--app-heading-scale)) !important; }
+
+/* ===== 9.1) Typography: ขยายตัวหนังสือทั้งแอป (แก้ขนาดที่ TYPOGRAPHY_PX ด้านบนไฟล์ ไม่ต้องแก้ตรงนี้) =====
+   ไม่สั่ง span ทั้งหมด เพราะจะทำให้ไอคอน Material ของ Streamlit เพี้ยน */
+/* ข้อความทั่วไปในเนื้อหาหลักและ Sidebar */
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] li,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+    font-size: var(--app-fs-body);
+    line-height: 1.55;
+}
+/* คำอธิบายตัวเล็ก (caption) และข้อความรองใต้ชื่อหน้า */
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { font-size: var(--app-fs-caption) !important; }
+/* ป้ายชื่อช่อง (Label) และข้อความในช่องกรอก/กล่องเลือก */
+[data-testid="stWidgetLabel"] p { font-size: var(--app-fs-label) !important; font-weight: 600; }
+[data-testid="stMainBlockContainer"] input,
+[data-testid="stMainBlockContainer"] textarea,
+[data-testid="stMainBlockContainer"] [data-baseweb="select"] { font-size: var(--app-fs-input) !important; }
+/* ปุ่มทุกปุ่มในเนื้อหาหลัก (เช่น เพิ่มข้อมูล / Export) ใหญ่และหนา */
+[data-testid="stMainBlockContainer"] [data-testid^="stBaseButton-"],
+[data-testid="stMainBlockContainer"] [data-testid^="stBaseButton-"] p { font-size: var(--app-fs-button) !important; font-weight: 700 !important; }
+/* หัวข้อกลุ่มใน expander (เช่น "ดูรายการที่ค้าง") */
+[data-testid="stExpander"] summary p { font-size: var(--app-fs-body) !important; font-weight: 600; }
+/* เมนูนำทางใน Sidebar: ใหญ่ขึ้น (หัวกลุ่ม DASHBOARD ใหญ่ขึ้นเล็กน้อย) */
+[class*="st-key-menu_button_"] button p { font-size: var(--app-fs-menu) !important; }
+[data-testid="stSidebar"] [data-testid="stExpander"] summary p { font-size: 13px !important; }
+/* ชื่อ/คำอธิบายเว็บใน Sidebar */
+.sidebar-title { font-size: 19px !important; }
+.sidebar-subtitle { font-size: 13px !important; }
+/* ตัวเลขสรุป (Metric): ป้ายชื่อใหญ่ขึ้น ตัวเลขหนาเด่น */
+[data-testid="stMetricLabel"] p { font-size: var(--app-fs-label) !important; font-weight: 600; }
+[data-testid="stMetricValue"] { font-weight: 800; }
+/* ตัวเลขใน Metric ต้องสืบทอดขนาดใหญ่จากกล่อง ไม่ถูกกฎข้อความทั่วไป (16px) ทับ */
+[data-testid="stMetricValue"] p, [data-testid="stMetricValue"] div { font-size: inherit !important; }
+/* ตาราง HTML (st.table) ให้ตัวหนังสือในเซลล์ใหญ่ขึ้น */
+[data-testid="stTable"] td, [data-testid="stTable"] th { font-size: var(--app-fs-body); padding: 0.6rem 0.75rem; }
 
 /* ===== 10) ซ่อนส่วนเริ่มต้นของ Streamlit ให้ดูเป็น Web App ขององค์กร ===== */
 /* เมนูแฮมเบอร์เกอร์ (#MainMenu คือชื่อเดิม, stMainMenu คือชื่อของ Streamlit รุ่นปัจจุบัน) ปุ่ม Deploy และ Footer */
@@ -379,6 +428,8 @@ def build_global_css() -> str:
     # สร้างตัวแปร CSS จาก PALETTE เช่น --app-bg: #F8FAFC;
     css_variables = "\n".join(f"--app-{name}: {value};" for name, value in PALETTE.items())
     css_variables += f"\n--app-font: {FONT_FAMILY};\n--app-shadow: {SHADOW};"
+    # ตัวแปรขนาดตัวอักษร เช่น --app-fs-body: 16px;
+    css_variables += "\n" + "\n".join(f"--app-fs-{name}: {size}px;" for name, size in TYPOGRAPHY_PX.items())
     # ค่าเริ่มต้นของตัวแปร responsive = ค่าของ Laptop (ช่วงจออื่นจะถูกแทนที่ด้วย Media Query ด้านล่าง)
     css_variables += "\n" + "\n".join(f"--app-{n}: {v};" for n, v in RESPONSIVE_VARIABLES["laptop"].items())
     css_rules = GLOBAL_CSS_RULES.replace("RADIUS", f"{RADIUS_PX}px")

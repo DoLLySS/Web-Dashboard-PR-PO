@@ -4,7 +4,8 @@
 # หมายเหตุ: แก้ไฟล์นี้แล้วต้องหยุดและรัน streamlit ใหม่จึงจะมีผล
 [theme]
 base = "light"
-primaryColor = "#2563EB"             # สีหลัก: ปุ่ม สวิตช์ ลิงก์ในตาราง
+primaryColor = "#2563EB"             # สีหลัก: ปุ่ม สวิตช์ ลิงก์
 backgroundColor = "#F8FAFC"          # พื้นหลังแอป
-secondaryBackgroundColor = "#F1F5F9" # สีหัวตาราง และพื้นของ widget บางตัว
+secondaryBackgroundColor = "#F1F5F9" # พื้นของ widget บางตัว (สีหัวตาราง AgGrid ตั้งที่ ui_grid.py)
 textColor = "#1E293B"                # สีตัวหนังสือหลัก
+baseFontSize = 16                    # ขนาดฐานของตัวหนังสือ (px) ทั้งแอป (ตารางหลักใช้ AgGrid ตั้งขนาดเองที่ ui_grid.py) ต้องรัน streamlit ใหม่
