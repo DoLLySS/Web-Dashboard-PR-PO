@@ -18,9 +18,10 @@
 | ฟีเจอร์ | สถานะ |
 |---|---|
 | บันทึก / ค้นหา / แจ้งเตือน / Dashboard | ✅ ใช้งานได้ |
-| ดึงข้อความจาก PDF (`text_extractor.py`) | ✅ ต่อกับฟอร์มแล้ว: อัปโหลด PDF ในกล่อง "Upload P/O to Purchase" จะเติม TaxID / Vendor / ยอดรวมให้ (ต้องตรวจก่อนกด Upload) |
-| ปุ่มเปลี่ยนสถานะเป็น "ได้รับใบกำกับภาษีแล้ว" | ⚠️ ฟังก์ชัน `mark_invoice_received()` พร้อมแล้ว แต่ **ยังไม่มีปุ่มบนหน้าจอ** |
-| แก้ไข / ลบรายการผ่านหน้าเว็บ | ❌ ยังไม่มี (มีเฉพาะฟังก์ชันใน `database.py`) |
+| ดึงข้อความจาก PDF (`utils/text_extractor.py`) | ✅ ต่อกับฟอร์มแล้ว: อัปโหลด PDF ในกล่อง "Upload P/O to Purchase" จะเติม TaxID / Vendor / ยอดรวมให้ (ต้องตรวจก่อนกด Upload) |
+| เปลี่ยนสถานะใบกำกับภาษี | ✅ คลิกคอลัมน์ Status ในตาราง Overview แล้วเลือก Completed จาก dropdown บันทึกลงฐานข้อมูลทันที (เลือกกลับเป็น Pending เพื่อยกเลิกได้) |
+| ลบรายการ | ✅ ติ๊กช่องหน้าแถวในตาราง Overview แล้วกดไอคอนถังขยะ/ปุ่ม Delete ลบออกจากฐานข้อมูลทันที (กู้คืนไม่ได้) |
+| แก้ไขช่องข้อมูลอื่นนอกจากสถานะผ่านตาราง | ⚠️ โค้ดรองรับแล้ว แต่ปิดไว้ (เปิดที่ `EDITABLE_TABLE_COLUMNS` ใน `pages_ui/overview.py` แต่ช่องที่แก้ได้จะไม่มีสีสลับแถว) |
 | เชื่อม SharePoint | ❌ ยังไม่ได้ทำ (ดูหัวข้อ .env ด้านล่าง) |
 | OCR สำหรับ PDF สแกน / รูปภาพ | ❌ ยังไม่ได้ทำ |
 
@@ -110,14 +111,19 @@ Project ฝึกงาน/
 ├── ui_common.py           # ธีมการ์ด (CSS) + ตารางสรุปอุปกรณ์ ที่ใช้ร่วมกัน
 ├── styles.py              # ธีมกลางของทั้งระบบ: ฟอนต์ สี ความมน เงา + CSS (ฉีดจาก app.py)
 ├── sidebar_ui.py          # หน้าตา Sidebar: โลโก้, ชื่อเว็บ, เมนูแบบจัดกลุ่ม, สี/CSS
-├── database.py            # ที่เดียวที่เขียน SQL: สร้างตาราง + เพิ่ม/ดู/แก้/ลบ
-├── text_extractor.py      # อ่าน PDF แล้วหา Tax ID / ยอดรวม / ผู้ขาย (ยังไม่ต่อกับฟอร์ม)
 ├── pages_ui/
 │   ├── overview.py        # หน้า Overview: แจ้งเตือน + ฟอร์ม + ตาราง
 │   ├── dashboard.py       # หน้า Dashboard: Metric + กราฟ + Top Vendors
 │   └── settings.py        # หน้า Setting (โครงเปล่า)
 ├── .streamlit/config.toml # ตั้งค่าธีมสว่างของ Streamlit
-├── data/                  # (สร้างอัตโนมัติ) masterlist.db และ uploads/ (ไฟล์ที่แนบ)
+├── utils/
+│   ├── text_extractor.py  # อ่าน PDF แล้วหา Tax ID / ยอดรวม / ผู้ขาย
+│   ├── local_storage.py   # บันทึกไฟล์เอกสารลง data/local_uploads/
+│   └── sharepoint_api.py  # เตรียมไว้เชื่อม SharePoint ในอนาคต (ยังไม่ถูกเรียกใช้)
+├── data/
+│   ├── database.py        # ที่เดียวที่เขียน SQL: สร้างตาราง + เพิ่ม/ดู/แก้/ลบ
+│   ├── masterlist.db      # (สร้างอัตโนมัติ ไม่ขึ้น Git) ฐานข้อมูล
+│   └── local_uploads/     # (สร้างอัตโนมัติ ไม่ขึ้น Git) ไฟล์เอกสารที่อัปโหลด
 ├── requirements.txt       # รายการ Library พร้อมเวอร์ชัน
 ├── .env.example           # แม่แบบไฟล์ตั้งค่า SharePoint
 └── planning.md            # เอกสารวางแผนและ Coding Standards ของทีม
@@ -134,9 +140,9 @@ Project ฝึกงาน/
 | เปลี่ยนชื่อเว็บ / โลโก้ (วางไฟล์ `assets/logo.png`) / สี Sidebar | ค่าคงที่ต้นไฟล์ `sidebar_ui.py` |
 | เปลี่ยนสี/ฟอนต์/ความมน/เงาของทั้งระบบ | `PALETTE`, `FONT_FAMILY`, `RADIUS_PX` ใน `styles.py` (และสีหัวตารางใน `.streamlit/config.toml`) |
 | เปลี่ยนสีกราฟ | `CATEGORY_COLORS` บนสุดของ `pages_ui/dashboard.py` |
-| เพิ่มช่องกรอกในฟอร์ม | `render_entry_form()` ใน `overview.py` (ดู Comment "ส่วนที่ 1-5") และถ้าเป็นคอลัมน์ใหม่ ต้องแก้ `database.py` + `TABLE_COLUMN_LABELS` ด้วย |
+| เพิ่มช่องกรอกในฟอร์ม | `render_entry_form()` ใน `overview.py` (ดู Comment "ส่วนที่ 1-5") และถ้าเป็นคอลัมน์ใหม่ ต้องแก้ `data/database.py` + `TABLE_COLUMN_LABELS` ด้วย |
 | เพิ่มหน้าใหม่ / เมนูใหม่ | สร้างไฟล์ใน `pages_ui/` ที่มีฟังก์ชัน `render(start_date, end_date)` แล้วเพิ่ม `MenuItem` ใน `MENU_GROUPS` ของ `app.py` |
-| ปรับกฎดึงข้อมูลจาก PDF | รายการค่าคงที่บนสุดของ `text_extractor.py` |
+| ปรับกฎดึงข้อมูลจาก PDF | รายการค่าคงที่บนสุดของ `utils/text_extractor.py` |
 | เปลี่ยนช่วงวันที่เริ่มต้นของ Date Filter | `DEFAULT_RANGE_DAYS` ใน `app.py` |
 
 ### ข้อควรรู้ในการดูแลระบบ

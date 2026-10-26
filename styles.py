@@ -77,19 +77,19 @@ DESKTOP_MIN_PX: int = 1441  # Desktop จอใหญ่: 1441 ขึ้นไ�
 RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
     "laptop": {
         "heading-scale": "1",
-        "card-padding": "16px",
-        "inner-padding": "12px",
+        "card-padding": "24px",  # โปร่งขึ้นจากเดิม 16px
+        "inner-padding": "16px",
         "card-title": "28px",
         "metric-value": "30px",
         "main-padding-x": "5rem",
         "main-padding-top": "6rem",
         "container-max": "none",
-        "block-gap": "1rem",
+        "block-gap": "1.5rem",  # ช่องไฟระหว่างการ์ด
     },
     "mobile": {
         "heading-scale": "0.8",  # หัวข้อเล็กลง 20% ไม่ให้ล้นจอ
-        "card-padding": "10px",  # ประหยัดพื้นที่หน้าจอ
-        "inner-padding": "8px",
+        "card-padding": "16px",  # ประหยัดพื้นที่แต่ยังไม่อึดอัด
+        "inner-padding": "12px",
         "card-title": "22px",
         "metric-value": "24px",
         "main-padding-x": "0.75rem",
@@ -97,8 +97,8 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
     },
     "tablet": {
         "heading-scale": "0.9",  # ขนาดปานกลาง
-        "card-padding": "14px",
-        "inner-padding": "10px",
+        "card-padding": "20px",
+        "inner-padding": "14px",
         "card-title": "25px",
         "metric-value": "27px",
         "main-padding-x": "2rem",
@@ -106,8 +106,8 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
     },
     "desktop": {
         "heading-scale": "1",
-        "card-padding": "24px",  # โปร่งสบายตาบนจอความละเอียดสูง
-        "inner-padding": "16px",
+        "card-padding": "32px",  # โปร่งสบายตาบนจอความละเอียดสูง
+        "inner-padding": "20px",
         "card-title": "30px",
         "metric-value": "34px",
         "main-padding-x": "3rem",
@@ -271,6 +271,23 @@ footer, [data-testid="stFooter"] {
     margin-right: auto;  /* จัดกึ่งกลางเมื่อมีการจำกัดความกว้างสูงสุด (จอใหญ่) */
 }
 [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap: var(--app-block-gap); }
+
+/* ===== 11.1) ช่องไฟภายในการ์ด: ให้องค์ประกอบในการ์ด (หัวข้อ ตาราง กราฟ ปุ่ม) ไม่ชิดกันเกินไป ===== */
+[class*="st-key-"][class*="_card"] > [data-testid="stVerticalBlock"],
+[class*="st-key-"][class*="_inner"] > [data-testid="stVerticalBlock"] { gap: 1rem; }
+/* ช่องไฟระหว่างคอลัมน์ซ้าย-ขวา (เช่น ตาราง | ฟอร์ม) */
+[data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] { gap: 1.5rem; }
+/* หัวหน้าแถบบนสุด: เว้นระยะด้านล่างก่อนถึงเนื้อหา */
+.st-key-page_header { margin-bottom: 0.5rem; }
+
+/* ===== 11.2) ตารางข้อมูล (st.dataframe / data_editor): พื้นขาว เงาบาง ๆ เหมือน Card ===== */
+[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow);
+    border-radius: RADIUS;
+}
+/* กล่องอัปโหลดไฟล์ + ช่องข้อมูลอื่นที่เป็นกล่อง: มุม 8px เหมือนกัน */
+[data-testid="stFileUploaderDropzone"] { border-radius: RADIUS; }
 """
 
 

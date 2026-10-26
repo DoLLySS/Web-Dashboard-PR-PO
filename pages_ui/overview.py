@@ -10,20 +10,32 @@
     │  ตาราง (วันที่/ผู้ขาย/Item/ไฟล์) │ การ์ด Quantity of equipment │
     └──────────────────────────────┴─────────────────────────────┘
 
-ส่วนที่ยังไม่ได้ทำ: เชื่อม SharePoint จริง (คอลัมน์ไฟล์ตอนนี้เป็นไอคอนเฉยๆ), OCR สำหรับรูปภาพ
+ไฟล์เอกสารถูกบันทึกลงโฟลเดอร์ data/local_uploads/ (utils/local_storage.py) แล้วเก็บที่อยู่ไฟล์ลงฐานข้อมูล
+ส่วนเชื่อม SharePoint ปิดไว้ก่อน เตรียมไว้สำหรับเชื่อมต่อในอนาคต (utils/sharepoint_api.py, ค้นหา "SharePoint ปิดไว้")
+ส่วนที่ยังไม่ได้ทำ: OCR สำหรับรูปภาพ
 """
 
 import re
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 from typing import Any, Optional
 
 import pandas as pd
 import streamlit as st
 
 from config import CATEGORY_OPTIONS
-from database import STATUS_PENDING, STATUS_RECEIVED, add_transaction, get_transactions
-from text_extractor import extract_fields_from_pdf
+from data.database import (
+    STATUS_PENDING,
+    STATUS_RECEIVED,
+    add_transaction,
+    delete_transaction,
+    get_transactions,
+    update_transaction,
+)
+from utils.local_storage import LocalStorageError, save_document_locally
+
+# SharePoint ปิดไว้ — เตรียมไว้สำหรับเชื่อมต่อในอนาคต (เปิดใช้เมื่อได้สิทธิ์และตั้งค่า .env แล้ว)
+# from utils.sharepoint_api import SharePointError, upload_document_to_sharepoint
+from utils.text_extractor import extract_fields_from_file
 from ui_common import build_css, render_equipment_table
 
 # ---------------------------------------------------------------------------
@@ -43,6 +55,14 @@ TABLE_COLUMNS: dict[str, str] = {
     "category": "Item",
     "total_price": "Price",
     "invoice_status": "Status",
+    # --- ข้อมูลจากเอกสาร PR / Quotation (Master-List) แสดงหลังคอลัมน์หลัก เลื่อนตารางไปทางขวาเพื่อดู ---
+    "tel": "Tel.",
+    "tax_id": "Tax ID",
+    "pr_run_no": "PR No.",
+    "pr_request_date": "PR Date",
+    "qt_no": "QT No.",
+    "description": "Description",
+    "unit_price": "Net Price",
     "sharepoint_url": "File",
 }
 
@@ -53,6 +73,13 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "category": "ประเภทสินค้า (Hardware / Software / Network / Service)",
     "total_price": "ราคา (บาท)",
     "invoice_status": "สถานะใบกำกับภาษี: Completed / Pending / Overdue (ค้างเกิน OVERDUE_DAYS_LIMIT วัน)",
+    "tel": "เบอร์โทรศัพท์",
+    "tax_id": "เลขประจำตัวผู้เสียภาษี 13 หลัก",
+    "pr_run_no": "เลขที่ PR",
+    "pr_request_date": "วันที่ PR",
+    "qt_no": "เลขที่ Quotation",
+    "description": "รายละเอียดอุปกรณ์",
+    "unit_price": "ราคาสุทธิที่รวม Discount แล้ว (บาท)",
     "sharepoint_url": "ไฟล์เชื่อม SharePoint: กดไอคอนเพื่อเปิดในแท็บใหม่",
 }
 
@@ -63,6 +90,13 @@ TABLE_COLUMN_WIDTHS: dict[str, "int | str"] = {
     "category": 85,
     "total_price": 100,
     "invoice_status": 110,
+    "tel": 110,
+    "tax_id": 125,
+    "pr_run_no": 100,
+    "pr_request_date": 90,
+    "qt_no": 100,
+    "description": 220,
+    "unit_price": 100,
     "sharepoint_url": 50,
 }
 
@@ -70,6 +104,39 @@ TABLE_COLUMN_WIDTHS: dict[str, "int | str"] = {
 STATUS_LABEL_COMPLETED: str = "✅ Completed"  # ได้รับใบกำกับภาษีแล้ว
 STATUS_LABEL_PENDING: str = "⏳ Pending"  # รอใบกำกับภาษี และยังไม่เกินกำหนด
 STATUS_LABEL_OVERDUE: str = "🔴 Overdue"  # รอใบกำกับภาษี และค้างเกิน OVERDUE_DAYS_LIMIT วัน
+
+# คอลัมน์ที่ผู้ใช้แก้ไขได้โดยตรงในตาราง (ชื่อคอลัมน์ใน DB) คอลัมน์อื่นล็อกไว้ (ลบแถวทำได้เสมอ)
+# ตอนนี้เปิดแก้เฉพาะสถานะ เพื่อให้แถวสลับสีแสดงครบ: Streamlit ไม่ใส่สีพื้นให้เซลล์ที่แก้ไขได้ (ข้อจำกัดของ st.data_editor)
+# ถ้าอยากเปิดให้แก้ date / vendor / category / total_price ด้วย แค่เพิ่มชื่อคอลัมน์ในรายการนี้
+# (ระบบตรวจค่าและบันทึกให้ใน build_update_fields อยู่แล้ว) แต่ช่องที่แก้ได้จะไม่มีสีสลับแถว
+# ตอนนี้เปิดแก้คอลัมน์ Master-List ด้วย (tel, tax_id, pr_run_no, pr_request_date, qt_no, description, unit_price)
+# ผลข้างเคียง: ช่องที่แก้ได้ไม่มีสีสลับแถว ถ้าอยากได้สีสลับกลับมา ให้ลบชื่อคอลัมน์ออกจากรายการนี้
+# ถ้าเพิ่มคอลัมน์ใหม่ในตาราง: เพิ่มชื่อที่นี่ + เพิ่มวิธีตรวจค่าใน build_update_fields
+EDITABLE_TABLE_COLUMNS: tuple[str, ...] = (
+    "invoice_status",
+    "tel",
+    "tax_id",
+    "pr_run_no",
+    "pr_request_date",
+    "qt_no",
+    "description",
+    "unit_price",
+)
+
+# ตัวเลือกว่าง ("-") ของคอลัมน์ Item หมายถึงยังไม่ระบุหมวด (เก็บเป็น NULL ในฐานข้อมูล)
+NO_CATEGORY_LABEL: str = "-"
+
+# ตัวเลือกใน dropdown ของคอลัมน์ Status (แก้ได้โดยตรงในตาราง)
+# Overdue ใส่ไว้เพื่อให้แถวที่ค้างเกินกำหนดแสดงค่าปัจจุบันได้ แต่เป็นสถานะที่ระบบคำนวณเอง ผู้ใช้เลือกเองไม่ได้
+STATUS_EDITOR_OPTIONS: list[str] = [STATUS_LABEL_PENDING, STATUS_LABEL_OVERDUE, STATUS_LABEL_COMPLETED]
+
+# ข้อความสถานะในตาราง -> ค่าที่เก็บในฐานข้อมูล (Pending และ Overdue ในฐานข้อมูลคือ "รอใบกำกับภาษี" เหมือนกัน
+# ต่างกันที่ Overdue คำนวณจากจำนวนวันที่ค้าง)
+STATUS_LABEL_TO_DB: dict[str, str] = {
+    STATUS_LABEL_COMPLETED: STATUS_RECEIVED,
+    STATUS_LABEL_PENDING: STATUS_PENDING,
+    STATUS_LABEL_OVERDUE: STATUS_PENDING,
+}
 
 # ไอคอนที่แสดงในคอลัมน์ไฟล์ กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่ (รายการที่ไม่มีลิงก์จะเว้นว่าง)
 FILE_LINK_ICON: str = "📁"
@@ -85,13 +152,12 @@ ALL_VENDORS_LABEL: str = "Vendor"
 # สัดส่วนความกว้างของหน้า: [ฝั่งซ้าย (ตาราง), ฝั่งขวา (ฟอร์ม + อัปโหลด)]
 PAGE_COLUMN_RATIO: list[int] = [3, 2]
 
-# โฟลเดอร์เก็บไฟล์ (อยู่ข้างโฟลเดอร์ pages_ui)
-UPLOAD_DIRECTORY: Path = Path(__file__).parent.parent / "data" / "uploads"
-# คิวไฟล์ที่รอส่งขึ้น SharePoint (ยังไม่ได้เชื่อมจริง จึงเก็บไว้ในเครื่องก่อน)
-SHAREPOINT_QUEUE_DIRECTORY: Path = Path(__file__).parent.parent / "data" / "sharepoint_pending"
-
 # ประเภทไฟล์ที่อนุญาตให้อัปโหลด
-ALLOWED_FILE_TYPES: list[str] = ["pdf", "png", "jpg", "jpeg"]
+# (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
+ALLOWED_FILE_TYPES: list[str] = ["pdf", "xlsx", "xls", "png", "jpg", "jpeg"]
+
+# นามสกุลไฟล์ที่ระบบดึงข้อมูลอัตโนมัติได้ (ต้องเป็นตัวพิมพ์เล็ก)
+AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx", ".xls")
 
 # เลขประจำตัวผู้เสียภาษีของไทยมี 13 หลัก
 TAX_ID_LENGTH: int = 13
@@ -104,12 +170,23 @@ TEL_PATTERN: str = r"^[0-9+\-() ]{6,20}$"
 URL_PATTERN: str = r"^https?://\S+$"
 
 # ชื่อ key ใน st.session_state
+# ช่อง Master-List ที่เป็นข้อความล้วน: คอลัมน์ใน DB -> ชื่อที่ใช้บอกผู้ใช้ตอนตรวจ/แจ้งผิดพลาด (ใช้ในตารางและ build_update_fields)
+MASTERLIST_TEXT_COLUMNS: dict[str, str] = {
+    "tel": "เบอร์โทรศัพท์",
+    "pr_run_no": "เลขที่ PR",
+    "qt_no": "เลขที่ Quotation",
+    "description": "รายละเอียดอุปกรณ์",
+}
+
 SESSION_KEY_SUCCESS_MESSAGE: str = "overview_success_message"  # ข้อความบันทึกสำเร็จ
+SESSION_KEY_STATUS_MESSAGES: str = "overview_status_messages"  # ผลการเปลี่ยนสถานะในตาราง [(ระดับ, ข้อความ)]
+SESSION_KEY_EDITOR_VERSION: str = "overview_editor_version"  # เลขเวอร์ชันของตาราง ใช้ล้างสถานะการแก้ไขหลังบันทึก
 SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ ใช้เคลียร์ฟอร์มหลังบันทึก
 SESSION_KEY_PURCHASE_FILE_ID: str = "overview_purchase_file_id"  # ไฟล์ Purchase ที่ประมวลผลแล้ว
 SESSION_KEY_PURCHASE_NOTICE: str = "overview_purchase_notice"  # ข้อความผลการดึงข้อมูลจากไฟล์
-SESSION_KEY_SHAREPOINT_FILE_ID: str = "overview_sharepoint_file_id"  # ไฟล์ SharePoint ที่เก็บแล้ว
-SESSION_KEY_SHAREPOINT_NOTICE: str = "overview_sharepoint_notice"  # ข้อความผลการเก็บไฟล์
+SESSION_KEY_LOCAL_FILE_ID: str = "overview_local_file_id"  # ไฟล์ในกล่อง Upload ที่บันทึกลงเครื่องแล้ว
+SESSION_KEY_LOCAL_NOTICE: str = "overview_local_notice"  # ผลการบันทึกไฟล์ (ระดับ, ข้อความ)
+SESSION_KEY_LOCAL_PATH: str = "overview_local_path"  # ที่อยู่ไฟล์ที่บันทึกแล้ว รอผูกกับรายการตอนกด Upload
 
 # ---------------------------------------------------------------------------
 # CSS เฉพาะหน้า Overview (กฎกลางของการ์ด/สี/ความมน อยู่ที่ ui_common.py)
@@ -181,7 +258,11 @@ PAGE_CSS_RULES: str = """
 
 
 def validate_form_input(
-    vendor_name: str, tax_id: str, tel: str, email: str, sharepoint_url: str = ""
+    vendor_name: str,
+    tax_id: str,
+    tel: str,
+    email: str,
+    sharepoint_url: str = "",
 ) -> list[str]:
     """ตรวจข้อมูลในฟอร์มก่อนบันทึก
 
@@ -217,45 +298,28 @@ def validate_form_input(
     return problem_messages
 
 
-def save_uploaded_document(uploaded_document, target_directory: Path = UPLOAD_DIRECTORY) -> Optional[Path]:
-    """บันทึกไฟล์ที่ผู้ใช้อัปโหลดลงโฟลเดอร์ที่กำหนด
+def save_document_and_get_path(uploaded_document) -> Optional[str]:
+    """บันทึกไฟล์ที่ผู้ใช้เลือกลง local_uploads/ แล้วคืนที่อยู่ไฟล์
 
     Args:
         uploaded_document: ไฟล์จาก st.file_uploader (UploadedFile)
-        target_directory: โฟลเดอร์ปลายทาง (ค่าเริ่มต้นคือ data/uploads/)
 
     Returns:
-        path ของไฟล์ที่บันทึก, หรือ None ถ้าบันทึกไม่สำเร็จ (แสดง st.error ให้แล้ว)
+        ที่อยู่ไฟล์ (relative), หรือ None ถ้าบันทึกไม่สำเร็จ (แสดง st.error ให้แล้ว)
     """
     try:
-        target_directory.mkdir(parents=True, exist_ok=True)
-
-        # ตัดอักขระแปลกออกจากชื่อไฟล์ และใส่เวลานำหน้า กันชื่อซ้ำเขียนทับกัน
-        safe_file_name = re.sub(r"[^\w.\-]", "_", Path(uploaded_document.name).name)
-        timestamp_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_file_path = target_directory / f"{timestamp_prefix}_{safe_file_name}"
-
-        saved_file_path.write_bytes(uploaded_document.getbuffer())
-        return saved_file_path
-    except OSError as error:
-        st.error(
-            "❌ บันทึกไฟล์ที่อัปโหลดไม่สำเร็จ: ตรวจว่าดิสก์ไม่เต็มและมีสิทธิ์เขียนโฟลเดอร์ "
-            f"{target_directory.name}/ แล้วลองใหม่\n\nรายละเอียดทางเทคนิค: {error}"
-        )
+        return save_document_locally(uploaded_document.getvalue(), uploaded_document.name)
+    except LocalStorageError as error:
+        st.error(f"❌ {error}")
         return None
 
-
-def remove_saved_document(saved_file_path: Path) -> None:
-    """ลบไฟล์ที่เพิ่งบันทึก (ใช้ตอนบันทึกลง DB ไม่สำเร็จ เพื่อไม่ให้มีไฟล์ค้างโดยไม่มีรายการ)
-
-    Args:
-        saved_file_path: path ของไฟล์ที่ต้องการลบ
-    """
-    try:
-        saved_file_path.unlink(missing_ok=True)
-    except OSError:
-        # ลบไม่ได้ก็ไม่เป็นไร แค่มีไฟล์ค้าง ไม่กระทบข้อมูลหลัก
-        pass
+    # --- SharePoint ปิดไว้: เตรียมไว้สำหรับเชื่อมต่อในอนาคต ---
+    # เปิดใช้โดยแทนที่การเรียก save_document_locally ด้านบนด้วยโค้ดนี้ (และเปิด import ด้านบนไฟล์)
+    # try:
+    #     return upload_document_to_sharepoint(uploaded_document.getvalue(), uploaded_document.name)
+    # except SharePointError as error:
+    #     st.error(f"❌ {error}")
+    #     return None
 
 
 def _field_key(field_name: str, form_counter: int) -> str:
@@ -307,6 +371,7 @@ def render_overdue_alert() -> None:
     pending_transactions = get_transactions(invoice_status=STATUS_PENDING)
     overdue_transactions = find_overdue_transactions(pending_transactions, date.today())
 
+    # ไม่มีรายการค้าง (X = 0) -> ซ่อนแถบแจ้งเตือนทั้งหมด ไม่แสดงอะไรเลย
     if not overdue_transactions:
         return
 
@@ -330,6 +395,14 @@ def render_overdue_alert() -> None:
 def _valid_link_or_none(url: Optional[str]) -> Optional[str]:
     """คืน url ถ้าเป็นลิงก์ http(s) ที่ถูกต้อง ไม่เช่นนั้นคืน None (ใช้ก่อนแสดงเป็นลิงก์ในตาราง)"""
     return url if url and re.match(URL_PATTERN, url) else None
+
+
+def _parse_iso_date_or_none(date_text: Optional[str]) -> Optional[date]:
+    """แปลงข้อความ "YYYY-MM-DD" เป็น date, คืน None ถ้าว่างหรือรูปแบบผิด (ไม่ให้ทั้งตารางพัง)"""
+    try:
+        return date.fromisoformat(date_text) if date_text else None
+    except (ValueError, TypeError):
+        return None
 
 
 def get_status_label(invoice_status: str, document_date: Optional[date], today: date) -> str:
@@ -370,24 +443,203 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
     for transaction in transactions:
         try:
             document_date: Optional[date] = date.fromisoformat(transaction["date"])
-            display_date = document_date.strftime("%d/%m/%Y")
         except (ValueError, TypeError):
-            document_date = None
-            display_date = str(transaction.get("date", ""))  # วันที่ผิดรูปแบบ แสดงตามที่เก็บไว้
+            document_date = None  # วันที่ในฐานข้อมูลผิดรูปแบบ แสดงเป็นช่องว่าง (ไม่ให้ทั้งตารางพัง)
 
         display_rows.append(
             {
-                "date": display_date,
+                "date": document_date,  # ชนิด date จริง รูปแบบ DD/MM/YYYY กำหนดที่ column_config
                 "vendor": transaction["vendor"],
                 "category": transaction.get("category") or "-",
                 "total_price": float(transaction.get("total_price") or 0),  # ยังเป็นตัวเลข จัดรูปแบบตอนแสดง
                 "invoice_status": get_status_label(transaction["invoice_status"], document_date, today),
+                # --- ข้อมูล Master-List: ข้อความที่ไม่มีค่าแสดงเป็น "" (ถ้าเป็น None ตารางจะแสดงคำว่า None) ---
+                "tel": transaction.get("tel") or "",
+                "tax_id": transaction.get("tax_id") or "",
+                "pr_run_no": transaction.get("pr_run_no") or "",
+                "pr_request_date": _parse_iso_date_or_none(transaction.get("pr_request_date")),
+                "qt_no": transaction.get("qt_no") or "",
+                "description": transaction.get("description") or "",
+                "unit_price": transaction.get("unit_price"),  # None = ยังไม่มีราคา แสดงเป็นช่องว่าง
                 # ลิงก์ไฟล์บน SharePoint: ใส่เฉพาะที่ขึ้นต้น http(s):// (ที่เหลือเว้นว่าง ไม่แสดงไอคอน)
                 # ไม่มีลิงก์ให้ใส่ "" (ถ้าใส่ None ตารางจะแสดงคำว่า None)
                 "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url")) or "",
             }
         )
+    # หมายเหตุ: ตารางนี้ใช้ index ลำดับ 0,1,2,... (ไม่ใช่ id) เพราะ st.data_editor แบบ dynamic ซ่อน index ไม่ได้
+    # ถ้า index ไม่ใช่ลำดับ ส่วนการรู้ว่าแถวที่ n คือรายการ id อะไร ให้ดูจากลิสต์ id ที่เรียงเหมือนกัน
+    # (ดู transaction_ids ใน render_table_card / apply_table_edits)
     return pd.DataFrame(display_rows, columns=list(TABLE_COLUMNS.keys())).rename(columns=TABLE_COLUMNS)
+
+
+def build_update_fields(
+    changes: dict[str, Any], original_row: pd.Series
+) -> tuple[dict[str, Any], bool]:
+    """แปลงค่าที่ผู้ใช้แก้ในตาราง (หนึ่งแถว) เป็นฟิลด์ที่จะอัปเดตลงฐานข้อมูล พร้อมตรวจความถูกต้อง
+
+    Args:
+        changes: ค่าที่แก้ {หัวคอลัมน์: ค่าใหม่} (จาก edited_rows ของ st.data_editor)
+        original_row: แถวเดิมก่อนแก้ (ใช้ดูสถานะเดิม)
+
+    Returns:
+        (ฟิลด์ที่จะอัปเดต {ชื่อคอลัมน์ DB: ค่า}, มีการพยายามเปลี่ยนสถานะ Pending<->Overdue ที่ไม่ได้รับอนุญาตหรือไม่)
+
+    Raises:
+        ValueError: ถ้าค่าที่กรอกไม่ถูกต้อง (ข้อความอธิบายเป็นภาษาไทย)
+    """
+    label_to_column = {label: column for column, label in TABLE_COLUMNS.items()}
+    fields: dict[str, Any] = {}
+    status_change_ignored = False
+
+    for column_label, new_value in changes.items():
+        column = label_to_column.get(column_label)
+        if column not in EDITABLE_TABLE_COLUMNS:
+            continue  # คอลัมน์ที่ล็อกไว้ ไม่รับค่า
+
+        if column == "date":
+            # ค่าวันที่จาก data_editor อาจมาเป็นข้อความ ISO ("2026-10-24") หรืออ็อบเจกต์ date
+            if not new_value:
+                raise ValueError("วันที่ห้ามว่าง")
+            fields["date"] = str(new_value)[:10] if not isinstance(new_value, date) else new_value.isoformat()
+        elif column == "vendor":
+            vendor_name = str(new_value or "").strip()
+            if not vendor_name:
+                raise ValueError("ชื่อผู้ขาย (Vendor) ห้ามว่าง")
+            fields["vendor"] = vendor_name
+        elif column == "category":
+            fields["category"] = None if new_value in (None, "", NO_CATEGORY_LABEL) else str(new_value)
+        elif column == "total_price":
+            try:
+                price = float(new_value)
+            except (TypeError, ValueError):
+                raise ValueError("ราคาต้องเป็นตัวเลข") from None
+            if price < 0:
+                raise ValueError("ราคาต้องไม่ติดลบ")
+            fields["total_price"] = price
+        elif column in MASTERLIST_TEXT_COLUMNS:
+            # ข้อความล้วน: ว่างเก็บเป็น NULL
+            text_value = str(new_value or "").strip()
+            if column == "tel" and text_value and not re.match(TEL_PATTERN, text_value):
+                raise ValueError("เบอร์โทรใช้ได้เฉพาะตัวเลข เว้นวรรค - + ( ) และยาว 6-20 ตัว")
+            fields[column] = text_value or None
+        elif column == "tax_id":
+            tax_id_value = str(new_value or "").strip()
+            if tax_id_value and not (tax_id_value.isdigit() and len(tax_id_value) == TAX_ID_LENGTH):
+                raise ValueError(f"Tax ID ต้องเป็นตัวเลข {TAX_ID_LENGTH} หลัก")
+            fields["tax_id"] = tax_id_value or None
+        elif column == "pr_request_date":
+            fields["pr_request_date"] = (
+                None if not new_value
+                else new_value.isoformat() if isinstance(new_value, date)
+                else str(new_value)[:10]
+            )
+        elif column == "unit_price":
+            if new_value in (None, ""):
+                fields["unit_price"] = None
+            else:
+                try:
+                    unit_price_value = float(new_value)
+                except (TypeError, ValueError):
+                    raise ValueError("ราคาสุทธิต้องเป็นตัวเลข") from None
+                if unit_price_value < 0:
+                    raise ValueError("ราคาสุทธิต้องไม่ติดลบ")
+                fields["unit_price"] = unit_price_value
+        elif column == "invoice_status":
+            # Completed <-> ไม่ใช่ Completed บันทึกได้ ส่วน Pending <-> Overdue ระบบคำนวณเอง ไม่บันทึก
+            was_completed = original_row[TABLE_COLUMNS["invoice_status"]] == STATUS_LABEL_COMPLETED
+            will_be_completed = new_value == STATUS_LABEL_COMPLETED
+            if was_completed == will_be_completed:
+                status_change_ignored = True
+            else:
+                fields["invoice_status"] = STATUS_LABEL_TO_DB[new_value]
+
+    return fields, status_change_ignored
+
+
+def apply_table_edits(
+    display_table: pd.DataFrame, transaction_ids: list[int], editor_state: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """ซิงก์การแก้ไข/ลบในตาราง (st.data_editor) กลับไปที่ตาราง transactions ในฐานข้อมูลทันที
+
+    ใช้ editor_state ซึ่งมี 3 ส่วนจาก st.session_state[key] ของ data_editor:
+      - edited_rows  : {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}}  -> อัปเดตด้วย update_transaction
+      - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบด้วย delete_transaction
+      - added_rows   : แถวที่ผู้ใช้กดเพิ่มในตาราง           -> ไม่รับ (ให้ใช้ฟอร์ม "กรอก Form" แทน)
+    "ตำแหน่งแถว" นับตามตารางเดิมที่แสดง จึงแปลงเป็น id รายการจาก transaction_ids
+
+    Args:
+        display_table: ตารางที่แสดงอยู่
+        transaction_ids: id ของรายการในฐานข้อมูล เรียงเหมือนแถวของ display_table (แถวที่ n = transaction_ids[n])
+        editor_state: ค่าสถานะของ data_editor (dict ที่มีคีย์ edited_rows / deleted_rows / added_rows)
+
+    Returns:
+        list ของ (ระดับข้อความ "success" / "error" / "info", ข้อความภาษาไทย) สำหรับแจ้งผู้ใช้
+    """
+    deleted_positions = {int(position) for position in editor_state.get("deleted_rows", [])}
+    edited_rows = editor_state.get("edited_rows", {})
+    added_rows = editor_state.get("added_rows", [])
+
+    updated_count = deleted_count = delete_failed_count = update_failed_count = 0
+    ignored_status_count = 0
+    error_reasons: list[str] = []
+
+    # --- ลบ (Delete) ---
+    for position in sorted(deleted_positions):
+        try:
+            transaction_id = int(transaction_ids[position])
+            if delete_transaction(transaction_id):
+                deleted_count += 1
+            else:
+                delete_failed_count += 1  # delete_transaction แสดง error/warning ให้แล้ว
+        except (IndexError, ValueError, TypeError) as error:
+            delete_failed_count += 1
+            error_reasons.append(f"ลบแถวที่ {position + 1}: {error}")
+
+    # --- แก้ไข (Update) --- ข้ามแถวที่ถูกลบในรอบเดียวกัน
+    for raw_position, changes in edited_rows.items():
+        position = int(raw_position)
+        if position in deleted_positions:
+            continue
+        try:
+            transaction_id = int(transaction_ids[position])
+            fields, status_ignored = build_update_fields(changes, display_table.iloc[position])
+            ignored_status_count += int(status_ignored)
+            if not fields:
+                continue
+            if update_transaction(transaction_id, **fields):  # update_transaction แสดง error ให้เองเมื่อล้มเหลว
+                updated_count += 1
+            else:
+                update_failed_count += 1
+        except ValueError as error:
+            update_failed_count += 1
+            error_reasons.append(f"แถวที่ {position + 1}: {error}")
+        except (IndexError, TypeError, KeyError) as error:
+            update_failed_count += 1
+            error_reasons.append(f"แถวที่ {position + 1}: ข้อมูลไม่ถูกต้อง ({error})")
+
+    messages: list[tuple[str, str]] = []
+    if updated_count:
+        messages.append(("success", f"✅ อัปเดตข้อมูลสำเร็จ {updated_count} รายการ"))
+    if deleted_count:
+        messages.append(("success", f"✅ ลบข้อมูลสำเร็จ {deleted_count} รายการ"))
+    if delete_failed_count:
+        messages.append(("error", f"❌ ไม่สามารถลบข้อมูลได้ {delete_failed_count} รายการ"))
+    if update_failed_count:
+        reason_text = f" ({'; '.join(error_reasons)})" if error_reasons else ""
+        messages.append(("error", f"❌ ไม่สามารถอัปเดตข้อมูลได้ {update_failed_count} รายการ{reason_text}"))
+    if added_rows:
+        messages.append(
+            ("info", 'ℹ️ เพิ่มรายการใหม่ไม่ได้จากตาราง กรุณาใช้ฟอร์ม "กรอก Form" ด้านขวา (แถวที่เพิ่มถูกยกเลิก)')
+        )
+    if ignored_status_count:
+        messages.append(
+            (
+                "info",
+                f"ℹ️ สถานะ Pending / Overdue ระบบกำหนดให้อัตโนมัติ (ค้างเกิน {OVERDUE_DAYS_LIMIT} วัน = Overdue) "
+                "เปลี่ยนเองไม่ได้ เลือกได้เฉพาะ Completed เมื่อได้รับใบกำกับภาษีแล้ว",
+            )
+        )
+    return messages
 
 
 def _zebra_styles(table: pd.DataFrame) -> pd.DataFrame:
@@ -449,27 +701,77 @@ def render_table_card(
             summary_column.metric("Total Price (บาท)", f"{total_price:,.2f}")
             count_column.metric("จำนวนรายการ", f"{len(display_table):,}")
 
-            st.dataframe(
+            # ตารางแบบแก้ไข/ลบได้ (CRUD): คลิกช่องเพื่อแก้ไขค่า / เลือกแถวแล้วกดไอคอนถังขยะหรือปุ่ม Delete เพื่อลบ
+            # ทุกการแก้ไขหรือลบจะถูกซิงก์ลงฐานข้อมูลทันที (ดู apply_table_edits)
+            status_label = TABLE_COLUMNS["invoice_status"]
+            editor_version = st.session_state.setdefault(SESSION_KEY_EDITOR_VERSION, 0)
+            editor_key = f"transaction_editor_{editor_version}"  # เปลี่ยนเลขเมื่อบันทึกแล้ว เพื่อล้างสถานะการแก้ไขเดิม
+            # ตัวเลือกหมวดหมู่: "-" (ไม่ระบุ) + หมวดมาตรฐาน + หมวดอื่นที่มีอยู่ในข้อมูลแล้ว
+            category_options = [NO_CATEGORY_LABEL, *CATEGORY_OPTIONS]
+            category_options += sorted(set(display_table[TABLE_COLUMNS["category"]]) - set(category_options))
+
+            st.data_editor(
                 display_table.style.apply(_zebra_styles, axis=None)  # แถวสลับสี
-                .format({TABLE_COLUMNS["total_price"]: "{:,.2f}"}),  # ราคา: มีคอมม่า ทศนิยม 2 ตำแหน่ง
+                .format(
+                    {TABLE_COLUMNS["total_price"]: "{:,.2f}"},  # ราคา: มีคอมม่า ทศนิยม 2 ตำแหน่ง
+                    na_rep="",  # ช่องที่ไม่มีค่า (เช่น ราคาสุทธิ / วันที่ PR) แสดงเป็นช่องว่าง
+                ),
+                key=editor_key,
                 hide_index=True,
                 width="stretch",
+                # dynamic = อนุญาตให้ลบแถวได้ (Streamlit ไม่มีโหมด "ลบอย่างเดียว" จึงมีปุ่มเพิ่มแถวมาด้วย
+                # แต่แถวที่เพิ่มจะถูกยกเลิกและแจ้งให้ใช้ฟอร์มแทน)
+                num_rows="dynamic",
+                # ล็อกคอลัมน์ที่ไม่อยู่ใน EDITABLE_TABLE_COLUMNS (ลิงก์ไฟล์ใช้แก้ผ่านฟอร์ม)
+                disabled=[label for column, label in TABLE_COLUMNS.items() if column not in EDITABLE_TABLE_COLUMNS],
                 column_config={
-                    # ความกว้างแต่ละคอลัมน์ (small / medium / large)
-                    TABLE_COLUMNS["date"]: st.column_config.TextColumn(
-                        width=TABLE_COLUMN_WIDTHS["date"], help=TABLE_COLUMN_HELP["date"]
+                    # ความกว้างแต่ละคอลัมน์ (พิกเซล หรือ small / medium / large)
+                    TABLE_COLUMNS["date"]: st.column_config.DateColumn(
+                        width=TABLE_COLUMN_WIDTHS["date"],
+                        help=TABLE_COLUMN_HELP["date"],
+                        format="DD/MM/YYYY",
+                        required=True,
                     ),
                     TABLE_COLUMNS["vendor"]: st.column_config.TextColumn(
-                        width=TABLE_COLUMN_WIDTHS["vendor"], help=TABLE_COLUMN_HELP["vendor"]
+                        width=TABLE_COLUMN_WIDTHS["vendor"], help=TABLE_COLUMN_HELP["vendor"], required=True
                     ),
-                    TABLE_COLUMNS["category"]: st.column_config.TextColumn(
-                        width=TABLE_COLUMN_WIDTHS["category"], help=TABLE_COLUMN_HELP["category"]
+                    TABLE_COLUMNS["category"]: st.column_config.SelectboxColumn(
+                        width=TABLE_COLUMN_WIDTHS["category"],
+                        help=TABLE_COLUMN_HELP["category"],
+                        options=category_options,
+                        required=True,
                     ),
                     TABLE_COLUMNS["total_price"]: st.column_config.NumberColumn(
-                        width=TABLE_COLUMN_WIDTHS["total_price"], help=TABLE_COLUMN_HELP["total_price"]
+                        width=TABLE_COLUMN_WIDTHS["total_price"],
+                        help=TABLE_COLUMN_HELP["total_price"],
+                        min_value=0.0,
+                        format="accounting",  # มีคอมม่า ทศนิยม 2 ตำแหน่ง (ใช้ได้ทั้งตอนอ่านและตอนแก้ไข)
+                        required=True,
                     ),
-                    TABLE_COLUMNS["invoice_status"]: st.column_config.TextColumn(
-                        width=TABLE_COLUMN_WIDTHS["invoice_status"], help=TABLE_COLUMN_HELP["invoice_status"]
+                    # คอลัมน์สถานะ: คลิกเพื่อเลือกจาก dropdown
+                    status_label: st.column_config.SelectboxColumn(
+                        width=TABLE_COLUMN_WIDTHS["invoice_status"],
+                        help=TABLE_COLUMN_HELP["invoice_status"],
+                        options=STATUS_EDITOR_OPTIONS,
+                        required=True,
+                    ),
+                    # --- คอลัมน์ Master-List: ถ้าจะเพิ่มคอลัมน์ใหม่ ให้เพิ่มการตั้งค่าที่นี่ด้วย ---
+                    **{
+                        TABLE_COLUMNS[column]: st.column_config.TextColumn(
+                            width=TABLE_COLUMN_WIDTHS[column], help=TABLE_COLUMN_HELP[column]
+                        )
+                        for column in ("tel", "tax_id", "pr_run_no", "qt_no", "description")
+                    },
+                    TABLE_COLUMNS["pr_request_date"]: st.column_config.DateColumn(
+                        width=TABLE_COLUMN_WIDTHS["pr_request_date"],
+                        help=TABLE_COLUMN_HELP["pr_request_date"],
+                        format="DD/MM/YYYY",
+                    ),
+                    TABLE_COLUMNS["unit_price"]: st.column_config.NumberColumn(
+                        width=TABLE_COLUMN_WIDTHS["unit_price"],
+                        help=TABLE_COLUMN_HELP["unit_price"],
+                        min_value=0.0,
+                        format="accounting",
                     ),
                     # คอลัมน์ไฟล์: แสดงเป็นไอคอน 📁 กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่
                     TABLE_COLUMNS["sharepoint_url"]: st.column_config.LinkColumn(
@@ -479,6 +781,23 @@ def render_table_card(
                     ),
                 },
             )
+
+            # ดักจับสถานะของตาราง: edited_rows (แก้ไข) / deleted_rows (ลบ) / added_rows (เพิ่ม)
+            editor_state = st.session_state.get(editor_key, {})
+            has_changes = any(editor_state.get(name) for name in ("edited_rows", "deleted_rows", "added_rows"))
+            if has_changes:
+                try:
+                    st.session_state[SESSION_KEY_STATUS_MESSAGES] = apply_table_edits(
+                        display_table, [t["id"] for t in visible_transactions], editor_state
+                    )
+                except Exception as error:  # noqa: BLE001 - กันทุกกรณี ไม่ให้ตารางพังทั้งหน้า
+                    st.session_state[SESSION_KEY_STATUS_MESSAGES] = [
+                        ("error", f"❌ บันทึกการเปลี่ยนแปลงไม่สำเร็จ: ลองรีเฟรชหน้าเว็บ รายละเอียด: {error}")
+                    ]
+                st.session_state[SESSION_KEY_EDITOR_VERSION] = editor_version + 1
+                # บันทึกลง SQLite เสร็จแล้ว -> รีรันทั้งหน้าทันที เพื่อให้แถบแจ้งเตือน Overdue (render_overdue_alert)
+                # และตัวเลขสรุปต่าง ๆ query ค่าล่าสุดจากฐานข้อมูลใหม่
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -499,10 +818,11 @@ def _prefill_form_from_purchase_document(purchase_document, form_counter: int) -
     Returns:
         ข้อความสรุปผลให้แสดงผู้ใช้ (ว่างไม่ได้ เพราะต้องบอกผู้ใช้เสมอว่าต้องตรวจเอง)
     """
-    if not purchase_document.name.lower().endswith(".pdf"):
+    if not purchase_document.name.lower().endswith(AUTO_EXTRACT_EXTENSIONS):
         return "⚠️ ไฟล์รูปภาพยังดึงข้อความอัตโนมัติไม่ได้ กรุณากรอกข้อมูลเอง"
 
-    extracted_fields = extract_fields_from_pdf(purchase_document)
+    # เลือกวิธีอ่านตามนามสกุล (PDF / Excel) ถ้าอ่านไม่ได้ฟิลด์จะว่างและระบบแจ้งให้กรอกเอง
+    extracted_fields = extract_fields_from_file(purchase_document, purchase_document.name)
 
     # เติมเฉพาะฟิลด์ที่หาเจอ (ค่าว่างไม่เขียนทับสิ่งที่ผู้ใช้พิมพ์ไว้)
     if extracted_fields.tax_id:
@@ -511,6 +831,18 @@ def _prefill_form_from_purchase_document(purchase_document, form_counter: int) -
         st.session_state[_field_key("vendor", form_counter)] = extracted_fields.vendor
     if extracted_fields.total_amount:
         st.session_state[_field_key("total_price", form_counter)] = float(extracted_fields.total_amount)
+
+    # ฟิลด์ Master-List (โครงร่างการสกัดยังเป็น Logic จำลอง) ชื่อฟิลด์ตรงกับ key ของช่องในฟอร์ม
+    # ถ้าเพิ่มฟิลด์ข้อความใหม่ ให้เพิ่มชื่อในรายการนี้
+    for text_field_name in ("tel", "pr_run_no", "qt_no", "description"):
+        extracted_value = getattr(extracted_fields, text_field_name)
+        if extracted_value:
+            st.session_state[_field_key(text_field_name, form_counter)] = extracted_value
+    pr_request_date = _parse_iso_date_or_none(extracted_fields.pr_request_date)
+    if pr_request_date:
+        st.session_state[_field_key("pr_request_date", form_counter)] = pr_request_date
+    if extracted_fields.unit_price:
+        st.session_state[_field_key("unit_price", form_counter)] = float(extracted_fields.unit_price)
 
     if extracted_fields.warning_message:
         return f"⚠️ {extracted_fields.warning_message}"
@@ -521,7 +853,8 @@ def render_upload_section(form_counter: int) -> None:
     """วาดการ์ด "Upload File": กล่องลากไฟล์ Purchase และ SharePoint
 
     - Purchase: อ่านไฟล์ PDF แล้วเติม TaxID/Vendor ลงฟอร์มให้ และแนบไฟล์นี้กับรายการเมื่อกด Upload
-    - SharePoint: ยังไม่ได้เชื่อมจริง เก็บไฟล์ไว้ในคิว data/sharepoint_pending/ ก่อน
+    - กล่องที่ 2: บันทึกไฟล์ลง local_uploads/ ทันที แล้วเก็บที่อยู่ไฟล์ไว้ผูกกับรายการเมื่อกด Upload
+      (SharePoint ปิดไว้ เตรียมไว้สำหรับเชื่อมต่อในอนาคต)
 
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน (ทำให้กล่อง Purchase ว่างใหม่หลังบันทึกสำเร็จ)
@@ -548,28 +881,41 @@ def render_upload_section(form_counter: int) -> None:
             )
         st.caption(st.session_state.get(SESSION_KEY_PURCHASE_NOTICE, ""))
 
-    # --- กล่องที่ 2: Upload P/O to SharePoint ---
-    st.markdown('<div class="card-section-label">Upload P/O to SharePoint</div>', unsafe_allow_html=True)
-    sharepoint_document = st.file_uploader(
-        "Upload P/O to SharePoint",
+    # --- กล่องที่ 2: Upload P/O (เก็บในเครื่อง local_uploads/) ---
+    # เลือกไฟล์แล้วบันทึกทันที เก็บที่อยู่ไฟล์ไว้ใน session แล้วผูกกับรายการเมื่อกดปุ่ม Upload ในแท็บฟอร์ม
+    # (SharePoint ปิดไว้ เตรียมไว้สำหรับเชื่อมต่อในอนาคต — ดู save_document_and_get_path)
+    st.markdown('<div class="card-section-label">Upload P/O (เก็บในเครื่อง)</div>', unsafe_allow_html=True)
+    local_document = st.file_uploader(
+        "Upload P/O (เก็บในเครื่อง)",
         type=ALLOWED_FILE_TYPES,
-        key="overview_sharepoint_uploader",
+        key=_field_key("local_uploader", form_counter),
         label_visibility="collapsed",
     )
-    if sharepoint_document is None:
-        st.session_state.pop(SESSION_KEY_SHAREPOINT_FILE_ID, None)
-        st.session_state.pop(SESSION_KEY_SHAREPOINT_NOTICE, None)
+    if local_document is None:
+        st.session_state.pop(SESSION_KEY_LOCAL_FILE_ID, None)
+        st.session_state.pop(SESSION_KEY_LOCAL_NOTICE, None)
+        st.session_state.pop(SESSION_KEY_LOCAL_PATH, None)
     else:
-        sharepoint_file_id = f"{sharepoint_document.name}:{sharepoint_document.size}"
-        if st.session_state.get(SESSION_KEY_SHAREPOINT_FILE_ID) != sharepoint_file_id:
-            st.session_state[SESSION_KEY_SHAREPOINT_FILE_ID] = sharepoint_file_id
-            queued_file_path = save_uploaded_document(sharepoint_document, SHAREPOINT_QUEUE_DIRECTORY)
-            st.session_state[SESSION_KEY_SHAREPOINT_NOTICE] = (
-                "📥 เก็บไฟล์ในคิวแล้ว (ระบบยังไม่ได้เชื่อม SharePoint จึงยังไม่ถูกส่งขึ้นไป)"
-                if queued_file_path
-                else ""
-            )
-        st.caption(st.session_state.get(SESSION_KEY_SHAREPOINT_NOTICE, ""))
+        # บันทึกแค่ครั้งเดียวต่อไฟล์ (Streamlit รันสคริปต์ซ้ำทุกครั้งที่มีการกดอะไรสักอย่าง)
+        local_file_id = f"{local_document.name}:{local_document.size}:{form_counter}"
+        if st.session_state.get(SESSION_KEY_LOCAL_FILE_ID) != local_file_id:
+            st.session_state[SESSION_KEY_LOCAL_FILE_ID] = local_file_id
+            try:
+                saved_path = save_document_locally(local_document.getvalue(), local_document.name)
+                st.session_state[SESSION_KEY_LOCAL_PATH] = saved_path
+                st.session_state[SESSION_KEY_LOCAL_NOTICE] = (
+                    "success",
+                    f"✅ บันทึกไฟล์แล้ว กด Upload ในแท็บ \"กรอก Form\" เพื่อผูกไฟล์กับรายการ: {saved_path}",
+                )
+            except LocalStorageError as error:
+                st.session_state.pop(SESSION_KEY_LOCAL_PATH, None)
+                st.session_state[SESSION_KEY_LOCAL_NOTICE] = ("error", f"❌ {error}")
+
+        notice_level, notice_message = st.session_state.get(SESSION_KEY_LOCAL_NOTICE, ("", ""))
+        if notice_level == "error":
+            st.error(notice_message)
+        elif notice_message:
+            st.caption(notice_message)
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +974,25 @@ def render_entry_form(form_counter: int) -> None:
             label_visibility="collapsed",
         )
 
+        # ข้อมูลจากเอกสาร PR / Quotation (Master-List, ไม่บังคับ): ระบบเติมให้จากไฟล์ PDF ผู้ใช้ตรวจ/แก้ได้
+        # ถ้าจะเพิ่มฟิลด์ใหม่: เพิ่มช่องตรงนี้ + ส่งค่าเข้า add_transaction ด้านล่าง
+        with st.expander("ข้อมูลจากเอกสาร PR / Quotation (ไม่บังคับ)"):
+            qt_no = st.text_input("เลขที่ Quotation", key=_field_key("qt_no", form_counter)).strip()
+            pr_request_date = st.date_input(
+                "วันที่ PR",
+                value=None,  # None = ยังไม่ระบุ (ไม่บังคับ) ผู้ใช้เลือกเองหรือรอระบบเติมจากไฟล์
+                format="DD/MM/YYYY",
+                key=_field_key("pr_request_date", form_counter),
+            )
+            description = st.text_area("รายละเอียดอุปกรณ์", key=_field_key("description", form_counter)).strip()
+            unit_price = st.number_input(
+                "ราคาสุทธิที่รวม Discount แล้ว (บาท)",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                key=_field_key("unit_price", form_counter),
+            )
+
         # ข้อมูลเพิ่มเติม (ไม่บังคับ): ไม่อยู่ในดีไซน์ แต่ Dashboard ใช้ยอดเงิน/หมวดหมู่ ซ่อนไว้ไม่รก
         with st.expander("รายละเอียดเพิ่มเติม (ไม่บังคับ)"):
             category_name = st.selectbox("หมวดหมู่", CATEGORY_OPTIONS, key=_field_key("category", form_counter))
@@ -665,11 +1030,13 @@ def render_entry_form(form_counter: int) -> None:
     purchase_document = st.session_state.get(_field_key("purchase_uploader", form_counter))
     document_to_attach = uploaded_po_document or purchase_document
 
-    saved_file_path: Optional[Path] = None
+    # ที่อยู่ไฟล์ในเครื่อง เลือกตามลำดับ: (1) ไฟล์ที่แนบใต้ฟอร์ม/กล่อง Purchase บันทึกตอนนี้เลย
+    # (2) ไฟล์ที่บันทึกไว้แล้วจากแท็บ Upload File — ถ้า (1) ไม่สำเร็จจะไม่บันทึกรายการ เพื่อไม่ให้ไฟล์หายไปเงียบๆ
+    final_file_path: Optional[str] = st.session_state.get(SESSION_KEY_LOCAL_PATH)
     if document_to_attach is not None:
-        saved_file_path = save_uploaded_document(document_to_attach)
-        if saved_file_path is None:
-            return  # save_uploaded_document แสดง error ให้แล้ว
+        final_file_path = save_document_and_get_path(document_to_attach)
+        if final_file_path is None:
+            return  # save_document_and_get_path แสดง error ให้แล้ว
 
     new_transaction_id = add_transaction(
         date=document_date.isoformat(),  # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD
@@ -679,18 +1046,19 @@ def render_entry_form(form_counter: int) -> None:
         po_no=purchase_order_number or None,
         pr_run_no=pr_run_number or None,
         category=category_name,
-        file_path=str(saved_file_path) if saved_file_path else None,
         tel=tel or None,
         email=email or None,
         contact_name=contact_name or None,
-        sharepoint_url=sharepoint_url or None,
+        file_path=final_file_path,
+        sharepoint_url=sharepoint_url or None,  # ลิงก์ที่กรอกเอง (ไม่บังคับ) ยังใช้ได้ตามเดิม
+        pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
+        qt_no=qt_no or None,
+        description=description or None,
+        unit_price=unit_price or None,  # 0 = ไม่ได้กรอก เก็บเป็น NULL
     )
 
     if new_transaction_id is None:
-        # add_transaction แสดง error ให้แล้ว แค่เก็บกวาดไฟล์ที่เพิ่งบันทึก
-        if saved_file_path is not None:
-            remove_saved_document(saved_file_path)
-        return
+        return  # add_transaction แสดง error ให้แล้ว (ไฟล์ที่บันทึกไปแล้วยังอยู่ ผู้ใช้กดบันทึกซ้ำได้)
 
     # ส่วนที่ 5: บันทึกสำเร็จ -> เคลียร์ฟอร์มแล้วโหลดหน้าใหม่
     st.session_state[SESSION_KEY_SUCCESS_MESSAGE] = (
@@ -748,7 +1116,16 @@ def render(start_date: date, end_date: date) -> None:
     if success_message:
         st.success(success_message)
 
+    # แสดงผลการเปลี่ยนสถานะจากตารางครั้งก่อน (เก็บไว้ข้ามการ rerun) แล้วลบทิ้งไม่ให้แสดงซ้ำ
+    for message_level, message_text in st.session_state.pop(SESSION_KEY_STATUS_MESSAGES, []):
+        if message_level == "success":
+            st.toast(message_text)  # สำเร็จ: แจ้งแบบ Toast มุมจอ ไม่กินพื้นที่
+        else:
+            getattr(st, message_level)(message_text)  # ล้มเหลว/ข้อมูล: กล่อง st.error / st.info ค้างไว้ให้อ่าน
+
     # ส่วนที่ 1: แจ้งเตือนใบกำกับภาษีค้าง (เต็มความกว้าง อยู่บนสุดเพื่อให้เห็นก่อน)
+    # ลำดับการทำงาน: แถบนี้นับจาก DB ทุกครั้งที่หน้ารันใหม่ ส่วนการบันทึกการแก้ไขตารางอยู่ถัดลงไป (render_table_card)
+    # ซึ่งจะสั่ง st.rerun() ทันทีหลังบันทึกเสร็จ -> รอบใหม่จึงนับจาก DB ที่อัปเดตแล้วเสมอ (ตัวเลขไม่ค้างค่าเก่า)
     render_overdue_alert()
 
     form_counter: int = st.session_state.setdefault(SESSION_KEY_FORM_COUNTER, 0)

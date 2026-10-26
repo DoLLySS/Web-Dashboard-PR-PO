@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from config import EQUIPMENT_CATEGORIES
-from database import get_category_counts
+from data.database import get_category_counts
 from styles import PALETTE, RADIUS_PX, SHADOW
 
 # ---------------------------------------------------------------------------

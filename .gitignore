@@ -1,4 +1,7 @@
 .env
 venv/
 __pycache__/
-data/
+# data/ มีโค้ด database.py จึงไม่ซ้อนทั้งโฟลเดอร์ — กันเฉพาะข้อมูลจริง (ฐานข้อมูล + ไฟล์เอกสารที่อัปโหลด)
+data/*.db
+data/*.db-*
+data/local_uploads/

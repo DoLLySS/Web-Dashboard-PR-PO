@@ -22,7 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from config import EQUIPMENT_CATEGORIES
-from database import STATUS_PENDING, get_category_counts, get_transactions
+from data.database import STATUS_PENDING, get_category_counts, get_transactions
 from styles import FONT_FAMILY, PALETTE
 from ui_common import build_css
 

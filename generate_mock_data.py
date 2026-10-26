@@ -16,10 +16,11 @@
   - รายการที่ได้รับใบกำกับภาษีแล้ว (Completed)
 """
 
+import random
 from datetime import date, timedelta
 from typing import Optional
 
-from database import (
+from data.database import (
     STATUS_PENDING,
     STATUS_RECEIVED,
     add_transaction,
@@ -71,6 +72,21 @@ MOCK_ROWS: list[tuple[int, str, str, float, bool, bool]] = [
     (75, "Company C", "Software", 14400.00, True, True),
 ]
 
+# รายละเอียดอุปกรณ์จำลองแยกตามหมวด (สุ่มเลือก 1 รายการต่อแถว) -> คอลัมน์ description
+MOCK_DESCRIPTIONS: dict[str, list[str]] = {
+    "Hardware": ["Notebook Dell Latitude 14 inch x2", "Monitor 24 inch x5", "SSD 1TB x10", "Printer HP LaserJet x1"],
+    "Software": ["Microsoft 365 Business License x20", "Antivirus Endpoint License x50", "Adobe Acrobat Pro x5"],
+    "Network": ["Switch 24 Port PoE x2", "Wi-Fi Access Point x4", "Firewall FortiGate 60F x1"],
+    "Service": ["ค่าบริการดูแลระบบรายเดือน", "ค่าติดตั้งระบบเครือข่าย", "ค่าบริการ Cloud Backup รายปี"],
+}
+
+# ส่วนลดจำลอง (ราคาสุทธิ = ราคารวม x (1 - ส่วนลด)) -> คอลัมน์ unit_price
+MOCK_DISCOUNT_RANGE: tuple[float, float] = (0.00, 0.12)
+# วันที่ PR จะอยู่ก่อนวันที่เอกสารกี่วัน (ต่ำสุด, สูงสุด) -> คอลัมน์ pr_request_date
+MOCK_PR_LEAD_DAYS: tuple[int, int] = (3, 10)
+# เมล็ดสุ่มคงที่ เพื่อให้รันซ้ำแล้วได้ข้อมูลชุดเดิม (ทดสอบซ้ำได้)
+MOCK_RANDOM_SEED: int = 2026
+
 
 # ---------------------------------------------------------------------------
 # ฟังก์ชัน
@@ -113,6 +129,7 @@ def generate_test_data(today: Optional[date] = None) -> int:
 
     today = today or date.today()
     inserted_count = 0
+    random_generator = random.Random(MOCK_RANDOM_SEED)
 
     for row_number, (days_ago, vendor, category, price, is_completed, has_link) in enumerate(
         MOCK_ROWS, start=1
@@ -124,6 +141,10 @@ def generate_test_data(today: Optional[date] = None) -> int:
         # เลขผู้เสียภาษีจำลองต่อผู้ขาย (ผู้ขายคนเดิมได้เลขเดิมเสมอ) สร้างจากลำดับของผู้ขายในรายการ
         vendor_index = list(MOCK_VENDOR_CONTACTS).index(vendor)
         tax_id = make_valid_tax_id(f"01055610{vendor_index:02d}0{vendor_index + 1}"[:12])
+
+        # ข้อมูลจาก PR / Quotation (ฟิลด์ใหม่): สุ่มแบบคงที่ตาม MOCK_RANDOM_SEED
+        pr_request_date = document_date - timedelta(days=random_generator.randint(*MOCK_PR_LEAD_DAYS))
+        discount_rate = random_generator.uniform(*MOCK_DISCOUNT_RANGE)
 
         new_id = add_transaction(
             date=document_date.isoformat(),
@@ -138,6 +159,10 @@ def generate_test_data(today: Optional[date] = None) -> int:
             email=email,
             contact_name=contact_name,
             sharepoint_url=MOCK_SHAREPOINT_URL_TEMPLATE.format(number=po_sequence) if has_link else None,
+            pr_request_date=pr_request_date.isoformat(),
+            qt_no=f"QT-{document_date.year}-{200 + row_number:04d}",
+            description=random_generator.choice(MOCK_DESCRIPTIONS[category]),
+            unit_price=round(price * (1 - discount_rate), 2),
         )
         if new_id is not None:
             inserted_count += 1

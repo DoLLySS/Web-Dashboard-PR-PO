@@ -18,8 +18,8 @@ import streamlit as st
 # ค่าคงที่
 # ---------------------------------------------------------------------------
 
-# ที่อยู่ไฟล์ฐานข้อมูล (โฟลเดอร์ data/ อยู่ข้างไฟล์นี้)
-DB_PATH: Path = Path(__file__).parent / "data" / "masterlist.db"
+# ที่อยู่ไฟล์ฐานข้อมูล (อยู่โฟลเดอร์ data/ เดียวกับไฟล์นี้)
+DB_PATH: Path = Path(__file__).parent / "masterlist.db"
 
 # รอสูงสุดกี่วินาทีถ้าฐานข้อมูลถูกคนอื่นล็อกอยู่ ก่อนจะถือว่า Error
 DB_TIMEOUT_SECONDS: int = 10
@@ -44,6 +44,10 @@ UPDATABLE_COLUMNS: frozenset[str] = frozenset(
         "email",
         "contact_name",
         "sharepoint_url",
+        "pr_request_date",
+        "qt_no",
+        "description",
+        "unit_price",
     }
 )
 
@@ -55,6 +59,12 @@ ADDED_COLUMNS: dict[str, str] = {
     "email": "TEXT",  # อีเมล
     "contact_name": "TEXT",  # ชื่อ (ช่อง Name ในฟอร์ม)
     "sharepoint_url": "TEXT",  # ลิงก์ไฟล์บน SharePoint (กดที่ไอคอนโฟลเดอร์ในตารางเพื่อเปิด)
+    # --- ข้อมูลที่สกัดจากเอกสาร PR / Quotation (Master-List) ---
+    # หมายเหตุ: "บริษัทที่ติดต่อสั่งซื้อ" ใช้คอลัมน์ vendor และ "เบอร์โทร" ใช้คอลัมน์ tel (ไม่แยกคอลัมน์ซ้ำซ้อน)
+    "pr_request_date": "TEXT",  # วันที่ PR รูปแบบ YYYY-MM-DD (ค.ศ.) เหมือนคอลัมน์ date
+    "qt_no": "TEXT",  # เลขที่ Quotation
+    "description": "TEXT",  # รายละเอียดอุปกรณ์
+    "unit_price": "REAL",  # ราคาสุทธิที่รวม Discount แล้ว (บาท)
 }
 
 CREATE_TABLE_SQL: str = f"""
@@ -73,7 +83,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     tel            TEXT,                       -- เบอร์โทร
     email          TEXT,                       -- อีเมล
     contact_name   TEXT,                       -- ชื่อ (ช่อง Name ในฟอร์ม)
-    sharepoint_url TEXT                        -- ลิงก์ไฟล์บน SharePoint
+    sharepoint_url TEXT,                       -- ลิงก์ไฟล์บน SharePoint
+    pr_request_date TEXT,                      -- วันที่ PR รูปแบบ YYYY-MM-DD (ค.ศ.)
+    qt_no          TEXT,                       -- เลขที่ Quotation
+    description    TEXT,                       -- รายละเอียดอุปกรณ์
+    unit_price     REAL                        -- ราคาสุทธิที่รวม Discount แล้ว (บาท)
 );
 """
 
@@ -216,6 +230,10 @@ def add_transaction(
     email: Optional[str] = None,
     contact_name: Optional[str] = None,
     sharepoint_url: Optional[str] = None,
+    pr_request_date: Optional[str] = None,
+    qt_no: Optional[str] = None,
+    description: Optional[str] = None,
+    unit_price: Optional[float] = None,
 ) -> Optional[int]:
     """เพิ่มรายการใหม่ 1 แถวลงตาราง transactions
 
@@ -233,6 +251,10 @@ def add_transaction(
         email: อีเมล (ไม่บังคับ)
         contact_name: ชื่อ (ช่อง Name ในฟอร์ม ไม่บังคับ)
         sharepoint_url: ลิงก์ไฟล์บน SharePoint ขึ้นต้นด้วย http(s):// (ไม่บังคับ)
+        pr_request_date: วันที่ PR รูปแบบ "YYYY-MM-DD" (ค.ศ. ไม่บังคับ)
+        qt_no: เลขที่ Quotation (ไม่บังคับ)
+        description: รายละเอียดอุปกรณ์ (ไม่บังคับ)
+        unit_price: ราคาสุทธิที่รวม Discount แล้ว เป็นบาท (ไม่บังคับ)
 
     Returns:
         id ของแถวที่เพิ่ม, หรือ None ถ้าบันทึกไม่สำเร็จ
@@ -249,8 +271,8 @@ def add_transaction(
                 INSERT INTO transactions
                     (date, vendor, tax_id, po_no, pr_run_no, category,
                      total_price, file_path, invoice_status, tel, email, contact_name,
-                     sharepoint_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sharepoint_url, pr_request_date, qt_no, description, unit_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date,
@@ -266,6 +288,10 @@ def add_transaction(
                     email,
                     contact_name,
                     sharepoint_url,
+                    pr_request_date,
+                    qt_no,
+                    description,
+                    unit_price,
                 ),
             )
             return cursor.lastrowid
@@ -311,7 +337,7 @@ def get_transactions(
         start_date: วันที่เริ่ม "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         end_date: วันที่สิ้นสุด "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         invoice_status: กรองตามสถานะใบกำกับภาษี ถ้า None คือทุกสถานะ
-        keyword: ค้นหาในชื่อผู้ขาย, เลข PO, เลขรัน PR, เลขผู้เสียภาษี
+        keyword: ค้นหาในชื่อผู้ขาย (บริษัท), เลข PO, เลขรัน PR, เลขที่ Quotation, เลขผู้เสียภาษี
 
     Returns:
         list ของ dict (ว่างถ้าไม่พบหรือเกิด Error) ใช้ pd.DataFrame(result) ได้ทันที
@@ -332,9 +358,10 @@ def get_transactions(
             params.append(invoice_status)
         if keyword:
             conditions.append(
-                "(vendor LIKE ? OR po_no LIKE ? OR pr_run_no LIKE ? OR tax_id LIKE ?)"
+                "(vendor LIKE ? OR po_no LIKE ? OR pr_run_no LIKE ? "
+                "OR qt_no LIKE ? OR tax_id LIKE ?)"
             )
-            params.extend([f"%{keyword}%"] * 4)
+            params.extend([f"%{keyword}%"] * 5)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC"

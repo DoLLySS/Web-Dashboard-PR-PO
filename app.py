@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from database import init_db
+from data.database import init_db
 from pages_ui import dashboard, overview, settings
 from sidebar_ui import MenuItem, render_sidebar
 from styles import inject_global_styles
