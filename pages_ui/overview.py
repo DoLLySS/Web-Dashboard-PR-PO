@@ -1,14 +1,17 @@
-"""หน้า Overview: แจ้งเตือนใบกำกับภาษีค้าง, ตาราง (ซ้าย), แผงฟอร์ม/อัปโหลด + สรุปอุปกรณ์ (ขวา)
+"""หน้า Overview: แจ้งเตือนใบกำกับภาษีค้าง + ตาราง Master-List เต็มความกว้าง + ปุ่มเปิดหน้าต่างเพิ่มข้อมูล
 
-โครงหน้า (ตามดีไซน์):
-    หัวหน้า (ชื่อหน้า + Date Filter) อยู่ใน app.py
+โครงหน้า (ตารางเป็นจุดสนใจหลัก ใช้พื้นที่กว้างที่สุด):
+    หัวหน้า (ชื่อหน้า + Date Filter) อยู่ใน app.py (ตั้ง layout="wide" ที่ app.py แล้ว ครอบคลุมทุกหน้า)
     แจ้งเตือนใบกำกับภาษีค้าง (เต็มความกว้าง)
-    ┌──────────────────────────────┬─────────────────────────────┐
-    │ การ์ดตาราง                   │ แท็บ [กรอก Form | Upload File]│
-    │  Search bar                  │  การ์ดฟอร์ม / การ์ดอัปโหลด  │
-    │  Item ▾   Vendor ▾           ├─────────────────────────────┤
-    │  ตาราง (วันที่/ผู้ขาย/Item/ไฟล์) │ การ์ด Quantity of equipment │
-    └──────────────────────────────┴─────────────────────────────┘
+                                          [ ➕ เพิ่มข้อมูล / อัปโหลดเอกสาร ]  <- กดแล้วเด้งหน้าต่าง (st.dialog)
+    ┌────────────────────────────────────────────────────────────┐
+    │ การ์ดตาราง (เต็มความกว้าง)                                  │
+    │  Search bar   |   Item ▾   |   Vendor ▾                     │
+    │  ตาราง Master-List                                          │
+    └────────────────────────────────────────────────────────────┘
+    ▸ Quantity of equipment (กางออกดูได้)
+
+    หน้าต่าง "เพิ่มข้อมูล / อัปโหลดเอกสาร" มีแท็บ [กรอก Form | Upload File] (ย้ายมาจากแผงด้านขวาเดิม ไม่เปลี่ยน Logic)
 
 ไฟล์เอกสารถูกบันทึกลงโฟลเดอร์ data/local_uploads/ (utils/local_storage.py) แล้วเก็บที่อยู่ไฟล์ลงฐานข้อมูล
 ส่วนเชื่อม SharePoint ปิดไว้ก่อน เตรียมไว้สำหรับเชื่อมต่อในอนาคต (utils/sharepoint_api.py, ค้นหา "SharePoint ปิดไว้")
@@ -88,21 +91,16 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "sharepoint_url": "ไฟล์เชื่อม SharePoint: กดไอคอนเพื่อเปิดในแท็บใหม่",
 }
 
-# ความกว้างของแต่ละคอลัมน์ (พิกเซล หรือ "small" / "medium" / "large") ปรับให้ตารางไม่ล้นกรอบ
-TABLE_COLUMN_WIDTHS: dict[str, "int | str"] = {
-    "date": 90,
-    "vendor": 140,
-    "category": 85,
-    "total_price": 100,
-    "invoice_status": 110,
-    "tel": 110,
-    "tax_id": 125,
-    "pr_run_no": 100,
-    "pr_request_date": 90,
-    "qt_no": 100,
-    "description": 220,
-    "unit_price": 100,
-    "sharepoint_url": 50,
+# ความกว้างของแต่ละคอลัมน์ (พิกเซล) ปรับให้ตารางทั้ง 13 คอลัมน์พอดีหน้าจอ ไม่มีแถบเลื่อนแนวนอน
+# (วัดจริงบน Chrome: จอ >= 1536px พอดีทั้งที่เปิด Sidebar อยู่, จอ 1280-1366px ต้องพับ Sidebar ก่อน)
+# - คอลัมน์ข้อมูลสั้น/รูปแบบตายตัว ล็อกความกว้างแคบ ๆ
+# - None = ไม่ล็อก ให้คอลัมน์นั้นยืด/หดตามพื้นที่ที่เหลือ (ตอนนี้คือ Description) ถ้าล็อกครบทุกคอลัมน์ จอกว้างจะเหลือที่ว่างท้ายตาราง
+# - ข้อความที่ยาวกว่าช่องจะถูกตัดท้าย (st.data_editor วาดด้วย canvas ไม่มีการปัดบรรทัด) ลากขอบหัวคอลัมน์เพื่อขยายชั่วคราวได้
+# - ถ้าเพิ่มคอลัมน์ใหม่ ระวังผลรวมความกว้างเกินพื้นที่: ต้องตรวจซ้ำว่ายังไม่มีแถบเลื่อน
+TABLE_COLUMN_WIDTHS: dict[str, "int | str | None"] = {
+    "date": 80, "vendor": 118, "category": 66, "total_price": 74, "invoice_status": 96,
+    "tel": 90, "tax_id": 104, "pr_run_no": 98, "pr_request_date": 78, "qt_no": 82,
+    "description": None, "unit_price": 90, "sharepoint_url": 36,
 }
 
 # ข้อความสถานะที่แสดงในตาราง (แก้ข้อความ/ไอคอนที่นี่)
@@ -153,9 +151,6 @@ TABLE_ZEBRA_COLOR: str = "#fff1cf"
 # (เป็นตัวเลือกแรกของ dropdown จึงแสดงข้อความตามดีไซน์ว่า "Item (ประเภท)" / "Vendor" และหมายถึงไม่กรอง)
 ALL_ITEMS_LABEL: str = "Item (ประเภท)"
 ALL_VENDORS_LABEL: str = "Vendor"
-
-# สัดส่วนความกว้างของหน้า: [ฝั่งซ้าย (ตาราง), ฝั่งขวา (ฟอร์ม + อัปโหลด)]
-PAGE_COLUMN_RATIO: list[int] = [3, 2]
 
 # ประเภทไฟล์ที่อนุญาตให้อัปโหลด
 # (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
@@ -209,6 +204,12 @@ PAGE_CSS_RULES: str = """
 .st-key-right_panel [data-testid="stTab"][data-selected="true"] { background: var(--ui-accent); }
 .st-key-right_panel [data-testid="stTab"][data-selected="true"] p { color: #ffffff !important; font-weight: 700; }
 .st-key-right_panel .react-aria-SelectionIndicator { display: none; }  /* ซ่อนเส้นขีดใต้แท็บเดิม */
+
+/* 1.1) ลดระยะขอบรอบตาราง เพื่อให้ตารางกว้างขึ้น (ตารางวาดด้วย canvas ปรับขนาดตัวอักษรด้วย CSS ไม่ได้ จึงเอาพื้นที่จากขอบแทน)
+      ขอบของหน้าหลัก 48px -> 16px, การ์ดตาราง 32px -> 12px, กล่องขาวด้านใน 20px -> 8px (รวมได้ตารางกว้างขึ้น ~128px) */
+[data-testid="stMainBlockContainer"] { padding-left: 16px !important; padding-right: 16px !important; }
+.st-key-table_card { padding-left: 12px !important; padding-right: 12px !important; }
+.st-key-table_inner { padding-left: 8px !important; padding-right: 8px !important; }
 
 /* 2) กล่องขาวครอบตาราง: ตัดมุมตารางให้มน 8px + เส้นขอบบาง */
 .st-key-table_inner [data-testid="stDataFrame"] {
@@ -962,24 +963,26 @@ def render_entry_form(form_counter: int) -> None:
     st.markdown('<div class="card-title">กรอกข้อมูล</div>', unsafe_allow_html=True)
 
     with st.form(key=f"transaction_form_{form_counter}", border=False):
-        # ส่วนที่ 1: ช่องกรอกข้อมูล ลำดับตามดีไซน์ (เพิ่มช่องใหม่ตรงนี้)
-        tax_id = _labeled_text_input("TaxID", "tax_id", form_counter)
-        purchase_order_number = _labeled_text_input("P/O No.", "po_no", form_counter)
-        pr_run_number = _labeled_text_input("PR Run No.", "pr_run_no", form_counter)
-        vendor_name = _labeled_text_input("Vendor", "vendor", form_counter)
-        tel = _labeled_text_input("Tel.", "tel", form_counter)
-        email = _labeled_text_input("Email", "email", form_counter)
-        contact_name = _labeled_text_input("Name", "contact_name", form_counter)
-
-        date_label_column, date_input_column = st.columns([1.35, 2], vertical_alignment="center")
-        date_label_column.markdown('<div class="field-label">Date :</div>', unsafe_allow_html=True)
-        document_date = date_input_column.date_input(
-            "Date",
-            value=date.today(),
-            format="DD/MM/YYYY",
-            key=_field_key("date", form_counter),
-            label_visibility="collapsed",
-        )
+        # ส่วนที่ 1: ช่องกรอกข้อมูล แบ่ง 2 คอลัมน์ให้หน้าต่างไม่ยาวเกินไป (เพิ่มช่องใหม่ในคอลัมน์ที่ต้องการตรงนี้)
+        left_fields, right_fields = st.columns(2, gap="large")
+        with left_fields:
+            tax_id = _labeled_text_input("TaxID", "tax_id", form_counter)
+            purchase_order_number = _labeled_text_input("P/O No.", "po_no", form_counter)
+            pr_run_number = _labeled_text_input("PR Run No.", "pr_run_no", form_counter)
+            vendor_name = _labeled_text_input("Vendor", "vendor", form_counter)
+        with right_fields:
+            tel = _labeled_text_input("Tel.", "tel", form_counter)
+            email = _labeled_text_input("Email", "email", form_counter)
+            contact_name = _labeled_text_input("Name", "contact_name", form_counter)
+            date_label_column, date_input_column = st.columns([1.35, 2], vertical_alignment="center")
+            date_label_column.markdown('<div class="field-label">Date :</div>', unsafe_allow_html=True)
+            document_date = date_input_column.date_input(
+                "Date",
+                value=date.today(),
+                format="DD/MM/YYYY",
+                key=_field_key("date", form_counter),
+                label_visibility="collapsed",
+            )
 
         # ข้อมูลจากเอกสาร PR / Quotation (Master-List, ไม่บังคับ): ระบบเติมให้จากไฟล์ PDF ผู้ใช้ตรวจ/แก้ได้
         # ถ้าจะเพิ่มฟิลด์ใหม่: เพิ่มช่องตรงนี้ + ส่งค่าเข้า add_transaction ด้านล่าง
@@ -1080,15 +1083,19 @@ def render_entry_form(form_counter: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_right_panel(form_counter: int, start_date: date, end_date: date) -> None:
-    """วาดฝั่งขวา: แท็บ [กรอก Form | Upload File] และการ์ด Quantity of equipment
+@st.dialog("เพิ่มข้อมูล / อัปโหลดเอกสาร", width="large")
+def render_entry_dialog(form_counter: int) -> None:
+    """หน้าต่างป๊อปอัป "เพิ่มข้อมูล / อัปโหลดเอกสาร": แท็บ [กรอก Form | Upload File]
+
+    ภายในใช้ฟังก์ชันเดิมทั้งหมด (render_upload_section / render_entry_form) ไม่เปลี่ยน Logic
+    - ปุ่ม Upload สำเร็จ -> render_entry_form สั่ง st.rerun() ทั้งหน้า หน้าต่างจะปิดเองและตารางอัปเดต
+    - กรอกไม่ครบ/บันทึกไม่สำเร็จ -> หน้าต่างค้างไว้พร้อมข้อความ error ข้อมูลที่กรอกไม่หาย
+    - ปิดหน้าต่างด้วยปุ่ม x ได้เสมอ (ค่าที่กรอกค้างจะถูกล้างเมื่อเปิดใหม่)
 
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน
-        start_date: วันที่เริ่มต้นจาก Date Filter
-        end_date: วันที่สิ้นสุดจาก Date Filter
     """
-    with st.container(key="right_panel"):
+    with st.container(key="right_panel"):  # key นี้ใช้ให้ CSS ข้อ 1 จับแท็บ
         form_tab, upload_tab = st.tabs(["กรอก Form", "Upload File"])
 
         # ข้อควรระวัง: ต้อง "เขียนโค้ด" วาดแท็บอัปโหลดก่อนแท็บฟอร์ม เพราะมันเติมค่าลงช่องของฟอร์ม
@@ -1099,11 +1106,30 @@ def render_right_panel(form_counter: int, start_date: date, end_date: date) -> N
         with form_tab, st.container(key="entry_form_card"):
             render_entry_form(form_counter)
 
-        # การ์ด HW / SW / NW / Service (Quantity of equipment)
-        with st.container(key="equipment_card"):
-            st.markdown('<span class="card-pill">Quantity of equipment</span>', unsafe_allow_html=True)
-            with st.container(key="equipment_inner"):
-                render_equipment_table(start_date, end_date)
+
+def render_add_button(form_counter: int) -> None:
+    """วาดปุ่ม "เพิ่มข้อมูล / อัปโหลดเอกสาร" (ชิดขวา เหนือตาราง) กดแล้วเปิดหน้าต่างฟอร์ม/อัปโหลด
+
+    Args:
+        form_counter: ตัวนับของฟอร์มปัจจุบัน (ส่งต่อให้หน้าต่าง)
+    """
+    _, button_column = st.columns([3, 1])
+    if button_column.button(
+        "➕ เพิ่มข้อมูล / อัปโหลดเอกสาร", type="primary", width="stretch", key="open_entry_dialog"
+    ):
+        render_entry_dialog(form_counter)
+
+
+def render_equipment_summary(start_date: date, end_date: date) -> None:
+    """วาดสรุป Quantity of equipment (HW / SW / NW / Service) ใต้ตาราง แบบกางออก/พับเก็บได้
+
+    Args:
+        start_date: วันที่เริ่มต้นจาก Date Filter
+        end_date: วันที่สิ้นสุดจาก Date Filter
+    """
+    with st.expander("Quantity of equipment", expanded=False):
+        with st.container(key="equipment_inner"):
+            render_equipment_table(start_date, end_date)
 
 
 def render(start_date: date, end_date: date) -> None:
@@ -1137,12 +1163,12 @@ def render(start_date: date, end_date: date) -> None:
 
     form_counter: int = st.session_state.setdefault(SESSION_KEY_FORM_COUNTER, 0)
     range_transactions = get_transactions(start_date.isoformat(), end_date.isoformat())
-    left_column, right_column = st.columns(PAGE_COLUMN_RATIO, gap="medium")
 
-    # ส่วนที่ 2: ฝั่งซ้าย = การ์ดตาราง (Search bar + Item/Vendor + ตาราง)
-    with left_column:
-        render_table_card(range_transactions, start_date, end_date)
+    # ส่วนที่ 2: ปุ่มเปิดหน้าต่าง "เพิ่มข้อมูล / อัปโหลดเอกสาร" (ฟอร์ม + อัปโหลดไฟล์ อยู่ใน render_entry_dialog)
+    render_add_button(form_counter)
 
-    # ส่วนที่ 3: ฝั่งขวา = แท็บฟอร์ม/อัปโหลด + การ์ดสรุปอุปกรณ์
-    with right_column:
-        render_right_panel(form_counter, start_date, end_date)
+    # ส่วนที่ 3: การ์ดตาราง เต็มความกว้าง (Search bar + Item/Vendor + ตาราง)
+    render_table_card(range_transactions, start_date, end_date)
+
+    # ส่วนที่ 4: สรุปอุปกรณ์ (พับเก็บได้) อยู่ใต้ตาราง
+    render_equipment_summary(start_date, end_date)
