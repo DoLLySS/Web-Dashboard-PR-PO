@@ -240,6 +240,26 @@ PAGE_CSS_RULES: str = """
 .st-key-table_header_row h3 { padding: 0 !important; margin: 0 !important; }
 .st-key-table_header_row { margin-bottom: -8px; }
 
+/* 1.3) หน้าต่าง Popup แบบแคบ (width="small"): ปุ่มถัดไปเต็มความกว้าง และลดขอบ/ขนาดหัวข้อของฟอร์มให้ช่องกรอกกว้างขึ้น */
+.st-key-step1_next_button,
+.st-key-step1_next_button button { width: 100% !important; }
+.st-key-entry_form_card { padding: 4px !important; }
+.st-key-entry_form_card .card-title { font-size: 18px !important; margin: 0 0 4px 0 !important; }
+.st-key-entry_form_card [data-testid="stForm"] { padding: 12px !important; }
+
+/* 1.4) ตัวอักษรใน Popup ให้ใหญ่ขึ้นอ่านง่าย (ทั้งขั้นที่ 1 และ 2): ป้ายชื่อช่อง 15px, ข้อความในช่องกรอก 14px
+        ถ้าอยากปรับขนาดอีก แก้ตัวเลข font-size ในกฎนี้ที่เดียว */
+div[data-testid="stDialog"] label,
+div[data-testid="stDialog"] label p { font-size: 15px !important; font-weight: 500 !important; }
+div[data-testid="stDialog"] input,
+div[data-testid="stDialog"] [data-baseweb="select"] { font-size: 14px !important; }
+div[data-testid="stDialog"] .field-label { font-size: 15px !important; font-weight: 500 !important; }
+/* หัวข้อคำถามขั้นที่ 1 (####) ไม่ให้ใหญ่ข่มปุ่มตัวเลือก */
+div[data-testid="stDialog"] h4 { font-size: 16px !important; font-weight: 600 !important; padding: 0 0 4px 0 !important; }
+/* เว้นช่องไฟระหว่างฟิลด์ในฟอร์มขั้นที่ 2 ไม่ให้เบียดเมื่อตัวอักษรใหญ่ขึ้น */
+.st-key-entry_form_card [data-testid="stForm"] [data-testid="stVerticalBlock"] { gap: 0.85rem !important; }
+.step-subtitle { font-size: 14px; color: #666; margin: 0 0 8px 0; }  /* ข้อความ "ขั้นตอนที่ X / 2" */
+
 /* 2) กล่องขาวครอบตาราง: ตัดมุมตารางให้มน 8px + เส้นขอบบาง */
 .st-key-table_inner [data-testid="stDataFrame"] {
     border-radius: INNER_RADIUS; overflow: hidden; border: 1px solid var(--ui-border);
@@ -1001,9 +1021,9 @@ def render_questions_step(form_counter: int) -> None:
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน (ส่งต่อให้ callback)
     """
-    st.caption("ขั้นตอนที่ 1 / 2 — ข้อมูลเบื้องต้น")
+    st.markdown('<p class="step-subtitle">ขั้นตอนที่ 1 / 2 — ข้อมูลเบื้องต้น</p>', unsafe_allow_html=True)
 
-    st.markdown("**ประเภทของ PR/PO (Item):**")
+    st.markdown("#### ประเภทของ PR/PO (Item):")
     selected_item = st.segmented_control(
         "ประเภทของ PR/PO (Item)",
         STEP1_ITEM_OPTIONS,
@@ -1013,7 +1033,8 @@ def render_questions_step(form_counter: int) -> None:
         label_visibility="collapsed",
     )
 
-    st.markdown("**สถานะใบกำกับภาษี:**")
+    st.write("")  # เว้นระยะระหว่างสองคำถาม
+    st.markdown("#### สถานะใบกำกับภาษี:")
     selected_invoice_choice = st.segmented_control(
         "สถานะใบกำกับภาษี",
         INVOICE_CHOICE_OPTIONS,
@@ -1027,6 +1048,7 @@ def render_questions_step(form_counter: int) -> None:
     is_answered = selected_item is not None and selected_invoice_choice is not None
     if not is_answered:
         st.caption("⚠️ กรุณาเลือกให้ครบทั้ง 2 ข้อ")
+    st.write("")  # เว้นระยะก่อนปุ่มถัดไป
     st.button(
         "ถัดไป ➡️",
         type="primary",
@@ -1049,7 +1071,7 @@ def _labeled_text_input(label_text: str, field_name: str, form_counter: int) -> 
     Returns:
         ข้อความที่ผู้ใช้กรอก (ตัดช่องว่างหัวท้ายแล้ว)
     """
-    label_column, input_column = st.columns([1.35, 2], vertical_alignment="center")
+    label_column, input_column = st.columns([1, 2], vertical_alignment="center")
     label_column.markdown(f'<div class="field-label">{label_text} :</div>', unsafe_allow_html=True)
     return input_column.text_input(
         label_text, key=_field_key(field_name, form_counter), label_visibility="collapsed"
@@ -1070,8 +1092,10 @@ def render_entry_form(form_counter: int) -> None:
     st.markdown('<div class="card-title">กรอกข้อมูล</div>', unsafe_allow_html=True)
 
     with st.form(key=f"transaction_form_{form_counter}", border=False):
-        # ส่วนที่ 1: ช่องกรอกข้อมูล แบ่ง 2 คอลัมน์ให้หน้าต่างไม่ยาวเกินไป (เพิ่มช่องใหม่ในคอลัมน์ที่ต้องการตรงนี้)
-        left_fields, right_fields = st.columns(2, gap="large")
+        # ส่วนที่ 1: ช่องกรอกข้อมูล เรียงแนวตั้ง 1 คอลัมน์ เพราะหน้าต่างแคบ (เพิ่มช่องใหม่ต่อท้ายกลุ่มที่ต้องการตรงนี้)
+        # ถ้าขยายหน้าต่างเป็น width="large" ให้เปลี่ยน 2 บรรทัดนี้กลับเป็น st.columns(2, gap="large") ได้
+        left_fields = st.container()
+        right_fields = st.container()
         with left_fields:
             tax_id = _labeled_text_input("TaxID", "tax_id", form_counter)
             purchase_order_number = _labeled_text_input("P/O No.", "po_no", form_counter)
@@ -1081,7 +1105,7 @@ def render_entry_form(form_counter: int) -> None:
             tel = _labeled_text_input("Tel.", "tel", form_counter)
             email = _labeled_text_input("Email", "email", form_counter)
             contact_name = _labeled_text_input("Name", "contact_name", form_counter)
-            date_label_column, date_input_column = st.columns([1.35, 2], vertical_alignment="center")
+            date_label_column, date_input_column = st.columns([1, 2], vertical_alignment="center")
             date_label_column.markdown('<div class="field-label">Date :</div>', unsafe_allow_html=True)
             document_date = date_input_column.date_input(
                 "Date",
@@ -1091,7 +1115,7 @@ def render_entry_form(form_counter: int) -> None:
                 label_visibility="collapsed",
             )
             # สถานะใบกำกับภาษี: ค่าเริ่มต้นมาจากขั้นที่ 1 (ตั้งไว้ใน go_to_main_form_step) แก้ได้ที่นี่
-            invoice_label_column, invoice_input_column = st.columns([1.35, 2], vertical_alignment="center")
+            invoice_label_column, invoice_input_column = st.columns([1, 2], vertical_alignment="center")
             invoice_label_column.markdown('<div class="field-label">ใบกำกับภาษี :</div>', unsafe_allow_html=True)
             invoice_choice = invoice_input_column.selectbox(
                 "สถานะใบกำกับภาษี",
@@ -1205,7 +1229,8 @@ def render_entry_form(form_counter: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-@st.dialog("เพิ่มข้อมูล / อัปโหลดเอกสาร", width="large")
+# width="small" ให้หน้าต่างกระชับ (ฟอร์มขั้นที่ 2 จึงเรียงช่องแนวตั้ง 1 คอลัมน์) ถ้าอยากกว้างขึ้นเปลี่ยนเป็น "medium"
+@st.dialog("เพิ่มข้อมูล / อัปโหลดเอกสาร", width="small")
 def render_entry_dialog(form_counter: int) -> None:
     """หน้าต่างป๊อปอัป "เพิ่มข้อมูล / อัปโหลดเอกสาร": แท็บ [กรอก Form | Upload File]
 
@@ -1226,9 +1251,10 @@ def render_entry_dialog(form_counter: int) -> None:
         render_questions_step(form_counter)
         return
 
-    st.caption(
-        f"ขั้นตอนที่ 2 / 2 — {st.session_state[SESSION_KEY_ENTRY_ITEM]} · "
-        f"{st.session_state[SESSION_KEY_ENTRY_HAS_INVOICE]}"
+    st.markdown(
+        f'<p class="step-subtitle">ขั้นตอนที่ 2 / 2 — {st.session_state[SESSION_KEY_ENTRY_ITEM]} · '
+        f'{st.session_state[SESSION_KEY_ENTRY_HAS_INVOICE]}</p>',
+        unsafe_allow_html=True,
     )
     with st.container(key="right_panel"):  # key นี้ใช้ให้ CSS ข้อ 1 จับแท็บ
         form_tab, upload_tab = st.tabs(["กรอก Form", "Upload File"])
