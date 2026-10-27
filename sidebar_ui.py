@@ -92,7 +92,7 @@ SIDEBAR_CSS_RULES: str = """
 }
 
 /* 2) ส่วนหัว (โลโก้ + ชื่อเว็บ) */
-.sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 4px 4px 14px 4px; }
+.sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 4px 4px 18px 4px; }  /* โลโก้+ชื่อเว็บ อยู่บนสุด */
 .sidebar-logo {
     width: 48px; height: 48px; flex-shrink: 0;
     border-radius: 50%;
@@ -105,11 +105,13 @@ SIDEBAR_CSS_RULES: str = """
 
 /* 3) การ์ดกลุ่มเมนู (st.expander): พื้นขาว ขอบมน เส้นขอบบาง */
 [data-testid="stSidebar"] [data-testid="stExpander"] {
-    background: var(--group-bg);
-    border: 1px solid var(--group-border);
+    background: transparent;
+    border: none;  /* ไม่มีเส้นขอบ/เงารอบกลุ่มเมนู ให้ดูโล่งแบบ Web App */
+    box-shadow: none;
     border-radius: GROUP_RADIUS;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
 }
+[data-testid="stSidebar"] [data-testid="stExpander"] details { border: none; }
 /* หัวกลุ่ม (DASHBOARD / ORGANIZATION): ตัวเล็ก สีจาง ตัวพิมพ์ใหญ่ */
 [data-testid="stSidebar"] [data-testid="stExpander"] summary p {
     font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--text-muted);
@@ -138,13 +140,15 @@ SIDEBAR_CSS_RULES: str = """
     background: var(--hover-bg);
 }
 
-/* 5) ปุ่มเมนูที่ "เลือกอยู่" (type="primary"): ไฮไลท์พื้นสีฟ้า + แถบสีด้านซ้าย + ตัวหนา */
+/* 5) ปุ่มเมนูที่ "เลือกอยู่" (type="primary"): ไฮไลท์พื้นสีฟ้าอ่อน มุมมน ตัวอักษร/ไอคอนสีฟ้า ตัวหนา */
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] {
     background: var(--active-bg);
     color: var(--active-text);
     font-weight: 700;
-    box-shadow: inset 4px 0 0 var(--active-bar);
+    box-shadow: none;
 }
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] p,
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] span { color: var(--active-text); }
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"]:hover {
     background: var(--active-bg);
 }

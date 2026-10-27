@@ -20,12 +20,13 @@ import streamlit as st
 # ค่าคงที่: ฟอนต์
 # ---------------------------------------------------------------------------
 
-# ฟอนต์หลักของระบบ (Inter สำหรับอังกฤษ/ตัวเลข, Noto Sans Thai สำหรับไทย)
+# ฟอนต์หลักของระบบ: Inter สำหรับอังกฤษ/ตัวเลข (ตัวเลขเรียงเท่ากัน อ่านง่าย) + Sarabun สำหรับไทย (ออกแบบมาเพื่ออ่านข้อความ ไม่มีหัวกลม)
 # ถ้าเครื่องไม่มีอินเทอร์เน็ต จะตกไปใช้ sans-serif ของระบบอัตโนมัติ
-FONT_FAMILY: str = "'Inter', 'Noto Sans Thai', sans-serif"
+# อยากเปลี่ยนเป็น Prompt: แก้ชื่อ Sarabun -> Prompt ทั้งใน FONT_FAMILY และ GOOGLE_FONTS_URL (ต้องตรงกัน)
+FONT_FAMILY: str = "'Inter', 'Sarabun', sans-serif"
 GOOGLE_FONTS_URL: str = (
     "https://fonts.googleapis.com/css2?"
-    "family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap"
+    "family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@500;600;700&display=swap"
 )
 
 # ขนาดตัวอักษรของทั้งแอป (px) แก้ตัวเลขที่นี่ที่เดียว แล้วทุกหน้าจะเปลี่ยนตาม (ใช้ผ่านตัวแปร CSS --app-fs-<ชื่อ>)
@@ -41,7 +42,7 @@ TYPOGRAPHY_PX: dict[str, int] = {
 
 # ความสูงของแถวในตาราง (px) ใช้กับตาราง AgGrid ทุกตัวผ่านธีมใน ui_grid.py
 # ยิ่งสูงยิ่งโปร่ง แก้ที่นี่ที่เดียวแล้วทุกตารางเปลี่ยนตาม
-TABLE_ROW_HEIGHT_PX: int = 44
+TABLE_ROW_HEIGHT_PX: int = 52
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: สี (Color Palette) รหัส HEX
@@ -97,7 +98,7 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
         "card-title": "28px",
         "metric-value": "30px",
         "main-padding-x": "5rem",
-        "main-padding-top": "6rem",
+        "main-padding-top": "2.5rem",
         "container-max": "none",
         "block-gap": "1.5rem",  # ช่องไฟระหว่างการ์ด
     },
@@ -108,7 +109,7 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
         "card-title": "22px",
         "metric-value": "24px",
         "main-padding-x": "0.75rem",
-        "main-padding-top": "4rem",
+        "main-padding-top": "3.5rem",
     },
     "tablet": {
         "heading-scale": "0.9",  # ขนาดปานกลาง
@@ -117,7 +118,7 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
         "card-title": "25px",
         "metric-value": "27px",
         "main-padding-x": "2rem",
-        "main-padding-top": "5rem",
+        "main-padding-top": "2.5rem",
     },
     "desktop": {
         "heading-scale": "1",
@@ -126,7 +127,7 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
         "card-title": "30px",
         "metric-value": "34px",
         "main-padding-x": "3rem",
-        "main-padding-top": "6rem",
+        "main-padding-top": "2.5rem",
         "container-max": "1800px",  # ขยายเนื้อหาให้กว้างขึ้น ไม่กระจุกอยู่กลางจอ (แต่ไม่ยืดจนอ่านยากบนจอ 4K)
         "block-gap": "1.5rem",
     },
@@ -137,7 +138,12 @@ RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 GLOBAL_CSS_RULES: str = """
-/* ===== 1) ฟอนต์: ใช้ Inter + Noto Sans Thai ทั้งระบบ ===== */
+/* ===== 1) ฟอนต์: ใช้ Inter + Sarabun ทั้งระบบ + ทำให้ตัวหนังสือคมชัด (Anti-aliased) ===== */
+html, body, .stApp {
+    -webkit-font-smoothing: antialiased;  /* ขอบตัวอักษรเนียนบน Chrome/Safari/Mac */
+    -moz-osx-font-smoothing: grayscale;   /* เช่นเดียวกันบน Firefox (Mac) */
+    text-rendering: optimizeLegibility;
+}
 html, body, .stApp, [data-testid="stApp"],
 .stApp button, .stApp input, .stApp textarea, .stApp select,
 .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp li, .stApp td, .stApp th {
@@ -258,7 +264,13 @@ html, body, .stApp, [data-testid="stApp"],
 [data-testid="stTable"] td { color: var(--app-text); }
 
 /* ===== 8) ตัวเลขสรุป (st.metric) ===== */
-[data-testid="stMetric"] { padding: 12px 16px; box-shadow: var(--app-shadow); }
+/* KPI Card: พื้นขาว ขอบมน 8px เงาบาง ๆ และ padding ภายใน */
+[data-testid="stMetric"] {
+    padding: 16px 20px;
+    background: #FFFFFF;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
 [data-testid="stMetricLabel"] { color: var(--app-text-muted); }
 [data-testid="stMetricValue"] { font-size: var(--app-metric-value); }  /* ขนาดตัวเลขเปลี่ยนตามช่วงจอ กันตัวเลขถูกตัดบนจอแคบ */
 
@@ -305,10 +317,15 @@ html, body, .stApp, [data-testid="stApp"],
 /* ===== 10) ซ่อนส่วนเริ่มต้นของ Streamlit ให้ดูเป็น Web App ขององค์กร ===== */
 /* เมนูแฮมเบอร์เกอร์ (#MainMenu คือชื่อเดิม, stMainMenu คือชื่อของ Streamlit รุ่นปัจจุบัน) ปุ่ม Deploy และ Footer */
 #MainMenu, [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
+[data-testid="stToolbar"], [data-testid="stDecoration"],
 footer, [data-testid="stFooter"] {
     visibility: hidden;
 }
-/* หมายเหตุ: ไม่ซ่อนทั้ง Header เพราะมีปุ่มเปิด/ปิด Sidebar อยู่ ซึ่งจำเป็นบนมือถือ */
+/* หมายเหตุ: ไม่ซ่อนทั้ง Header (header {visibility: hidden}) เพราะมีปุ่มเปิด/ปิด Sidebar อยู่ ซึ่งจำเป็นบนมือถือ
+   จึงทำให้ Header โปร่งใส (ข้อ 2) และซ่อนเฉพาะเมนู/ปุ่ม Deploy/แถบสีด้านบนแทน */
+
+/* หัวข้อทุกระดับใช้ตัวหนาปานกลาง (600) ให้เด่นกว่าเนื้อหาแต่ไม่หนาเกิน */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4 { font-weight: 600; }
 
 /* ===== 11) พื้นที่เนื้อหาหลัก: ระยะห่างและความกว้างสูงสุดตามช่วงจอ ===== */
 [data-testid="stMainBlockContainer"], .block-container {
@@ -328,6 +345,122 @@ footer, [data-testid="stFooter"] {
 [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] { gap: 1.5rem; }
 /* หัวหน้าแถบบนสุด: เว้นระยะด้านล่างก่อนถึงเนื้อหา */
 .st-key-page_header { margin-bottom: 0.5rem; }
+/* ชื่อหน้าชิดบน: ตัด margin/padding เดิมของ st.header ออก ไม่ให้มีที่ว่างเหนือหัวข้อ */
+.st-key-page_header h2 { margin: 0; padding: 0; line-height: 1.2; }
+.st-key-page_header [data-testid="stCaptionContainer"] { margin-top: 2px; }
+
+/* ===== 11.1.1) หัวข้อหน้า: ตัวใหญ่หนา ไล่สีตัวอักษร มีแท่งสีสั้นใต้หัวข้อ และเลื่อนเข้าตอนโหลดหน้า =====
+   แก้ขนาดที่ font-size (หัวข้อ) / กว้าง-สูงของแท่งสีที่ ::after / สีไล่ที่ linear-gradient */
+.st-key-page_header h2 {
+    position: relative;
+    font-size: clamp(1.9rem, 1.4rem + 1.6vw, 2.6rem) !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em;
+    padding-bottom: 12px;
+    background: linear-gradient(100deg, #0F172A 0%, #1D4ED8 70%, #0D9488 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: page-title-in 0.45s cubic-bezier(.2,.8,.2,1) both;
+}
+.st-key-page_header h2::after {
+    content: "";
+    position: absolute;
+    left: 0; bottom: 0;
+    width: 48px; height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2563EB, #2DD4BF);
+    animation: page-title-bar 0.6s 0.15s cubic-bezier(.2,.8,.2,1) both;
+}
+.st-key-page_header [data-testid="stCaptionContainer"] {
+    margin-top: 6px;
+    animation: page-title-in 0.45s 0.08s cubic-bezier(.2,.8,.2,1) both;
+}
+.st-key-page_header [data-testid="stCaptionContainer"] p {
+    font-size: 1.05rem !important;
+    color: #475569 !important;
+    letter-spacing: 0.01em;
+}
+@keyframes page-title-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes page-title-bar { from { width: 0; } to { width: 48px; } }
+
+/* ===== 11.1.2) Date Filter (วันที่ To วันที่): ช่องแคบพอดีวันที่ ชิดขวา ตอบสนองตอนชี้/คลิก (เฉพาะจอ >= 768px) =====
+   ปรับความกว้างช่องที่ width ของ stDateInput (ตอนนี้ 168px) */
+@media (min-width: 768px) {
+    .st-key-page_header [data-testid="stColumn"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 0.6rem;
+    }
+    .st-key-page_header [data-testid="stColumn"] [data-testid="stColumn"] {
+        flex: 0 0 auto !important; width: auto !important; min-width: 0 !important;
+    }
+    .st-key-page_header [data-testid="stDateInput"] { width: 168px; }
+}
+.st-key-page_header [data-testid="stDateInputField"] {
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.st-key-page_header [data-testid="stDateInputField"]:hover {
+    border-color: #93C5FD;
+    box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
+    transform: translateY(-1px);
+}
+.st-key-page_header [data-testid="stDateInputField"]:focus-within { transform: translateY(-1px); }
+.st-key-page_header [data-testid="stDateInput"] svg { transition: transform 0.2s ease, color 0.2s ease; }
+.st-key-page_header [data-testid="stDateInputField"]:hover ~ * svg,
+.st-key-page_header [data-testid="stDateInput"]:hover svg { transform: scale(1.15); color: var(--app-primary); }
+/* ตัวคั่น "To" เป็นแคปซูลเล็ก ๆ สีเทาอ่อน */
+.date-to-chip {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    background: #EEF2FF; color: #4F46E5; font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+    position: relative; top: -7px;  /* ยกให้อยู่กึ่งกลางแนวเดียวกับช่องวันที่ */
+}
+/* ===== 11.1.3) ปฏิทินเลือกวันที่ (ใช้กับ date_input ทุกช่องในแอป) =====
+   - ขนาดคงที่ทุกเดือน: กว้าง 300px และสูงเท่ากับเดือนที่มี 6 สัปดาห์ (เดือน 5 สัปดาห์จะเหลือที่ว่างด้านล่างแทนที่จะหดตัว)
+   - เซลล์วันกลม 36px, วันที่เลือกเป็นสีไล่ฟ้า, วันของเดือนอื่นจาง
+   - เปิดปฏิทินแล้วเด้งนุ่ม (ใช้ opacity/transform เท่านั้น ไม่กระทบตำแหน่ง popover)
+   ปรับความกว้างที่ width / ความสูงขั้นต่ำที่ min-height ของ role="application" */
+[data-testid="stDateInputCalendar"] {
+    width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
+    border-radius: 14px; overflow: hidden;
+    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.05), 0 18px 40px -8px rgba(37, 99, 235, 0.28) !important;
+    transform-origin: top left;
+    animation: calendar-pop-in 0.18s cubic-bezier(.2,.8,.2,1) both;
+}
+[data-testid="stDateInputCalendar"] [role="application"] { width: 100%; min-height: 304px; box-sizing: border-box; }
+[data-testid="stDateInputCalendar"] table[role="grid"] { width: 100%; table-layout: fixed; }
+[data-testid="stDateInputCalendar"] th { font-size: 12px; font-weight: 700; color: #64748B; text-align: center; padding: 6px 0; }
+[data-testid="stDateInputCalendar"] td { height: 40px !important; padding: 2px 0 !important; text-align: center; }
+[data-testid="stDateInputCalendar"] td > [role="button"] {
+    width: 36px !important; height: 36px !important; margin: 0 auto; border-radius: 50% !important;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 500; cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+[data-testid="stDateInputCalendar"] td > [role="button"]:hover:not([data-selected="true"]):not([data-disabled="true"]) {
+    background: #DBEAFE !important; color: #1D4ED8; transform: scale(1.08);
+}
+[data-testid="stDateInputCalendar"] td > [data-selected="true"] {
+    background: linear-gradient(135deg, #2563EB, #0EA5E9) !important; color: #FFFFFF !important; font-weight: 700;
+    box-shadow: 0 6px 14px -4px rgba(37, 99, 235, 0.6);
+}
+[data-testid="stDateInputCalendar"] td > [data-outside-month="true"] { opacity: 0.35; }
+/* ใช้ translate/scale แยก ไม่แตะ transform เพราะ popover ใช้ transform จัดตำแหน่งอยู่ */
+@keyframes calendar-pop-in { from { opacity: 0; translate: 0 -8px; scale: 0.97; } to { opacity: 1; translate: 0 0; scale: 1; } }
+
+/* ไอคอนปฏิทินในช่องวันที่: เส้นมน ไล่สีฟ้า-เขียวอมฟ้า (ซ่อนเส้นของไอคอนเดิมแล้ววาดใหม่ด้วย mask) ยังกดเปิดปฏิทินได้เหมือนเดิม */
+[data-testid="stDateInput"] svg path { display: none; }
+[data-testid="stDateInput"] svg {
+    width: 22px; height: 22px;
+    background: linear-gradient(135deg, #2563EB, #0D9488);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='5' width='17' height='15.5' rx='3.5'/%3E%3Cpath d='M3.5 10h17M8 3v4M16 3v4'/%3E%3Ccircle cx='8.5' cy='14.5' r='0.8' fill='black'/%3E%3Ccircle cx='12' cy='14.5' r='0.8' fill='black'/%3E%3Ccircle cx='15.5' cy='14.5' r='0.8' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='5' width='17' height='15.5' rx='3.5'/%3E%3Cpath d='M3.5 10h17M8 3v4M16 3v4'/%3E%3Ccircle cx='8.5' cy='14.5' r='0.8' fill='black'/%3E%3Ccircle cx='12' cy='14.5' r='0.8' fill='black'/%3E%3Ccircle cx='15.5' cy='14.5' r='0.8' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+@media (prefers-reduced-motion: reduce) {
+    [data-testid="stDateInputCalendar"], [data-testid="stDateInputCalendar"] td > [role="button"] { animation: none; transition: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .st-key-page_header h2,.st-key-page_header h2::after, .st-key-page_header [data-testid="stCaptionContainer"] { animation: none; }
+    .st-key-page_header [data-testid="stDateInputField"], .st-key-page_header [data-testid="stDateInput"] svg { transition: none; transform: none !important; }
+}
 
 /* ===== 11.2) ตารางข้อมูล (st.dataframe / data_editor): พื้นขาว เงาบาง ๆ เหมือน Card ===== */
 [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
@@ -375,6 +508,37 @@ def build_responsive_css() -> str:
   [data-testid="stButton"] button, [data-testid="stDownloadButton"] button,
   [data-testid="stFormSubmitButton"] button {{ width: 100%; }}
   .st-key-dashboard_export [data-testid="stDownloadButton"] {{ justify-content: stretch; }}
+  .st-key-page_header [data-testid="stColumn"]:has(.header-spacer) {{ display: none; }}  /* ซ่อนคอลัมน์ว่างของแถบหัว */
+
+  /* ทุกแถวคอลัมน์ในเนื้อหาหลักเรียงต่อกันแนวตั้ง (Streamlit ทำเองที่ < 640px เราครอบคลุมถึง 767px ด้วย) */
+  [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap; gap: 0.75rem; }}
+  [data-testid="stMainBlockContainer"] [data-testid="stColumn"] {{ min-width: 100%; flex-basis: 100%; }}
+  /* คอลัมน์ว่างตัวดันปุ่มชิดขอบ (กึ่งกลางของแถบปุ่มใต้ตัวกรอง) ไม่จำเป็นเมื่อเรียงแนวตั้ง */
+  .st-key-table_action_bar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has([data-testid="stButton"], [data-testid="stDownloadButton"])) {{ display: none; }}
+
+  .st-key-table_action_bar.st-key-table_action_bar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+    min-width: 0; max-width: 100%; flex: 1 1 100%;  /* คอลัมน์เต็มแถวแต่ไม่เกินความกว้างของแถบ (กัน padding ดันล้น) */
+  }}
+  /* แถบปุ่ม Export บนมือถือ: CSV กับ Excel แบ่งครึ่งความกว้างเท่ากัน ปุ่มเต็มช่อง ไม่ล้นขอบจอ (class ซ้อนสองชั้นเพื่อให้ชนะกฎของหน้า) */
+  .st-key-table_action_bar.st-key-table_action_bar [data-testid="stColumn"] [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap; width: 100%; }}
+  .st-key-table_action_bar.st-key-table_action_bar [data-testid="stColumn"] [data-testid="stColumn"] {{ flex: 1 1 0; min-width: 0; }}
+  .st-key-table_action_bar.st-key-table_action_bar [data-testid="stColumn"] [data-testid="stColumn"] [data-testid="stDownloadButton"],
+  .st-key-table_action_bar.st-key-table_action_bar [data-testid="stColumn"] [data-testid="stColumn"] button {{ width: 100%; padding-left: 8px; padding-right: 8px; }}
+
+  /* Popup: กว้างเกือบเต็มจอ ช่องฟอร์มเรียงแนวตั้ง ปุ่ม "บันทึก" ขึ้นก่อน "ย้อนกลับ" (กดง่ายด้วยนิ้วโป้ง) */
+  div[data-testid="stDialog"] div[role="dialog"] {{ width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); }}
+  div[data-testid="stDialog"] [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap; gap: 0.5rem; }}
+  div[data-testid="stDialog"] [data-testid="stColumn"] {{ min-width: 100%; flex-basis: 100%; }}
+  div[data-testid="stDialog"] [data-testid="stHorizontalBlock"]:has([data-testid="stFormSubmitButton"]) {{
+    flex-direction: column-reverse;
+  }}
+  div[data-testid="stDialog"] [data-testid="stHorizontalBlock"]:has([data-testid="stFormSubmitButton"]) > [data-testid="stColumn"]:nth-child(2) {{
+    display: none;  /* ช่องว่างกลางแถวปุ่ม */
+  }}
+
+  /* ปุ่ม/ช่องกรอกสูงพอสำหรับนิ้ว (>= 44px) และฟอนต์ช่องกรอก >= 16px กัน iOS ซูมหน้าเองตอนแตะ */
+  button, [data-baseweb="select"] > div, [data-baseweb="input"] {{ min-height: 44px; }}
+  input, textarea {{ font-size: 16px !important; }}
 }}
 
 /* ===== 13) Responsive: iPad/Tablet ({TABLET_MIN_PX}-{TABLET_MAX_PX}px) ===== */
@@ -398,6 +562,32 @@ def build_responsive_css() -> str:
   .st-key-page_header [data-testid="stColumn"]:has([data-testid="stColumn"]) {{
     min-width: min(100%, 340px);
     flex-basis: 340px;
+  }}
+  /* คอลัมน์ว่างตัวดัน Date Filter ไปขวา ไม่จำเป็นบนจอแคบ (ซ่อนไม่ให้กินบรรทัด) */
+  .st-key-page_header [data-testid="stColumn"]:has(.header-spacer) {{ display: none; }}
+
+  /* แถบตัวกรองของตาราง: ช่องค้นหาเต็มบรรทัด ส่วน Item/Vendor แบ่งครึ่งบรรทัดถัดไป */
+  .st-key-table_card [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stTextInput"]) {{
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }}
+  .st-key-table_card [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stTextInput"]) > [data-testid="stColumn"]:first-child {{
+    flex-basis: 100%;
+    min-width: 100%;
+  }}
+  .st-key-table_card [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stTextInput"]) > [data-testid="stColumn"]:not(:first-child) {{
+    flex: 1 1 200px;
+    min-width: 200px;
+  }}
+  /* แถบปุ่มใต้ตัวกรอง: ปุ่มลบ | (ช่องว่าง) | Export ถ้าที่ไม่พอให้ตกบรรทัด และซ่อนช่องว่างตัวดัน */
+  .st-key-table_action_bar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap; }}
+  .st-key-table_action_bar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:not(:has([data-testid="stButton"], [data-testid="stDownloadButton"])) {{ display: none; }}
+  .st-key-table_action_bar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has([data-testid="stButton"], [data-testid="stDownloadButton"]) {{
+    flex: 0 0 auto;  /* ปุ่มกว้างตามเนื้อหา ชิดซ้าย/ขวาด้วย space-between ของ PAGE_CSS_RULES ข้อ 1.5 */
+  }}
+  /* ฟอร์มใน Popup: Tablet ยังคง 2 คอลัมน์ ส่วนปุ่ม ย้อนกลับ/บันทึก ไม่ให้ถูกบีบแคบกว่าความกว้างตัวอักษร */
+  div[data-testid="stDialog"] [data-testid="stHorizontalBlock"]:has([data-testid="stFormSubmitButton"]) > [data-testid="stColumn"]:not(:nth-child(2)) {{
+    min-width: 140px;
   }}
 }}
 

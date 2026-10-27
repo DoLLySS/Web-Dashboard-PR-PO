@@ -18,7 +18,7 @@ from st_aggrid import AgGrid, AgGridReturn, GridOptionsBuilder, JsCode
 from st_aggrid.shared import StAggridTheme
 
 from config.logging_setup import get_logger
-from config.styles import FONT_FAMILY, PALETTE, TABLE_ROW_HEIGHT_PX
+from config.styles import FONT_FAMILY, GOOGLE_FONTS_URL, PALETTE, TABLE_ROW_HEIGHT_PX
 
 logger = get_logger(__name__)
 
@@ -26,12 +26,16 @@ logger = get_logger(__name__)
 # ค่าคงที่หน้าตาตาราง (แก้ที่นี่ที่เดียว มีผลทุกตาราง)
 # ---------------------------------------------------------------------------
 
-GRID_FONT_SIZE_PX: int = 15  # ขนาดตัวหนังสือในเซลล์ (15-16px: ตัวใหญ่กว่านี้ 13 คอลัมน์จะไม่พอดีจอ)
-GRID_HEADER_FONT_SIZE_PX: int = 15  # ขนาดตัวหนังสือหัวตาราง
+GRID_FONT_SIZE_PX: int = 18  # ขนาดตัวหนังสือในเซลล์ (18px: อ่านง่าย แลกกับข้อความถูกตัด … มากขึ้น ตารางเลื่อนแนวนอนได้เอง)
+GRID_HEADER_FONT_SIZE_PX: int = 16  # ขนาดตัวหนังสือหัวตาราง (เล็กกว่าเนื้อหาเล็กน้อย แยกด้วยตัวหนาและสีพื้น)
+GRID_HEADER_FONT_WEIGHT: int = 700  # น้ำหนักตัวหนังสือหัวตาราง (700 = bold)
+GRID_TEXT_COLOR: str = "#334155"  # สีตัวหนังสือในเซลล์: เทาเข้ม (Charcoal) ไม่ดำสนิท อ่านสบายตา
+GRID_BORDER_COLOR: str = "#E8EDF3"  # สีเส้นขอบตาราง/เส้นคั่นแถว: อ่อนมาก ไม่แย่งความสนใจจากตัวหนังสือ
 GRID_HEADER_HEIGHT_PX: int = 48  # ความสูงแถวหัวตาราง
-GRID_CELL_PADDING_PX: int = 10  # ช่องไฟซ้าย-ขวาในเซลล์ (ยิ่งมากยิ่งโปร่ง)
-GRID_HEADER_BACKGROUND: str = "#F1F5F9"  # สีพื้นหัวตาราง
-GRID_ZEBRA_COLOR: str = "#fff1cf"  # สีแถวสลับ (แถวที่ 2, 4, 6 ...)
+GRID_CELL_PADDING_PX: int = 12  # ช่องไฟซ้าย-ขวาในเซลล์ (ยิ่งมากยิ่งโปร่ง)
+GRID_HEADER_BACKGROUND: str = "#F4F6F8"  # สีพื้นหัวตาราง
+GRID_ZEBRA_COLOR: str = "#FFF8E8"  # สีแถวสลับ (แถวที่ 1, 3, 5 ...) ครีมอ่อนมาก ไม่ให้ป้ายสีสถานะกลืนกับพื้น
+GRID_ROW_HOVER_COLOR: str = "#EEF4FF"  # สีแถวเมื่อเอาเมาส์ชี้ (ฟ้าอ่อน ช่วยให้ตามอ่านแถวได้ง่าย)
 GRID_PAGE_SIZE: int = 15  # จำนวนแถวต่อหน้าของตารางที่เปิด Pagination
 GRID_PAGE_SIZE_CHOICES: list[int] = [10, 15, 25, 50, 100]  # ตัวเลือกจำนวนแถวต่อหน้า
 GRID_DEFAULT_WIDTH_PX: int = 120  # ความกว้างที่ต้องการของคอลัมน์ที่ไม่ได้ระบุ (ตารางจะปรับตามสัดส่วนให้พอดีจอ)
@@ -73,13 +77,14 @@ def build_grid_theme() -> StAggridTheme:
         rowHeight=TABLE_ROW_HEIGHT_PX,  # ความสูงแถว (ตั้งที่ config/styles.py)
         headerHeight=GRID_HEADER_HEIGHT_PX,  # ความสูงหัวตาราง
         headerFontSize=GRID_HEADER_FONT_SIZE_PX,  # ขนาดตัวหนังสือหัวตาราง
-        headerFontWeight=700,  # หัวตารางตัวหนา
+        headerFontWeight=GRID_HEADER_FONT_WEIGHT,  # หัวตารางตัวหนา
         headerBackgroundColor=GRID_HEADER_BACKGROUND,  # สีพื้นหัวตาราง
         headerTextColor=PALETTE["text"],  # สีตัวหนังสือหัวตาราง
-        foregroundColor=PALETTE["text"],  # สีตัวหนังสือในเซลล์
+        foregroundColor=GRID_TEXT_COLOR,  # สีตัวหนังสือในเซลล์
         oddRowBackgroundColor=GRID_ZEBRA_COLOR,  # สีแถวสลับ
+        rowHoverColor=GRID_ROW_HOVER_COLOR,  # สีแถวตอนเมาส์ชี้
         cellHorizontalPadding=GRID_CELL_PADDING_PX,  # ช่องไฟซ้าย-ขวาในเซลล์
-        borderColor=PALETTE["border"],  # สีเส้นขอบ
+        borderColor=GRID_BORDER_COLOR,  # สีเส้นขอบ
         wrapperBorderRadius=8,  # มุมมนของกรอบตาราง
     )
 
@@ -87,11 +92,24 @@ def build_grid_theme() -> StAggridTheme:
 # CSS เสริมในตาราง (ใส่ผ่าน custom_css ของ AgGrid) ใช้ปรับส่วนที่ธีมไม่ครอบคลุม
 # ตัวอย่าง: ขนาดตัวหนังสือแถบเปลี่ยนหน้า (Pagination) และช่องกรอก Filter
 GRID_CUSTOM_CSS: dict[str, dict[str, str]] = {
+    # ตารางอยู่ใน iframe แยก จึงไม่ได้รับฟอนต์จากหน้าหลัก ต้อง @import ฟอนต์ซ้ำที่นี่
+    # (ไลบรารีประกอบ CSS เป็น "ชื่อ { คุณสมบัติ }" จึงใส่ @import ไว้หน้าชื่อ selector แรก ต้องอยู่บนสุดของ dict)
+    f"@import url('{GOOGLE_FONTS_URL}'); .ag-root-wrapper": {
+        "-webkit-font-smoothing": "antialiased",  # ตัวหนังสือคมชัด เนียน
+        "text-rendering": "optimizeLegibility",
+    },
+    ".ag-header-cell-text": {"font-size": f"{GRID_HEADER_FONT_SIZE_PX}px !important", "font-weight": f"{GRID_HEADER_FONT_WEIGHT} !important", "letter-spacing": "0.01em"},
     ".ag-paging-panel": {"font-size": f"{GRID_FONT_SIZE_PX}px !important"},  # แถบ Pagination ด้านล่าง
-    ".ag-header-cell-text": {"font-size": f"{GRID_HEADER_FONT_SIZE_PX}px !important"},  # ชื่อหัวคอลัมน์
     ".ag-cell": {"line-height": f"{TABLE_ROW_HEIGHT_PX - 2}px !important"},  # จัดตัวหนังสือกึ่งกลางแถวสูง
     # ปุ่มกรองที่หัวคอลัมน์ซ่อนไว้ จนกว่าจะเอาเมาส์ชี้ (ประหยัดที่ให้คอลัมน์ไม่ถูกตัด)
     ".ag-header-cell:not(:hover) .ag-header-cell-filter-button": {"display": "none !important"},
+    # เซลล์สถานะตอนกด/แก้ไข: ไม่มีพื้นขาวและกรอบฟ้า เห็นแค่ป้ายสี (ตัวเลือกอยู่ใน popup ที่ pages_ui/overview.py)
+    ".ag-cell[col-id=\"invoice_status\"].ag-cell-focus, .ag-cell[col-id=\"invoice_status\"].ag-cell-editing, .ag-cell[col-id=\"invoice_status\"].ag-cell-inline-editing": {
+        "background-color": "transparent !important",
+        "border": "1px solid transparent !important",
+        "box-shadow": "none !important",
+        "outline": "none !important",
+    },
     ".ag-popup, .ag-menu, .ag-filter": {"font-size": f"{GRID_FONT_SIZE_PX}px !important"},  # เมนู Filter / dropdown
 }
 
@@ -117,7 +135,7 @@ def build_grid_options(
         table: ตารางที่จะแสดง (ชื่อคอลัมน์ = field)
         header_names: {ชื่อคอลัมน์: หัวคอลัมน์ที่แสดง} ถ้าไม่ระบุใช้ชื่อคอลัมน์
         column_widths: {ชื่อคอลัมน์: ความกว้างที่ต้องการ px} ตารางจะย่อ/ขยายทุกคอลัมน์ตามสัดส่วนให้พอดีหน้าจอ
-            (จอแคบ = ย่อได้ตามอัตรา GRID_MIN_WIDTH_RATIO_* แล้วข้อความยาวจะถูกตัดด้วย ... และชี้เมาส์ดูข้อความเต็มได้)
+            (จอแคบ = ย่อได้ตามอัตรา GRID_MIN_WIDTH_RATIO_* แล้วข้อความยาวจะถูกตัดด้วย ... ไม่มี tooltip ตอนชี้เมาส์)
             ค่า None = คอลัมน์ข้อความยาว (GRID_FLEXIBLE_WIDTH_PX) คอลัมน์ที่ไม่ได้ระบุใช้ GRID_DEFAULT_WIDTH_PX
         shrinkable_columns: คอลัมน์ข้อความที่ยอมให้ย่อได้มากเมื่อจอแคบ (คอลัมน์อื่นย่อได้น้อย จะได้ไม่ตัดตัวเลข/วันที่)
             คอลัมน์ที่ไม่ได้ระบุใน column_widths ถือเป็นคอลัมน์ที่ย่อได้มากเสมอ
@@ -146,8 +164,7 @@ def build_grid_options(
         width=GRID_DEFAULT_WIDTH_PX,
         minWidth=int(GRID_DEFAULT_WIDTH_PX * GRID_MIN_WIDTH_RATIO_SHRINKABLE),
         wrapHeaderText=False,
-        tooltipValueGetter=JsCode("function(params) { return params.value; }"),  # เอาเมาส์ชี้เซลล์เพื่อดูข้อความเต็ม
-    )
+    )  # ไม่ตั้ง tooltip ให้เซลล์ (ชี้เมาส์แล้วไม่มีกล่องข้อความลอย) ถ้าอยากให้กลับมา เพิ่ม tooltipValueGetter ตรงนี้
 
     for column in table.columns:
         if column in hidden_columns:
@@ -190,7 +207,6 @@ def build_grid_options(
 
     # autoSizeStrategy=fitGridWidth: ขยาย/หดคอลัมน์ให้พอดีความกว้างหน้าจอ ไม่มีแถบเลื่อนแนวนอน
     builder.configure_grid_options(
-        tooltipShowDelay=400,
         autoSizeStrategy={"type": "fitGridWidth"},
         suppressMovableColumns=True,
         enableCellTextSelection=True,  # ลากคลุมข้อความในเซลล์เพื่อคัดลอกได้

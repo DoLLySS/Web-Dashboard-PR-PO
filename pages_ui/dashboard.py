@@ -25,7 +25,10 @@ from config.constants import EQUIPMENT_CATEGORIES
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
 from config.styles import FONT_FAMILY, PALETTE
 from ui_common import build_css
+from config.logging_setup import get_logger
 from ui_grid import render_readonly_grid
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่ (Configuration)
@@ -70,11 +73,24 @@ PRICE_PERIOD_OPTIONS: dict[str, Optional[int]] = {
 TOTAL_LINE_LABEL: str = "รวมทุกหมวด"
 TOTAL_LINE_COLOR: str = "#1F2937"
 
-# สัดส่วนความกว้างของหน้า: [ฝั่งซ้าย (Price + Equipment), ฝั่งขวา (Vendor)]
-PAGE_COLUMN_RATIO: list[int] = [3, 2]
+# สัดส่วนความกว้างของแถวบน: [ฝั่งซ้าย (Price แนวโน้ม), ฝั่งขวา (Vendor)] ส่วน Equipment กางเต็มความกว้างด้านล่าง
+PAGE_COLUMN_RATIO: list[int] = [7, 5]
+
+# ข้อความเมื่อไม่มีข้อมูลในการ์ด (แสดงในกล่องสวย ๆ แทน Error / กราฟที่พัง)
+EMPTY_STATE_MESSAGE: str = "ยังไม่มีข้อมูล"
+
+# ความสูงกราฟแนวโน้ม (px): ตั้งให้การ์ด Price สูงใกล้เคียงการ์ด Vendor (กราฟแท่ง + ตาราง) ฝั่งขวา
+# ปรับเลขนี้ถ้าอยากให้สองฝั่งสูงเท่ากันขึ้น/น้อยลง
+PRICE_CHART_HEIGHT_PX: int = 460
 
 # CSS เฉพาะหน้า Dashboard (กฎกลางของการ์ดอยู่ที่ ui_common.py)
 PAGE_CSS_RULES: str = """
+/* กล่อง "ยังไม่มีข้อมูล": พื้นอ่อน เส้นประ ข้อความกลางกล่อง */
+.empty-state {
+    display: flex; align-items: center; justify-content: center; min-height: 160px;
+    background: #FFFFFF; border: 1px dashed #CBD5E1; border-radius: 8px;
+    color: var(--ui-text-muted); font-size: 16px;
+}
 /* (ปุ่ม ช่องกรอก และมุม 8px มาจากธีมกลาง config/styles.py แล้ว) */
 /* ปุ่ม Export: ชิดขวา กว้างพอดีข้อความ พื้นขาว ขอบสีเข้ม (ตามดีไซน์) */
 .st-key-dashboard_export [data-testid="stDownloadButton"] { display: flex; justify-content: flex-end; }
@@ -308,6 +324,15 @@ def build_trend_figure(trend_table: pd.DataFrame) -> go.Figure:
     return figure
 
 
+def render_empty_state(message: str = EMPTY_STATE_MESSAGE) -> None:
+    """แสดงกล่อง 'ยังไม่มีข้อมูล' ในการ์ด (ใช้เมื่อกราฟหรือตารางไม่มีข้อมูลให้วาด)
+
+    Args:
+        message: ข้อความที่แสดงกลางกล่อง
+    """
+    st.markdown(f'<div class="empty-state">{message}</div>', unsafe_allow_html=True)
+
+
 def render_price_card(
     transaction_table: pd.DataFrame, start_date: date, end_date: date
 ) -> None:
@@ -344,10 +369,16 @@ def render_price_card(
                 help=f"ช่วง {window_start:%d/%m/%Y} - {window_end:%d/%m/%Y}",
             )
             if window_table.empty:
-                st.info("ไม่พบรายการในช่วงเวลาที่เลือก ลองเลือกช่วงที่ยาวขึ้น หรือขยาย Date Filter ที่มุมขวาบน")
+                render_empty_state("ยังไม่มีข้อมูลในช่วงเวลาที่เลือก ลองเลือกช่วงที่ยาวขึ้น หรือขยาย Date Filter")
                 return
-            trend_table = build_trend_table(window_table, window_start, window_end, show_detail_graph)
-            st.plotly_chart(build_trend_figure(trend_table), width="stretch")
+            try:
+                trend_table = build_trend_table(window_table, window_start, window_end, show_detail_graph)
+                trend_figure = build_trend_figure(trend_table)
+                trend_figure.update_layout(height=PRICE_CHART_HEIGHT_PX)  # ให้สูงสมดุลกับการ์ด Vendor
+                st.plotly_chart(trend_figure, width="stretch")
+            except Exception as error:  # noqa: BLE001 - กราฟพังไม่ให้ทั้งหน้าล่ม
+                logger.error("สร้างกราฟแนวโน้มไม่สำเร็จ: %s", error, exc_info=True)
+                render_empty_state("แสดงกราฟไม่สำเร็จ ลองรีเฟรชหน้าเว็บ")
 
 
 def build_equipment_list(start_date: date, end_date: date) -> pd.DataFrame:
@@ -388,8 +419,13 @@ def render_equipment_card(start_date: date, end_date: date) -> None:
     with st.container(key="equipment_card"):
         st.markdown('<span class="card-pill">Equipment</span>', unsafe_allow_html=True)
         with st.container(key="equipment_inner"):
+            equipment_table = build_equipment_list(start_date, end_date)
+            # ทุกหมวดเป็น 0 = ช่วงวันที่นี้ไม่มีรายการเลย
+            if equipment_table.empty or equipment_table["Qty."].sum() == 0:
+                render_empty_state()
+                return
             render_readonly_grid(
-                build_equipment_list(start_date, end_date),
+                equipment_table,
                 key="dashboard_equipment",
                 money_columns=("ยอดรวม (บาท)",),
                 right_aligned_columns=("Qty.",),
@@ -456,12 +492,12 @@ def render_vendor_card(transaction_table: pd.DataFrame) -> None:
         st.markdown('<span class="card-pill">Vendor</span>', unsafe_allow_html=True)  # รายชื่อบริษัทผู้จัดจำหน่ายหลัก
         with st.container(key="vendor_inner"):
             if transaction_table.empty:
-                st.info("ยังไม่มีข้อมูลผู้ขายในช่วงวันที่ที่เลือก")
+                render_empty_state("ยังไม่มีข้อมูลผู้ขายในช่วงวันที่ที่เลือก")
                 return
             st.caption("Top Vendors by Spend (Net Price)")
             vendor_spend_table = build_vendor_spend_table(transaction_table)
             if vendor_spend_table.empty:
-                st.info("ยังไม่มีข้อมูลราคา (Net Price) จึงยังสร้างกราฟค่าใช้จ่ายไม่ได้")
+                render_empty_state("ยังไม่มีข้อมูลราคา (Net Price) จึงยังสร้างกราฟค่าใช้จ่ายไม่ได้")
             else:
                 st.plotly_chart(build_vendor_spend_figure(vendor_spend_table), width="stretch")
             top_vendor_table = build_top_vendor_table(transaction_table)
@@ -518,11 +554,11 @@ def render(start_date: date, end_date: date) -> None:
 
     left_column, right_column = st.columns(PAGE_COLUMN_RATIO, gap="medium")
 
-    # ส่วนที่ 2: ฝั่งซ้าย = การ์ด Price (บน) + การ์ด Equipment (ล่าง)
+    # ส่วนที่ 2: แถวบน ซ้าย = การ์ด Price (แนวโน้ม) / ขวา = การ์ด Vendor (Top Vendors)
     with left_column:
         render_price_card(transaction_table, start_date, end_date)
-        render_equipment_card(start_date, end_date)
-
-    # ส่วนที่ 3: ฝั่งขวา = การ์ด Vendor
     with right_column:
         render_vendor_card(transaction_table)
+
+    # ส่วนที่ 3: การ์ด Equipment อยู่ล่างสุด กางเต็มความกว้าง
+    render_equipment_card(start_date, end_date)

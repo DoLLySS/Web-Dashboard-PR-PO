@@ -60,7 +60,7 @@ def render_date_filter() -> tuple[date, date]:
         key="filter_start_date",
         label_visibility="collapsed",
     )
-    to_column.markdown("<div style='text-align:center'>To</div>", unsafe_allow_html=True)
+    to_column.markdown("<div style='text-align:center'><span class='date-to-chip'>To</span></div>", unsafe_allow_html=True)
     end_date = end_column.date_input(
         "วันที่สิ้นสุด",
         value=today,
@@ -87,18 +87,28 @@ def render_page_header(menu_item: MenuItem) -> tuple[date, date]:
     """
     # key="page_header" ใช้ให้ CSS ใน config/styles.py จับแถบนี้ได้ (บนจอแคบ ตัวกรองวันที่จะตกลงมาอยู่บรรทัดล่าง)
     with st.container(key="page_header"):
-        title_column, filter_column = st.columns([3, 2], vertical_alignment="center")
+        # ซ้าย = ชื่อหน้า / กลาง = ที่ว่างดัน Date Filter ไปชิดขวา / ขวา = Date Filter (Start To End แนวนอน)
+        title_column, spacer_column, filter_column = st.columns([4, 2, 4], vertical_alignment="center")
         with title_column:
             st.header(menu_item.label)
             if menu_item.subtitle:
                 st.caption(menu_item.subtitle)
+        with spacer_column:
+            # ตัวหมายสำหรับ CSS: บนจอแคบจะซ่อนคอลัมน์ว่างนี้ ไม่ให้เปลืองบรรทัด
+            st.markdown('<span class="header-spacer"></span>', unsafe_allow_html=True)
         with filter_column:
             return render_date_filter()
 
 
 def main() -> None:
     """จุดเริ่มต้นของแอป: ตั้งค่าหน้า, เตรียม DB, แล้วส่งต่อให้หน้าที่ถูกเลือก"""
-    st.set_page_config(page_title="IT PR/PO MasterList", page_icon="📋", layout="wide")
+    # ต้องเป็นคำสั่ง st.* ตัวแรกสุดของสคริปต์ (ก่อนฉีด CSS) ไม่งั้น Streamlit จะ error
+    st.set_page_config(
+        page_title="IT PR/PO",
+        page_icon="📋",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
     # ฉีด CSS ธีมกลาง (ฟอนต์ สี ความมน เงา) ให้ทั้งระบบ ต้องทำก่อนวาดส่วนอื่น (โค้ดอยู่ใน config/styles.py)
     inject_global_styles()

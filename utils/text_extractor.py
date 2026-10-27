@@ -213,6 +213,8 @@ class ExtractedFields:
     qt_no: str = ""
     description: str = ""
     unit_price: str = ""
+    # ตรวจพบว่าไฟล์เป็น/มีใบกำกับภาษีหรือไม่ (ใช้ตั้งสถานะ Completed อัตโนมัติ) ไม่นับเป็นฟิลด์ที่ "ขาด" ใน warning_message
+    has_tax_invoice: bool = False
 
     @property
     def missing_field_labels(self) -> list[str]:
@@ -644,6 +646,37 @@ def find_unit_price(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# คำที่บ่งบอกว่าเอกสารเป็นใบกำกับภาษี (แก้/เพิ่มคำที่นี่ถ้า Vendor ใช้คำอื่น)
+TAX_INVOICE_PATTERN: str = r"ใบกำกับภาษี|tax\s*invoice"
+# คำที่อยู่ก่อนหน้าแล้วแปลว่าเป็นแค่การ "กล่าวถึง" ในเงื่อนไข/หมายเหตุ ไม่ใช่ตัวเอกสาร (เช่น "กรุณาออกใบกำกับภาษี")
+TAX_INVOICE_MENTION_PREFIXES: tuple[str, ...] = (
+    "ขอ", "ออก", "รอ", "ส่ง", "แนบ", "พร้อม", "กรุณา", "ต้องการ", "request", "issue", "send", "attach", "for",
+)
+
+
+def detect_tax_invoice(text: str) -> bool:
+    """ตรวจว่าข้อความในไฟล์เป็น/มีใบกำกับภาษีหรือไม่ (ไม่โยน Error)
+
+    นับเมื่อพบคำว่า "ใบกำกับภาษี" / "Tax Invoice" ที่ไม่ได้ตามหลังคำเชิงขอ/สัญญา เช่น "ขอ" "ออก" "กรุณา"
+    (กันกรณีใบเสนอราคาที่เขียนเงื่อนไขว่า "จะออกใบกำกับภาษีให้ภายหลัง")
+
+    Args:
+        text: ข้อความทั้งเอกสาร
+
+    Returns:
+        True ถ้าพบคำว่าใบกำกับภาษีในฐานะตัวเอกสาร
+    """
+    try:
+        for match in re.finditer(TAX_INVOICE_PATTERN, text or "", flags=re.IGNORECASE):
+            text_before = text[max(0, match.start() - 12): match.start()].rstrip().lower()
+            if not text_before.endswith(TAX_INVOICE_MENTION_PREFIXES):
+                return True
+        return False
+    except (re.error, TypeError) as error:
+        logger.warning("ตรวจใบกำกับภาษีไม่สำเร็จ: %s", error)
+        return False
+
+
 def extract_fields_from_text(text: str) -> ExtractedFields:
     """ดึงทุกฟิลด์จากข้อความที่อ่านมาแล้ว (แยกออกมาเพื่อให้ทดสอบโดยไม่ต้องมีไฟล์ PDF)
 
@@ -663,6 +696,7 @@ def extract_fields_from_text(text: str) -> ExtractedFields:
         qt_no=find_qt_no(text),
         description=find_description(text),
         unit_price=find_unit_price(text),
+        has_tax_invoice=detect_tax_invoice(text),
     )
 
 

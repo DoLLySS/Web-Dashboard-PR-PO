@@ -7,6 +7,7 @@
 (None / [] / False) แทนการทำให้แอปล่ม
 """
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -71,6 +72,9 @@ ADDED_COLUMNS: dict[str, str] = {
     "qt_no": "TEXT",  # เลขที่ Quotation
     "description": "TEXT",  # รายละเอียดอุปกรณ์
     "unit_price": "REAL",  # ราคาสุทธิที่รวม Discount แล้ว (บาท)
+    # Soft Delete: 0 = ใช้งานปกติ, 1 = ถูกลบ (ซ่อนจากทุกหน้าแต่ข้อมูลยังอยู่ในไฟล์ฐานข้อมูล)
+    # ไฟล์ masterlist.db เดิมจะได้คอลัมน์นี้ผ่าน _add_missing_columns โดยแถวเก่าทุกแถวมีค่าเป็น 0
+    "is_deleted": "INTEGER NOT NULL DEFAULT 0",
 }
 
 # ไฟล์ฐานข้อมูลที่เตรียมตาราง/คอลัมน์/index เสร็จแล้วในรอบการทำงานนี้ของโปรแกรม
@@ -99,6 +103,22 @@ CREATE TABLE IF NOT EXISTS transactions (
     qt_no          TEXT,                       -- เลขที่ Quotation
     description    TEXT,                       -- รายละเอียดอุปกรณ์
     unit_price     REAL                        -- ราคาสุทธิที่รวม Discount แล้ว (บาท)
+);
+"""
+
+# Audit Trail: บันทึกทุกการเพิ่ม/แก้ไข/ลบ (เพิ่มแถวอย่างเดียว ไม่แก้ไขหรือลบ log เดิม)
+# ถ้าจะเพิ่มข้อมูลที่เก็บใน log ให้เพิ่มคอลัมน์ที่นี่ + _write_audit_log (ไฟล์เก่าต้องเพิ่มคอลัมน์ด้วย ALTER TABLE)
+AUDIT_ACTION_INSERT: str = "INSERT"
+AUDIT_ACTION_UPDATE: str = "UPDATE"
+AUDIT_ACTION_SOFT_DELETE: str = "SOFT_DELETE"
+
+CREATE_AUDIT_LOGS_SQL: str = """
+CREATE TABLE IF NOT EXISTS audit_logs (
+    log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_type TEXT NOT NULL,                 -- INSERT / UPDATE / SOFT_DELETE
+    record_id   INTEGER NOT NULL,              -- id ของแถวใน transactions ที่ถูกเปลี่ยน
+    details     TEXT,                          -- JSON: ค่าที่เพิ่ม / ค่าเดิม->ค่าใหม่ ที่แก้
+    timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
 
@@ -203,6 +223,31 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_type}")
 
 
+def _write_audit_log(
+    conn: sqlite3.Connection,
+    action_type: str,
+    record_id: int,
+    details: dict[str, Any],
+) -> None:
+    """บันทึก Audit Log 1 แถว โดยใช้ connection เดียวกับการแก้ข้อมูลหลัก
+
+    เพราะใช้ transaction เดียวกัน ถ้าบันทึก log ไม่สำเร็จ การแก้ข้อมูลหลักจะถูก rollback ด้วย
+    (และถ้าแก้ข้อมูลหลักไม่สำเร็จ ก็จะไม่มี log ค้าง) ข้อมูลจึงไม่ผิดเพี้ยน
+
+    Args:
+        conn: connection ที่กำลังแก้ข้อมูลหลักอยู่ (ฟังก์ชันนี้ไม่ commit เอง)
+        action_type: ชนิดการกระทำ เช่น AUDIT_ACTION_INSERT
+        record_id: id ของแถวใน transactions
+        details: รายละเอียดที่เปลี่ยน จะเก็บเป็น JSON (รองรับภาษาไทย)
+    """
+    # default=str กันกรณีมีค่าที่ JSON ไม่รู้จัก เช่น วันที่
+    details_json = json.dumps(details, ensure_ascii=False, default=str)
+    conn.execute(
+        "INSERT INTO audit_logs (action_type, record_id, details) VALUES (?, ?, ?)",
+        (action_type, record_id, details_json),
+    )
+
+
 def init_db() -> bool:
     """สร้างตาราง transactions ถ้ายังไม่มี (เรียกซ้ำได้โดยไม่ลบข้อมูลเดิม)
 
@@ -218,6 +263,9 @@ def init_db() -> bool:
     try:
         with _get_connection() as conn:
             conn.execute(CREATE_TABLE_SQL)
+            # ตาราง Audit Trail (ไฟล์ฐานข้อมูลเดิมจะได้ตารางนี้เพิ่มโดยข้อมูลเก่าไม่หาย)
+            conn.execute(CREATE_AUDIT_LOGS_SQL)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_record ON audit_logs(record_id)")
             # ไฟล์ฐานข้อมูลเดิมที่สร้างก่อนมีคอลัมน์ tel/email/contact_name ต้องเพิ่มคอลัมน์ให้ก่อน
             _add_missing_columns(conn)
             logger.debug("ตรวจ/เพิ่มคอลัมน์ที่ขาดในตาราง transactions เรียบร้อย")
@@ -318,6 +366,27 @@ def add_transaction(
                 ),
             )
             new_transaction_id = cursor.lastrowid
+            # บันทึก log ใน transaction เดียวกับการ INSERT (ถ้า log พลาด แถวใหม่จะถูก rollback)
+            inserted_values = {
+                "date": date,
+                "vendor": vendor.strip(),
+                "tax_id": tax_id,
+                "po_no": po_no,
+                "pr_run_no": pr_run_no,
+                "category": category,
+                "total_price": total_price,
+                "file_path": file_path,
+                "invoice_status": invoice_status,
+                "tel": tel,
+                "email": email,
+                "contact_name": contact_name,
+                "sharepoint_url": sharepoint_url,
+                "pr_request_date": pr_request_date,
+                "qt_no": qt_no,
+                "description": description,
+                "unit_price": unit_price,
+            }
+            _write_audit_log(conn, AUDIT_ACTION_INSERT, new_transaction_id, inserted_values)
         logger.info("เพิ่มรายการใหม่ id=%s (ผู้ขาย: %s)", new_transaction_id, vendor.strip())
         return new_transaction_id
     except (sqlite3.Error, OSError, AttributeError) as error:
@@ -342,7 +411,7 @@ def get_transaction(transaction_id: int) -> Optional[dict[str, Any]]:
     try:
         with _get_connection() as conn:
             row = conn.execute(
-                "SELECT * FROM transactions WHERE id = ?", (transaction_id,)
+                "SELECT * FROM transactions WHERE id = ? AND is_deleted = 0", (transaction_id,)
             ).fetchone()
         return _row_to_dict(row) if row else None
     except (sqlite3.Error, OSError) as error:
@@ -369,7 +438,8 @@ def get_transactions(
     """
     try:
         # สร้างเงื่อนไขทีละข้อ ค่าทั้งหมดส่งผ่าน ? เพื่อกัน SQL Injection
-        conditions: list[str] = []
+        # Soft Delete: ไม่แสดงรายการที่ถูกลบ (is_deleted = 1) ในทุกกรณี
+        conditions: list[str] = ["is_deleted = 0"]
         params: list[Any] = []
 
         if start_date:
@@ -388,7 +458,7 @@ def get_transactions(
             )
             params.extend([f"%{keyword}%"] * 5)
 
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where_clause = f"WHERE {' AND '.join(conditions)}"
         sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC"
 
         with _get_connection() as conn:
@@ -400,17 +470,41 @@ def get_transactions(
 
 
 def count_transactions() -> int:
-    """นับจำนวนรายการทั้งหมดในตาราง transactions
+    """นับจำนวนรายการที่ยังใช้งานอยู่ในตาราง transactions (ไม่นับรายการที่ถูกลบแบบ Soft Delete)
 
     Returns:
-        จำนวนแถวทั้งหมด (0 ถ้าตารางว่าง หรือเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
+        จำนวนแถวที่ยังไม่ถูกลบ (0 ถ้าตารางว่าง หรือเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
     """
     try:
         with _get_connection() as conn:
-            return int(conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+            return int(
+                conn.execute("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0").fetchone()[0]
+            )
     except (sqlite3.Error, OSError) as error:
         _show_db_error("นับจำนวนรายการ", error)
         return 0
+
+
+def get_unique_vendors() -> list[str]:
+    """ดึงรายชื่อผู้ขายที่มีอยู่ในระบบ (ไม่ซ้ำ เรียง ก-ฮ / A-Z) ไว้ใช้เป็นตัวเลือก Auto-complete
+
+    Returns:
+        list ของชื่อผู้ขาย (ว่างถ้ายังไม่มีข้อมูลเลย หรือเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT TRIM(vendor) AS vendor
+                FROM transactions
+                WHERE vendor IS NOT NULL AND TRIM(vendor) <> '' AND is_deleted = 0
+                ORDER BY vendor COLLATE NOCASE
+                """
+            ).fetchall()
+        return [row["vendor"] for row in rows]
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("ดึงรายชื่อผู้ขาย", error)
+        return []
 
 
 def get_category_counts(start_date: str, end_date: str) -> list[dict[str, Any]]:
@@ -432,7 +526,7 @@ def get_category_counts(start_date: str, end_date: str) -> list[dict[str, Any]]:
                        COUNT(*) AS quantity,
                        COALESCE(SUM(total_price), 0) AS total_price
                 FROM transactions
-                WHERE date >= ? AND date <= ?
+                WHERE date >= ? AND date <= ? AND is_deleted = 0
                 GROUP BY COALESCE(category, 'ไม่ระบุ')
                 """,
                 (start_date, end_date),
@@ -477,8 +571,25 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
         params = [*fields.values(), transaction_id]
 
         with _get_connection() as conn:
-            cursor = conn.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", params)
+            # อ่านค่าเดิมก่อนแก้ (ใน connection เดียวกัน) เพื่อบันทึกใน log ว่าเปลี่ยนจากอะไรเป็นอะไร
+            old_row = conn.execute(
+                "SELECT * FROM transactions WHERE id = ? AND is_deleted = 0", (transaction_id,)
+            ).fetchone()
+            # แก้ไขได้เฉพาะรายการที่ยังไม่ถูกลบ
+            cursor = conn.execute(
+                f"UPDATE transactions SET {set_clause} WHERE id = ? AND is_deleted = 0", params
+            )
             updated = cursor.rowcount > 0
+
+            if updated and old_row is not None:
+                # เก็บเฉพาะคอลัมน์ที่ค่าเปลี่ยนจริง; ถ้าไม่มีอะไรเปลี่ยนก็ไม่ต้องมี log
+                changes = {
+                    column: {"old": old_row[column], "new": new_value}
+                    for column, new_value in fields.items()
+                    if old_row[column] != new_value
+                }
+                if changes:
+                    _write_audit_log(conn, AUDIT_ACTION_UPDATE, transaction_id, changes)
 
         if not updated:
             logger.warning("แก้ไขไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
@@ -509,18 +620,24 @@ def mark_invoice_received(transaction_id: int) -> bool:
 
 
 def delete_transaction(transaction_id: int) -> bool:
-    """ลบรายการ 1 แถวตาม id (ลบแล้วกู้คืนไม่ได้ ควรให้ผู้ใช้กดยืนยันก่อนเรียก)
+    """ลบรายการ 1 แถวตาม id แบบ Soft Delete (ตั้ง is_deleted = 1 ข้อมูลยังอยู่ในฐานข้อมูล แต่ไม่แสดงผล)
 
     Args:
         transaction_id: id ของรายการที่ต้องการลบ
 
     Returns:
-        True ถ้าลบสำเร็จ, False ถ้าไม่พบรายการหรือเกิด Error
+        True ถ้าลบสำเร็จ, False ถ้าไม่พบรายการ (หรือถูกลบไปแล้ว) หรือเกิด Error
     """
     try:
         with _get_connection() as conn:
-            cursor = conn.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
+            cursor = conn.execute(
+                "UPDATE transactions SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
+                (transaction_id,),
+            )
             deleted = cursor.rowcount > 0
+            if deleted:
+                # บันทึก log ใน transaction เดียวกับการ UPDATE is_deleted
+                _write_audit_log(conn, AUDIT_ACTION_SOFT_DELETE, transaction_id, {"is_deleted": 1})
 
         if not deleted:
             logger.warning("ลบไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
