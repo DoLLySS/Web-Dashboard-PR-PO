@@ -13,15 +13,19 @@
 
     หน้าต่าง "เพิ่มข้อมูล / อัปโหลดเอกสาร" มีแท็บ [กรอก Form | Upload File] (ย้ายมาจากแผงด้านขวาเดิม ไม่เปลี่ยน Logic)
 
-ไฟล์เอกสารถูกบันทึกลงโฟลเดอร์ data/local_uploads/ (utils/local_storage.py) แล้วเก็บที่อยู่ไฟล์ลงฐานข้อมูล
+ไฟล์เอกสารถูกบันทึกลงโฟลเดอร์ static/local_uploads/ (utils/local_storage.py) แล้วเก็บที่อยู่ไฟล์ลงฐานข้อมูล
 ส่วนเชื่อม SharePoint ปิดไว้ก่อน เตรียมไว้สำหรับเชื่อมต่อในอนาคต (utils/sharepoint_api.py, ค้นหา "SharePoint ปิดไว้")
 ส่วนที่ยังไม่ได้ทำ: OCR สำหรับรูปภาพ
 """
 
+import html
 import io
 import json
+import os
 import re
-from datetime import date
+import sys
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -40,13 +44,18 @@ from data.database import (
     get_unique_vendors,
     update_transaction,
 )
-from utils.local_storage import LocalStorageError, save_document_locally
-
-# SharePoint เตรียมโครงไว้พร้อมสลับเปิด: จะอัปโหลดจริงก็ต่อเมื่อตั้งค่า SHAREPOINT_* ใน .env ครบ (ไม่ตั้ง = ข้ามเงียบๆ)
-from utils.sharepoint_api import SharePointError, is_sharepoint_configured, upload_document_to_sharepoint
-from utils.text_extractor import extract_fields_from_file
+from utils.local_storage import (
+    DESKTOP_EXPORT_ENABLED,
+    STATIC_URL_PREFIX,
+    LocalStorageError,
+    build_local_file_url,
+    export_files_to_desktop,
+)
+from utils.storage_backend import UNKNOWN_VENDOR_FOLDER
+from utils.submit_pipeline import RecordFields, SubmitResult, submit_record
+from utils.text_extractor import ExtractedFields, extract_fields_from_file
 from st_aggrid import JsCode
-from ui_common import build_css, render_equipment_table
+from ui_common import build_css, build_equipment_cards_html, get_equipment_quantities
 from ui_grid import build_grid_options, show_grid
 
 # บันทึกลง logs/app.log
@@ -94,7 +103,7 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "qt_no": "เลขที่ Quotation",
     "description": "รายละเอียดอุปกรณ์",
     "unit_price": "ราคาสุทธิที่รวม Discount แล้ว (บาท)",
-    "sharepoint_url": "ลิงก์ SharePoint ที่เก็บไฟล์ทั้งหมดของบริษัทนั้น: กดไอคอนเพื่อเปิดในแท็บใหม่",
+    "sharepoint_url": "ไฟล์ที่อัปโหลด: กดไอคอนเพื่อเปิดโฟลเดอร์ปี/เดือน/วัน/Vendor บน SharePoint (ถ้ายังไม่มีลิงก์ออนไลน์ = เปิดไฟล์ที่เก็บไว้ในระบบ)",
 }
 
 # ความกว้างที่ต้องการของแต่ละคอลัมน์ (พิกเซล) ตารางจะปรับคอลัมน์ให้พอดีหน้าจอเอง (fit to window) ไม่มีแถบเลื่อนแนวนอน
@@ -102,7 +111,7 @@ TABLE_COLUMN_HELP: dict[str, str] = {
 # - None = คอลัมน์ข้อความยาว (ตอนนี้คือ Description) กว้างที่สุด ย่อได้มากสุดเมื่อจอแคบ
 # - ถ้าเพิ่มคอลัมน์ใหม่ ให้เพิ่มความกว้างขั้นต่ำที่นี่ด้วย (ผลรวมมากเกินจอ ตารางจะมีแถบเลื่อนแนวนอน)
 TABLE_COLUMN_WIDTHS: dict[str, "int | str | None"] = {
-    "date": 140, "vendor": 160, "category": 125, "total_price": 120, "invoice_status": 140,
+    "date": 140, "vendor": 160, "category": 125, "total_price": 150, "invoice_status": 140,
     "tel": 155, "tax_id": 130, "pr_run_no": 110, "pr_request_date": 105, "qt_no": 74,
     "description": None, "unit_price": 112, "sharepoint_url": 68,
 }
@@ -188,11 +197,20 @@ FILE_LINK_RENDERER_JS: str = r"""
 class FileLinkRenderer {
     init(params) {
         this.eGui = document.createElement('span');
-        if (params.value && /^https?:\/\//i.test(params.value)) {
-            const link = document.createElement('a');
-            link.href = params.value;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
+        if (params.value && /^(https?:\/\/|FILE_STATIC_PREFIX)/i.test(params.value)) {
+            // ไฟล์ในเครื่อง (ค่าขึ้นต้น FILE_STATIC_PREFIX) = ปุ่มที่ไม่เปิดลิงก์ ตารางส่ง cellClicked ให้ฝั่ง Python
+            // โหมด Desktop (เปิดเฉพาะตอนรันบนเครื่องตัวเอง) คัดลอกไฟล์ไป Desktop แล้วเปิดโฟลเดอร์
+            // นอกนั้น (เช่นบน Server) ไฟล์ในเครื่องเปิดเป็นลิงก์ในแท็บใหม่เหมือนลิงก์ออนไลน์ (http/https)
+            const isLocalFile = FILE_DESKTOP_MODE && !/^https?:/i.test(params.value);
+            const link = document.createElement(isLocalFile ? 'span' : 'a');
+            if (isLocalFile) {
+                link.setAttribute('role', 'button');
+                link.title = 'บันทึกลง Desktop แล้วเปิดโฟลเดอร์';
+            } else {
+                link.href = params.value;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+            }
             link.textContent = 'FILE_ICON';
             const restStyle = 'display:inline-flex;align-items:center;justify-content:center;width:FILE_CIRCLE_PXpx;height:FILE_CIRCLE_PXpx;'
                 + 'border-radius:50%;text-decoration:none;cursor:pointer;outline:none;background:transparent;box-shadow:none;'
@@ -312,8 +330,10 @@ ALL_VENDORS_LABEL: str = "Vendor"
 # (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
 ALLOWED_FILE_TYPES: list[str] = ["pdf", "xlsx", "xls", "png", "jpg", "jpeg"]
 
-# นามสกุลไฟล์ที่ระบบดึงข้อมูลอัตโนมัติได้ (ต้องเป็นตัวพิมพ์เล็ก)
-AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx", ".xls")
+# ระบบอ่านข้อมูลอัตโนมัติเฉพาะไฟล์ PR: ชื่อไฟล์ขึ้นต้นด้วย PR (ไม่สนตัวพิมพ์เล็ก/ใหญ่) และนามสกุลต้องเป็นตัวพิมพ์เล็กตามนี้
+# ไฟล์อื่น (PO, ใบกำกับภาษี ฯลฯ) ยังแนบและเก็บตามปกติ แต่ไม่ถูกอ่านข้อมูล
+PR_FILE_NAME_PREFIX: str = "pr"
+AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx")
 
 # เลขประจำตัวผู้เสียภาษีของไทยมี 13 หลัก
 TAX_ID_LENGTH: int = 13
@@ -374,12 +394,6 @@ INVOICE_CHOICE_TO_DB: dict[str, str] = {
     INVOICE_CHOICE_NOT_YET: STATUS_PENDING,
 }
 
-SESSION_KEY_EXTRACT_FILE_ID: str = "overview_extract_file_id"  # ไฟล์ในกล่อง Extract ที่อ่านข้อมูลแล้ว
-SESSION_KEY_EXTRACT_NOTICE: str = "overview_extract_notice"  # ข้อความผลการดึงข้อมูลจากไฟล์
-SESSION_KEY_LOCAL_FILE_ID: str = "overview_local_file_id"  # ไฟล์ในกล่อง Upload ที่บันทึกลงเครื่องแล้ว
-SESSION_KEY_LOCAL_NOTICE: str = "overview_local_notice"  # ผลการบันทึกไฟล์ (ระดับ, ข้อความ)
-SESSION_KEY_LOCAL_PATH: str = "overview_local_path"  # ที่อยู่ไฟล์ที่บันทึกแล้ว รอผูกกับรายการตอนกด Upload
-
 # ---------------------------------------------------------------------------
 # CSS เฉพาะหน้า Overview (กฎกลางของการ์ด/สี/ความมน อยู่ที่ ui_common.py)
 # ---------------------------------------------------------------------------
@@ -421,28 +435,152 @@ PAGE_CSS_RULES: str = """
 /* แถบ "ดูรายการที่ค้าง": หัวมี hover, ลูกศรหมุนนุ่ม, เนื้อหาเลื่อน+เฟดลงตอนกาง (ใช้ opacity/translate เท่านั้น ตารางจึงไม่กว้าง 0)
    ตอนพับค่อยๆ หุบด้วย ::details-content (Chromium 131+) เบราว์เซอร์เก่าจะหุบทันทีโดยไม่พัง */
 .st-key-overdue_alert [data-testid="stExpander"] details { interpolate-size: allow-keywords; }
-.st-key-overdue_alert [data-testid="stExpander"] summary { transition: background-color 0.18s ease; border-radius: 8px; }
-.st-key-overdue_alert [data-testid="stExpander"] summary:hover { background: #F1F5F9; }
+.st-key-overdue_alert [data-testid="stExpander"] {
+    border: 1px solid #FECACA; border-radius: 16px; background: #FFFFFF; overflow: hidden;
+    box-shadow: 0 10px 28px -14px rgba(220, 38, 38, 0.35);
+}
+.st-key-overdue_alert [data-testid="stExpander"] details { border: none; }
+.st-key-overdue_alert [data-testid="stExpander"] summary {
+    padding: 16px 20px; border-left: 5px solid #DC2626;
+    background: linear-gradient(90deg, #FFF1F2 0%, #FFFFFF 70%); transition: background-color 0.2s ease;
+}
+.st-key-overdue_alert [data-testid="stExpander"] summary:hover { background: linear-gradient(90deg, #FFE4E6 0%, #FFF1F2 80%); }
+.st-key-overdue_alert [data-testid="stExpander"] summary p { font-size: 1.3rem !important; font-weight: 800 !important; color: #991B1B; letter-spacing: 0.01em; }
 .st-key-overdue_alert [data-testid="stExpander"] summary svg,
-.st-key-overdue_alert [data-testid="stExpander"] summary [data-testid="stIconMaterial"] { transition: transform 0.25s ease; }
+.st-key-overdue_alert [data-testid="stExpander"] summary [data-testid="stIconMaterial"] {
+    font-size: 1.6rem !important; width: 1.6rem; height: 1.6rem; color: #B91C1C; transition: transform 0.3s cubic-bezier(.2,.8,.2,1);
+}
 .st-key-overdue_alert [data-testid="stExpander"] details::details-content {
     height: 0; overflow: clip; opacity: 0;
-    transition: height 0.3s ease, opacity 0.25s ease, content-visibility 0.3s allow-discrete;
+    transition: height 0.38s cubic-bezier(.2,.8,.2,1), opacity 0.3s ease, content-visibility 0.38s allow-discrete;
 }
 .st-key-overdue_alert [data-testid="stExpander"] details[open]::details-content { height: auto; opacity: 1; }
 .st-key-overdue_alert [data-testid="stExpander"] details[open] > summary ~ * { animation: overdue-expand-in 0.3s cubic-bezier(.2,.8,.2,1) both; }
 @keyframes overdue-expand-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+/* ตารางรายการที่ค้าง (modern): หัวคอลัมน์ติดบน, แถวใหญ่อ่านง่าย, ป้ายวันสีตามความวิกฤต, แถวไหลเข้าทีละแถว (--i สูงสุด 12)
+   แถวเยอะเลื่อนในกล่อง (od-scroll) ปรับความสูงที่ max-height */
+.st-key-overdue_alert .od-table { padding: 4px 12px 14px; }
+.st-key-overdue_alert .od-scroll { max-height: 60vh; overflow: auto; }
+.st-key-overdue_alert .od-head, .st-key-overdue_alert .od-row {
+    display: grid; grid-template-columns: 70px 130px minmax(140px, 1.4fr) minmax(130px, 1fr) minmax(130px, 0.8fr) 150px;
+    align-items: center; column-gap: 20px; min-width: 760px;
+}
+.st-key-overdue_alert .od-head {
+    position: sticky; top: 0; z-index: 1; background: #FFFFFF; padding: 10px 12px;
+    font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em; color: #64748B; border-bottom: 2px solid #E2E8F0;
+}
+.st-key-overdue_alert .od-head span:nth-child(5), .st-key-overdue_alert .od-price { text-align: right; }
+.st-key-overdue_alert .od-head span:nth-child(6), .st-key-overdue_alert .od-days { text-align: right; }
+.st-key-overdue_alert .od-row {
+    min-height: 64px; padding: 0 12px; border-bottom: 1px solid #EEF2F6; border-left: 4px solid transparent; border-radius: 10px;
+    font-size: 1.2rem; color: #1E293B; font-variant-numeric: tabular-nums;
+    transition: background-color 0.18s ease; animation: od-row-in 0.4s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--i, 0) * 60ms);
+}
+.st-key-overdue_alert .od-row:hover { background: #FFF7ED; }
+.st-key-overdue_alert .od-row-critical { border-left-color: #DC2626; }
+.st-key-overdue_alert .od-id { color: #64748B; font-weight: 600; }
+.st-key-overdue_alert .od-vendor { font-weight: 700; color: #0F172A; }
+.st-key-overdue_alert .od-vendor, .st-key-overdue_alert .od-po { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-key-overdue_alert .od-price { font-size: 1.3rem; font-weight: 700; color: #0F172A; }
+.st-key-overdue_alert .od-badge {
+    display: inline-block; padding: 4px 14px; border-radius: 999px; font-size: 1.1rem; font-weight: 800; white-space: nowrap;
+    animation: od-badge-pop 0.45s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--i, 0) * 60ms + 120ms);
+}
+.st-key-overdue_alert .od-badge-critical { background: linear-gradient(135deg, #FEE2E2, #FECACA); color: #B91C1C; }
+.st-key-overdue_alert .od-badge-warn { background: linear-gradient(135deg, #FFEDD5, #FED7AA); color: #C2410C; }
+@keyframes od-row-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes od-badge-pop { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: none; } }
+@media (max-width: 640px) {
+    /* จอแคบ: ซ่อนหัวตาราง แต่ละแถวเป็นการ์ด 2 บรรทัด (ผู้ขาย | ราคา / วันที่ | ป้ายวัน) ไม่ต้องเลื่อนแนวนอน */
+    .st-key-overdue_alert .od-head, .st-key-overdue_alert .od-id, .st-key-overdue_alert .od-po { display: none; }
+    .st-key-overdue_alert .od-scroll { overflow-x: hidden; }
+    .st-key-overdue_alert .od-row {
+        grid-template-columns: 1fr auto; grid-template-areas: "vendor price" "date days"; min-width: 0; min-height: 0;
+        column-gap: 12px; row-gap: 4px; padding: 12px; font-size: 1.05rem;
+    }
+    .st-key-overdue_alert .od-vendor { grid-area: vendor; }
+    .st-key-overdue_alert .od-price { grid-area: price; font-size: 1.15rem; }
+    .st-key-overdue_alert .od-date { grid-area: date; color: #64748B; }
+    .st-key-overdue_alert .od-days { grid-area: days; }
+    .st-key-overdue_alert .od-badge { font-size: 0.95rem; padding: 3px 10px; }
+}
 @media (prefers-reduced-motion: reduce) {
-    .overdue-alert, .overdue-alert-icon,
+    .overdue-alert, .overdue-alert-icon, .st-key-overdue_alert .od-row, .st-key-overdue_alert .od-badge,
     .st-key-overdue_alert [data-testid="stExpander"] details[open] > summary ~ * { animation: none; }
     .st-key-overdue_alert [data-testid="stExpander"] details::details-content,
     .st-key-overdue_alert [data-testid="stExpander"] summary,
     .st-key-overdue_alert [data-testid="stExpander"] summary svg { transition: none; }
 }
 
+/* ตาราง Quantity of equipment (modern): หัวแถบไล่เฉด+ขอบซ้ายสีเน้น, แถวใหญ่อ่านง่าย, แถบสัดส่วนขยายจาก 0, แถวไหลเข้าทีละแถว
+   เปิด/ปิดใช้ ::details-content แบบเดียวกับแถบ overdue (ใช้ transform/opacity เป็นหลัก) */
+.st-key-equipment_summary [data-testid="stExpander"] {
+    border: 1px solid #E2E8F0; border-radius: 16px; background: #FFFFFF; overflow: hidden;
+    box-shadow: 0 10px 28px -14px rgba(15, 23, 42, 0.25);
+}
+.st-key-equipment_summary [data-testid="stExpander"] details { interpolate-size: allow-keywords; border: none; }
+.st-key-equipment_summary [data-testid="stExpander"] summary {
+    padding: 16px 20px; border-left: 5px solid #F59E0B;
+    background: linear-gradient(90deg, #FFF7ED 0%, #FFFFFF 70%); transition: background-color 0.2s ease, padding 0.2s ease;
+}
+.st-key-equipment_summary [data-testid="stExpander"] summary:hover { background: linear-gradient(90deg, #FFEDD5 0%, #FFF7ED 80%); }
+.st-key-equipment_summary [data-testid="stExpander"] summary p { font-size: 1.3rem !important; font-weight: 800 !important; color: #0F172A; letter-spacing: 0.01em; }
+.st-key-equipment_summary [data-testid="stExpander"] summary svg,
+.st-key-equipment_summary [data-testid="stExpander"] summary [data-testid="stIconMaterial"] {
+    font-size: 1.6rem !important; width: 1.6rem; height: 1.6rem; color: #B45309; transition: transform 0.3s cubic-bezier(.2,.8,.2,1);
+}
+.st-key-equipment_summary [data-testid="stExpander"] details::details-content {
+    height: 0; overflow: clip; opacity: 0;
+    transition: height 0.38s cubic-bezier(.2,.8,.2,1), opacity 0.3s ease, content-visibility 0.38s allow-discrete;
+}
+.st-key-equipment_summary [data-testid="stExpander"] details[open]::details-content { height: auto; opacity: 1; }
+.st-key-equipment_summary .eq-table { padding: 8px 20px 16px; }
+.st-key-equipment_summary .eq-head, .st-key-equipment_summary .eq-row {
+    display: grid; grid-template-columns: minmax(150px, 1.1fr) 2fr minmax(70px, 0.5fr); align-items: center; column-gap: 24px;
+}
+.st-key-equipment_summary .eq-head {
+    padding: 8px 12px; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #64748B;
+    border-bottom: 2px solid #E2E8F0;
+}
+.st-key-equipment_summary .eq-head span:last-child, .st-key-equipment_summary .eq-qty { text-align: right; }
+.st-key-equipment_summary .eq-row {
+    min-height: 68px; padding: 0 12px; border-bottom: 1px solid #EEF2F6; border-radius: 10px;
+    transition: background-color 0.18s ease, transform 0.18s ease; animation: eq-row-in 0.45s cubic-bezier(.2,.8,.2,1) both;
+    animation-delay: calc(var(--i, 0) * 70ms);
+}
+.st-key-equipment_summary .eq-row:hover { background: #F8FAFC; transform: translateX(3px); }
+.st-key-equipment_summary .eq-name { display: flex; align-items: center; gap: 14px; font-size: 1.3rem; font-weight: 600; color: #1E293B; }
+.st-key-equipment_summary .eq-qty { font-size: 1.85rem; font-weight: 800; color: #0F172A; font-variant-numeric: tabular-nums; }
+.st-key-equipment_summary .eq-dot { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; }
+.st-key-equipment_summary .eq-dot-0 { background: linear-gradient(135deg, #3B82F6, #1D4ED8); }
+.st-key-equipment_summary .eq-dot-1 { background: linear-gradient(135deg, #8B5CF6, #6D28D9); }
+.st-key-equipment_summary .eq-dot-2 { background: linear-gradient(135deg, #10B981, #047857); }
+.st-key-equipment_summary .eq-dot-3 { background: linear-gradient(135deg, #F59E0B, #D97706); }
+.st-key-equipment_summary .eq-bar { display: block; height: 12px; border-radius: 999px; background: #F1F5F9; overflow: hidden; }
+.st-key-equipment_summary .eq-fill {
+    display: block; height: 100%; border-radius: 999px; transform-origin: left center;
+    animation: eq-bar-grow 0.7s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--i, 0) * 70ms + 150ms);
+}
+.st-key-equipment_summary .eq-total { border-bottom: none; background: #F8FAFC; margin-top: 6px; }
+.st-key-equipment_summary .eq-total .eq-name { font-weight: 800; color: #0F172A; }
+.st-key-equipment_summary .eq-total .eq-qty { color: #B45309; }
+@keyframes eq-row-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes eq-bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (max-width: 640px) {
+    .st-key-equipment_summary .eq-head, .st-key-equipment_summary .eq-row { grid-template-columns: 1fr auto; }
+    .st-key-equipment_summary .eq-head span:nth-child(2), .st-key-equipment_summary .eq-bar, .st-key-equipment_summary .eq-total > span:nth-child(2) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .st-key-equipment_summary .eq-row, .st-key-equipment_summary .eq-fill { animation: none; }
+    .st-key-equipment_summary [data-testid="stExpander"] details::details-content,
+    .st-key-equipment_summary [data-testid="stExpander"] summary,
+    .st-key-equipment_summary [data-testid="stExpander"] summary svg { transition: none; }
+}
+
 /* 1.1) ลดระยะขอบรอบตาราง เพื่อให้ตารางกว้างขึ้น (ตารางวาดด้วย canvas ปรับขนาดตัวอักษรด้วย CSS ไม่ได้ จึงเอาพื้นที่จากขอบแทน)
       ขอบของหน้าหลัก 48px -> 16px, การ์ดตาราง 32px -> 12px, กล่องขาวด้านใน 20px -> 8px (รวมได้ตารางกว้างขึ้น ~128px) */
 /* ใช้ min() กับตัวแปร responsive: จอใหญ่ขอบไม่เกิน 2rem (ตารางกว้างเต็มที่) จอเล็กใช้ค่าที่ config/styles.py กำหนด (0.75rem) */
+:root { --app-page-padding-x: min(var(--app-main-padding-x), 2rem); }  /* ให้กฎชดเชยแถบเมนูพับใน config/styles.py ข้อ 13.1 ใช้ค่าเดียวกับหน้านี้ */
 [data-testid="stMainBlockContainer"] {
     padding-left: min(var(--app-main-padding-x), 2rem) !important;
     padding-right: min(var(--app-main-padding-x), 2rem) !important;
@@ -459,23 +597,24 @@ PAGE_CSS_RULES: str = """
 .st-key-table_header_row [data-testid="stColumn"]:first-child { flex: 1 1 0 !important; min-width: 0 !important; }
 .st-key-table_header_row [data-testid="stColumn"]:last-child { flex: 0 0 auto !important; width: auto !important; min-width: 0 !important; }
 .st-key-table_header_row [data-testid="stColumn"]:last-child [data-testid="stElementContainer"] { display: flex; justify-content: flex-end; }
-/* 1.2.1) ปุ่ม "+" ลอย (ไม่มีพื้นหลัง/กรอบ) + เมนูตัวเลือกที่กางไปทางซ้ายเมื่อชี้เมาส์หรือโฟกัส (แตะบนจอสัมผัส)
+/* 1.2.1) ปุ่ม "+" ลอย (ไม่มีพื้นหลัง/กรอบ) + เมนูตัวเลือกที่กางลงด้านล่างเมื่อชี้เมาส์หรือโฟกัส (แตะบนจอสัมผัส)
           ไอคอนหมุน 135° (กลายเป็น x) ตัวเลือกเลื่อน+เฟดเข้า ตัวที่ 2 หน่วงเล็กน้อย
           ปรับขนาดไอคอนที่ font-size 40px, องศาหมุนที่ rotate(), ความเร็วที่ 0.35s / 0.25s */
-.st-key-add_menu { position: relative; width: 52px; height: 52px; gap: 0 !important; }
+.st-key-add_menu { position: relative; width: 60px; height: 60px; gap: 0 !important; }
 .st-key-add_menu [data-testid="stButton"] button {
-    width: 52px !important; min-width: 52px !important; height: 52px !important; padding: 0 !important;
+    width: 60px !important; min-width: 60px !important; height: 60px !important; padding: 0 !important;
     background: transparent !important; border: none !important; box-shadow: none !important; border-radius: 50% !important;
 }
 .st-key-add_menu_trigger button [data-testid="stIconMaterial"] {
-    font-size: 40px !important; color: var(--ui-accent) !important; transition: transform 0.35s ease;
+    font-size: 52px !important; color: var(--ui-accent) !important; transition: transform 0.35s ease;
 }
 .st-key-add_menu:hover .st-key-add_menu_trigger button [data-testid="stIconMaterial"],
 .st-key-add_menu:focus-within .st-key-add_menu_trigger button [data-testid="stIconMaterial"] { transform: rotate(135deg); }
-/* กล่องเมนู: padding ขวา 8px เป็นสะพานให้เมาส์เลื่อนจากไอคอนมาตัวเลือกได้โดยเมนูไม่หาย */
+/* กล่องเมนู: กางลงใต้ปุ่ม "+" ชิดขวา เป็นการ์ดขาวจาง ๆ; padding บน 8px เป็นสะพานให้เมาส์เลื่อนจากไอคอนลงมาได้โดยเมนูไม่หาย */
 .st-key-add_menu_options {
-    position: absolute; right: 52px; top: 0; height: 52px; display: flex !important; flex-direction: row !important;
-    align-items: center; gap: 4px !important; padding-right: 8px; width: max-content;
+    position: absolute; right: 0; top: 100%; z-index: 50; height: auto; display: flex !important; flex-direction: column !important;
+    align-items: stretch; gap: 2px !important; padding: 8px 6px 6px; width: max-content;
+    background: rgba(255, 255, 255, 0.96); border-radius: 12px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
     visibility: hidden; opacity: 0; pointer-events: none;
     transition: opacity 0.25s ease, visibility 0s linear 0.25s;
 }
@@ -485,22 +624,30 @@ PAGE_CSS_RULES: str = """
 }
 .st-key-add_menu_options { width: max-content !important; min-width: max-content !important; max-width: none !important; }
 .st-key-add_menu_options > [data-testid="stElementContainer"] {
-    flex: 0 0 auto !important; width: max-content !important; min-width: max-content !important; transform: translateX(16px); transition: transform 0.3s ease;
+    flex: 0 0 auto !important; width: 100% !important; min-width: max-content !important; transform: translateY(-8px); transition: transform 0.3s ease;
 }
-.st-key-add_menu_options [data-testid="stButton"] { width: max-content !important; min-width: max-content !important; }
+.st-key-add_menu_options [data-testid="stButton"] { width: 100% !important; min-width: max-content !important; }
 .st-key-add_menu_options [data-testid="stElementContainer"]:nth-child(2) { transition-delay: 0.06s; }
 .st-key-add_menu:hover .st-key-add_menu_options [data-testid="stElementContainer"],
-.st-key-add_menu:focus-within .st-key-add_menu_options [data-testid="stElementContainer"] { transform: translateX(0); }
+.st-key-add_menu:focus-within .st-key-add_menu_options [data-testid="stElementContainer"] { transform: translateY(0); }
 .st-key-add_menu_options [data-testid="stButton"] button {
-    width: auto !important; min-width: 0 !important; height: 40px !important; padding: 0 14px !important;
-    border-radius: 10px !important; white-space: nowrap;
+    width: 100% !important; min-width: 0 !important; height: 48px !important; padding: 0 18px !important;
+    border-radius: 10px !important; white-space: nowrap; justify-content: flex-start !important; text-align: left;
 }
-.st-key-add_menu_options [data-testid="stButton"] button p { font-size: 16px; font-weight: 600; color: #1E293B !important; }
-.st-key-add_menu_options [data-testid="stButton"] button [data-testid="stIconMaterial"] { font-size: 24px !important; color: var(--ui-accent) !important; }
-.st-key-add_menu_options [data-testid="stButton"] button:hover { background: rgba(37, 99, 235, 0.08) !important; }
-@media (max-width: 640px) {
-    /* จอแคบ: เมนูทับหัวข้อ จึงใส่พื้นขาวโปร่งให้ข้อความอ่านออก */
-    .st-key-add_menu_options { background: rgba(255, 255, 255, 0.97); border-radius: 12px; }
+.st-key-add_menu_options [data-testid="stButton"] button > div { justify-content: flex-start !important; width: 100%; }
+.st-key-add_menu_options [data-testid="stButton"] button p { font-size: 19px !important; font-weight: 600; color: #1E293B !important; }
+.st-key-add_menu_options [data-testid="stButton"] button [data-testid="stIconMaterial"] { font-size: 28px !important; color: var(--ui-accent) !important; }
+.st-key-add_menu_options [data-testid="stButton"] button { background: transparent !important; }
+.st-key-add_menu_options [data-testid="stButton"] button:hover,
+.st-key-add_menu_options [data-testid="stButton"] button:focus,
+.st-key-add_menu_options [data-testid="stButton"] button:active { background: rgba(37, 99, 235, 0.04) !important; box-shadow: none !important; }
+/* จอ >= 768px: ตัวเลือกออกทางซ้ายของปุ่ม "+" (บนเสมอกับปุ่ม) แทนการกางลงล่าง; padding ขวา 8px เป็นสะพานให้เมาส์ไม่หลุด
+   ตัวเลือกเลื่อนเข้าจากขวา (translateX) แทนจากบน; จอแคบกว่านี้คงแบบกางลงล่าง */
+@media (min-width: 768px) {
+    .st-key-add_menu_options { top: 0; right: 100%; padding: 6px 8px 6px 6px; }
+    .st-key-add_menu_options > [data-testid="stElementContainer"] { transform: translateX(8px); }
+    .st-key-add_menu:hover .st-key-add_menu_options [data-testid="stElementContainer"],
+    .st-key-add_menu:focus-within .st-key-add_menu_options [data-testid="stElementContainer"] { transform: translateX(0); }
 }
 @media (prefers-reduced-motion: reduce) {
     .st-key-add_menu_trigger button [data-testid="stIconMaterial"], .st-key-add_menu_options,
@@ -533,6 +680,113 @@ PAGE_CSS_RULES: str = """
 .st-key-table_action_bar [data-testid="stButton"],
 .st-key-table_action_bar [data-testid="stDownloadButton"] { width: auto; }
 
+/* 1.6) การ์ดตารางหลัก: แถบกรอง / KPI / ปุ่ม ตัวใหญ่ สไตล์ modern + animation เฉพาะ 8 จุด
+        (ช่องค้นหา, Item, Vendor, Total Price, จำนวนรายการ, ปุ่มลบ, Export CSV, Export Excel)
+        ใช้ transform / opacity / box-shadow เท่านั้น; จอที่ตั้งค่าลดการเคลื่อนไหวจะปิดทั้งหมดท้ายหัวข้อนี้ */
+/* แถบกรอง: ช่องสูงเท่ากัน 52px มุม 12px ตัวอักษร 18px */
+.st-key-table_filters [data-testid="stTextInputRootElement"],
+.st-key-table_filters [data-testid="stSelectbox"] [role="group"] {
+    min-height: 52px; border-radius: 12px; border-color: #E2E8F0; background: #FFFFFF;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.st-key-table_filters input, .st-key-table_filters [data-baseweb="select"] { font-size: 18px !important; }
+.st-key-table_filters input::placeholder { color: #94A3B8; }
+.st-key-table_filters [data-testid="stTextInputRootElement"]:hover,
+.st-key-table_filters [data-testid="stSelectbox"] [role="group"]:hover {
+    transform: translateY(-1px); border-color: #93C5FD; box-shadow: 0 6px 14px -6px rgba(37, 99, 235, 0.35);
+}
+.st-key-table_filters [data-testid="stTextInputRootElement"]:focus-within,
+.st-key-table_filters [data-testid="stSelectbox"] [role="group"]:focus-within {
+    transform: translateY(-1px); border-color: #2563EB; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16);
+}
+.st-key-table_filters [data-testid="stColumn"] { animation: tbl-rise 0.45s cubic-bezier(.2,.8,.2,1) backwards; }
+.st-key-table_filters [data-testid="stColumn"]:nth-child(2) { animation-delay: 0.06s; }
+.st-key-table_filters [data-testid="stColumn"]:nth-child(3) { animation-delay: 0.12s; }
+
+/* KPI: การ์ดมุม 16px มีแท่งสีซ้าย ป้ายเล็ก ตัวเลขใหญ่หนา */
+.st-key-table_kpis [data-testid="stMetric"] {
+    position: relative; overflow: hidden; padding: 18px 24px 18px 28px; border: 1px solid #E2E8F0; border-radius: 16px;
+    background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 20px -10px rgba(15, 23, 42, 0.18);
+    animation: tbl-rise 0.5s 0.1s cubic-bezier(.2,.8,.2,1) backwards;
+    transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+.st-key-table_kpis [data-testid="stColumn"]:nth-child(2) [data-testid="stMetric"] { animation-delay: 0.18s; }
+.st-key-table_kpis [data-testid="stMetric"]::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px;
+    background: linear-gradient(180deg, #2563EB, #38BDF8); transform-origin: top;
+    animation: tbl-bar-grow 0.6s 0.25s cubic-bezier(.2,.8,.2,1) backwards;
+}
+.st-key-table_kpis [data-testid="stColumn"]:nth-child(2) [data-testid="stMetric"]::before { background: linear-gradient(180deg, #0D9488, #2DD4BF); }
+.st-key-table_kpis [data-testid="stMetric"]:hover {
+    transform: translateY(-3px); box-shadow: 0 2px 4px rgba(15, 23, 42, 0.06), 0 16px 28px -12px rgba(37, 99, 235, 0.35);
+}
+.st-key-table_kpis [data-testid="stMetricLabel"] p { font-size: 1.05rem !important; font-weight: 700 !important; color: #475569; letter-spacing: 0.01em; }
+.st-key-table_kpis [data-testid="stMetricValue"] { font-size: calc(var(--app-metric-value) * 1.15) !important; font-weight: 800 !important; line-height: 1.15; }
+.st-key-table_kpis [data-testid="stColumn"]:first-child [data-testid="stMetricValue"] {
+    background: linear-gradient(100deg, #0F172A 0%, #1D4ED8 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+/* ปุ่มลบ / Export: สูง 46px มุม 12px ตัวอักษร 17px */
+.st-key-table_action_bar button { min-height: 46px; border-radius: 12px; }
+[data-testid="stMainBlockContainer"] .st-key-table_action_bar [data-testid^="stBaseButton-"] p { font-size: 17px !important; font-weight: 700 !important; }
+.st-key-delete_selected_rows button, .st-key-export_csv_button button, .st-key-export_excel_button button {
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+}
+.st-key-delete_selected_rows button { border-color: #FECACA; color: #B91C1C; }
+.st-key-delete_selected_rows button:not(:disabled) { background: #FEF2F2; animation: tbl-pulse-red 0.9s ease-out 1; }
+.st-key-delete_selected_rows button:not(:disabled):hover {
+    transform: translateY(-2px); border-color: #DC2626; color: #991B1B; box-shadow: 0 10px 18px -8px rgba(220, 38, 38, 0.55);
+}
+.st-key-export_csv_button button:hover, .st-key-export_excel_button button:hover {
+    transform: translateY(-2px); border-color: #2563EB; color: #1D4ED8; box-shadow: 0 10px 18px -8px rgba(37, 99, 235, 0.5);
+}
+.st-key-export_csv_button button:hover [data-testid="stMarkdownContainer"],
+.st-key-export_excel_button button:hover [data-testid="stMarkdownContainer"] { animation: tbl-nudge-down 0.5s ease 1; }
+.st-key-delete_selected_rows button:not(:disabled):active,
+.st-key-export_csv_button button:active, .st-key-export_excel_button button:active { transform: scale(0.97); box-shadow: none; }
+.st-key-table_action_bar [data-testid="stElementContainer"] { animation: tbl-rise 0.45s 0.2s cubic-bezier(.2,.8,.2,1) backwards; }
+
+/* เมนู dropdown ของ selectbox (Item / Vendor): Streamlit 1.66 (react-aria) วาดใน portal นอกการ์ด จึงใช้ selector กลาง
+   กรอบมน เงานุ่ม เด้งเปิดนุ่ม ๆ ตัวเลือกอ่านง่าย hover ฟ้าจาง ตัวที่เลือกอยู่ฟ้าเข้ม
+   (ไม่แตะความสูงแถว เพราะรายการเป็น virtual list คำนวณตำแหน่งจากความสูงเดิม)
+   ห้ามใช้ transform กับตัวเมนูและตัวเลือก: react-aria วางตำแหน่งด้วย inline transform ถ้าทับ เมนูจะวาบไปมุมซ้ายบนก่อนเลื่อนมาที่ช่อง
+   จึง animate ด้วย clip-path (ม้วนลงจากขอบบนของช่อง) + opacity เท่านั้น */
+[data-testid="stSelectboxVirtualDropdown"] {
+    border: 1px solid #E2E8F0; border-radius: 14px; background: #FFFFFF; overflow: hidden;
+    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.05), 0 18px 36px -12px rgba(15, 23, 42, 0.28);
+    animation: dd-pop 0.26s cubic-bezier(.2,.8,.2,1) backwards;
+    scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent;
+}
+[data-testid="stSelectboxVirtualDropdown"] [role="option"] {
+    font-size: 17px; color: #0F172A; border-radius: 10px; padding: 0 14px; width: calc(100% - 12px); margin-left: 6px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+[data-testid="stSelectboxVirtualDropdown"] [role="option"] { animation: dd-opt-in 0.22s ease 0.06s backwards; }
+[data-testid="stSelectboxVirtualDropdown"] [role="option"]:hover,
+[data-testid="stSelectboxVirtualDropdown"] [role="option"][data-focused="true"] { background: #EFF6FF; color: #1D4ED8; }
+[data-testid="stSelectboxVirtualDropdown"] [role="option"][aria-selected="true"] { background: #DBEAFE; color: #1E3A8A; font-weight: 600; }
+.st-key-table_filters [data-testid="stSelectbox"] [role="group"] svg { transition: transform 0.2s ease; }
+.st-key-table_filters [data-testid="stSelectbox"] [role="group"]:focus-within svg:last-of-type { transform: rotate(180deg); }
+@keyframes dd-pop { from { opacity: 0; clip-path: inset(0 0 100% 0 round 14px); } to { opacity: 1; clip-path: inset(0 0 0 0 round 14px); } }
+@keyframes dd-opt-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tbl-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes tbl-bar-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes tbl-pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); } 100% { box-shadow: 0 0 0 12px rgba(220, 38, 38, 0); } }
+@keyframes tbl-nudge-down { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) {
+    .st-key-table_filters [data-testid="stColumn"], .st-key-table_kpis [data-testid="stMetric"],
+    .st-key-table_kpis [data-testid="stMetric"]::before, .st-key-table_action_bar [data-testid="stElementContainer"],
+    [data-testid="stSelectboxVirtualDropdown"], .st-key-table_filters [data-testid="stSelectbox"] [role="group"] svg,
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"],
+    .st-key-delete_selected_rows button, .st-key-export_csv_button [data-testid="stMarkdownContainer"],
+    .st-key-export_excel_button [data-testid="stMarkdownContainer"] { animation: none !important; }
+    .st-key-table_filters [data-testid="stTextInputRootElement"], .st-key-table_filters [data-testid="stSelectbox"] [role="group"],
+    .st-key-table_kpis [data-testid="stMetric"], .st-key-table_action_bar button { transition: none !important; transform: none !important; }
+}
+
 /* 1.3) หน้าต่าง Popup แบบแคบ (width="small"): ปุ่มถัดไปเต็มความกว้าง และลดขอบ/ขนาดหัวข้อของฟอร์มให้ช่องกรอกกว้างขึ้น */
 .st-key-step1_next_button,
 .st-key-step1_next_button button { width: 100% !important; }
@@ -546,15 +800,19 @@ PAGE_CSS_RULES: str = """
 div[data-testid="stDialog"] { align-items: center !important; background: rgba(15, 23, 42, 0.45) !important; backdrop-filter: blur(3px); }
 div[data-testid="stDialog"] [role="dialog"] {
     border-radius: 22px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
-    padding: 12px 18px 22px 18px; max-height: 92vh; overflow-y: auto;
+    padding: 12px 18px 22px 18px; max-height: 92vh; overflow: hidden;
+    display: flex; flex-direction: column;
     animation: dialog-pop-in .3s cubic-bezier(.2, .8, .2, 1);
 }
+/* เลื่อนเฉพาะส่วนเนื้อหา: หัวข้อกับปุ่มปิด (x) อยู่กับที่ ไม่เลื่อนหายตอนเลื่อนฟอร์มลง */
+div[data-testid="stDialog"] [role="dialog"] > h2 { flex: 0 0 auto; }
+div[data-testid="stDialog"] [role="dialog"] > div:has(> [data-testid="stVerticalBlock"]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 @keyframes dialog-pop-in { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
 /* ชื่อหน้าต่าง "เพิ่มข้อมูล": ฟอนต์ Prompt ตัวหนา ใหญ่ */
 div[data-testid="stDialog"] [role="dialog"] h2,
 div[data-testid="stDialog"] [role="dialog"] h2 * { font-family: 'Prompt', 'Sarabun', sans-serif !important; font-size: 26px !important; font-weight: 700 !important; color: #0F172A; }
 /* ปุ่มปิด (x): กลม มีพื้นจางตอนชี้ */
-div[data-testid="stDialog"] [role="dialog"] > button { border-radius: 50%; transition: background .2s; }
+div[data-testid="stDialog"] [role="dialog"] > button { border-radius: 50%; transition: background .2s; z-index: 2; }
 div[data-testid="stDialog"] [role="dialog"] > button:hover { background: #F1F5F9; }
 /* ข้อความทั่วไป 17px */
 div[data-testid="stDialog"] [data-testid="stMarkdownContainer"] p { font-size: 17px; line-height: 1.55; }
@@ -661,12 +919,54 @@ div[data-testid="stDialog"] button:disabled { opacity: .5; box-shadow: none !imp
     div[data-testid="stDialog"] [role="dialog"] { animation: none !important; transition: none !important; }
 }
 
-/* จอแคบ (มือถือ): ลดขอบหน้าต่าง/ขนาดตัวเลือก 4 ตัวให้พอดีบรรทัดเดียว ไม่ถูกตัดเป็น "H..." */
+/* จอแคบ (มือถือ <= 640px): ลดขอบหน้าต่าง และให้ตัวอักษรย่อตามความกว้างจอด้วย clamp(ต่ำสุด, ตามจอ, สูงสุดเท่าเดิม)
+   แก้ขนาดตัวอักษรของ dialog บนมือถือที่ตัวเลขในกฎนี้ที่เดียว */
 @media (max-width: 640px) {
     div[data-testid="stDialog"] [role="dialog"] { padding: 8px 10px 18px 10px; }
+    div[data-testid="stDialog"] [role="dialog"] h2,
+    div[data-testid="stDialog"] [role="dialog"] h2 * { font-size: clamp(20px, 5.5vw, 26px) !important; }
+    div[data-testid="stDialog"] h4 { font-size: clamp(17px, 4.6vw, 22px) !important; }
+    div[data-testid="stDialog"] [data-testid="stMarkdownContainer"] p { font-size: clamp(14px, 3.6vw, 17px); }
+    div[data-testid="stDialog"] label,
+    div[data-testid="stDialog"] label p,
+    div[data-testid="stDialog"] .field-label,
+    div[data-testid="stDialog"] input,
+    div[data-testid="stDialog"] textarea,
+    div[data-testid="stDialog"] [data-baseweb="select"] { font-size: clamp(14px, 3.6vw, 17px) !important; }
+    .step-subtitle { font-size: clamp(13px, 3.4vw, 16px) !important; }
+    div[data-testid="stDialog"] [data-testid="stButton"] button,
+    div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button,
+    div[data-testid="stDialog"] [data-testid="stButton"] button p,
+    div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button p { font-size: clamp(15px, 4vw, 18px) !important; }
     div[data-testid="stDialog"] [data-testid="stButtonGroup"] button { padding: 8px 2px !important; }
-    div[data-testid="stDialog"] [data-testid="stButtonGroup"] button p { font-size: 14px !important; overflow: visible !important; text-overflow: clip !important; }
-    div[data-testid="stDialog"] h4 { font-size: 19px !important; }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] button p { font-size: clamp(13px, 3.6vw, 17px) !important; overflow: visible !important; text-overflow: clip !important; }
+}
+
+/* จอ <= 425px: ตัวเลือก 4–5 ตัวจัดเป็นกริด 2 คอลัมน์, 2–3 ตัว (เช่น ใบกำกับภาษี) เรียงลงทีละแถวและตัดบรรทัดได้ → ข้อความไม่ถูกตัด
+   แท่งขาวเลื่อน (::before) ใช้กับหลายแถวไม่ได้ จึงปิด แล้วให้ปุ่มที่เลือกมีพื้นขาว+ขอบน้ำเงินเอง */
+@media (max-width: 425px) {
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] [role="radiogroup"] {
+        grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: 1fr 1fr; gap: 4px;
+    }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] [role="radiogroup"]:has(> button:nth-child(2):last-child),
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] [role="radiogroup"]:has(> button:nth-child(3):last-child) { grid-template-columns: 1fr; }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] [role="radiogroup"]::before { display: none; }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] button { min-height: 46px; padding: 8px 6px !important; }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] button p { white-space: normal; line-height: 1.25; }
+    div[data-testid="stDialog"] [data-testid="stButtonGroup"] button[data-selected="true"] {
+        background: #FFFFFF !important; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.22), 0 0 0 1.5px rgba(37, 99, 235, 0.35) !important;
+    }
+    /* ขั้นที่ 2: ลด padding ที่ซ้อนกันหลายชั้น (เนื้อหา dialog 24px + การ์ด + ฟอร์ม) ให้ช่องกรอกกว้างขึ้น */
+    div[data-testid="stDialog"] [role="dialog"] > div:has(> [data-testid="stVerticalBlock"]) { padding-left: 4px !important; padding-right: 4px !important; }
+    .st-key-entry_form_card { padding-left: 0 !important; padding-right: 0 !important; }
+    .st-key-entry_form_card [data-testid="stForm"] { padding: 10px 8px !important; }
+    .st-key-entry_form_card [data-testid="stForm"] [data-testid="stVerticalBlock"] { gap: 0.8rem !important; }
+    /* ข้อความตัวอย่างในช่อง: ย่อให้เห็นครบขึ้น ถ้ายาวเกินให้ตัดด้วย ... */
+    div[data-testid="stDialog"] input::placeholder,
+    div[data-testid="stDialog"] textarea::placeholder { font-size: clamp(12px, 3.3vw, 14px); text-overflow: ellipsis; }
+    div[data-testid="stDialog"] .step-subtitle { text-wrap: balance; }
+    div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button p,
+    div[data-testid="stDialog"] [data-testid="stButton"] button p { white-space: normal; }
 }
 
 /* ขั้นที่ 1: ปุ่มถัดไปห่างจากตัวเลือกพอดี */
@@ -851,10 +1151,34 @@ div[data-testid="stDialog"] [data-testid="stVerticalBlock"] { gap: 1rem; }
         animation: none !important; transition: none !important;
     }
 }
-/* การ์ดตรวจสอบข้อมูลด้านล่าง: ใช้หน้าตาเดียวกับการ์ดฟอร์ม */
-.upload-review-hint {
-    text-align: center; color: #64748B; font-size: 16px; margin: 0; padding: 16px 12px;
-    background: var(--ui-inner-bg); border: 1px dashed var(--ui-dashed-border); border-radius: 16px;
+/* 8) โหมด Upload: ชิปปลายทาง + แถวปุ่ม (ย้อนกลับ = ปุ่มรอง แคบ / Upload = ปุ่มหลัก กว้าง สูงเท่ากัน) */
+.upload-dest-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 8px; margin: 2px 0 0 0; }
+.upload-dest-chips span {
+    font-size: 13px; font-weight: 600; color: #0F766E; background: #F0FDFA;
+    border: 1px solid #99F6E4; border-radius: 999px; padding: 3px 12px; white-space: nowrap;
+}
+.upload-dest-chips { margin-bottom: 14px; }
+.st-key-upload_card [data-testid="stHorizontalBlock"] { display: grid !important; grid-template-columns: 1fr 2fr; gap: 10px; align-items: stretch; }
+.st-key-upload_card [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { width: 100% !important; min-width: 0 !important; flex: none !important; }
+.st-key-upload_back_button, .st-key-upload_submit_button,
+.st-key-upload_back_button [data-testid="stButton"], .st-key-upload_submit_button [data-testid="stButton"] { width: 100% !important; }
+.st-key-upload_back_button button, .st-key-upload_submit_button button { width: 100%; min-height: 50px; border-radius: 14px; font-weight: 700; }
+.st-key-upload_back_button button { background: #ffffff !important; border: 1.5px solid #CBD5E1 !important; color: #475569 !important; }
+.st-key-upload_back_button button:hover { border-color: #0D9488 !important; color: #0D9488 !important; }
+.st-key-upload_submit_button button {
+    box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.5);  /* สีปุ่มหลักมาจากธีมกลาง (ฟ้า) */
+}
+.st-key-upload_submit_button button:hover:not(:disabled) { transform: translateY(-1px); }
+.st-key-upload_submit_button button:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.st-key-upload_submit_button button p, .st-key-upload_submit_button button:disabled p { color: #ffffff !important; }
+/* จอ <= 425px: การ์ดกะทัดรัดขึ้น หัวข้อ/ป้ายตัดบรรทัดได้ ปุ่มสองปุ่มยังอยู่แถวเดียวกัน */
+@media (max-width: 425px) {
+    .st-key-upload_card [data-testid="stFileUploaderDropzone"] { min-height: 150px; padding: 16px 8px; gap: 10px; }
+    .upload-card-hint { white-space: normal; }
+    .st-key-upload_box_extract { padding: 16px 12px 12px 12px; }
+    .st-key-upload_back_button button p, .st-key-upload_submit_button button p { white-space: nowrap; }
+    .st-key-upload_card [data-testid="stHorizontalBlock"] { gap: 8px; grid-template-columns: 1fr 1.5fr; }
+    .st-key-upload_back_button button, .st-key-upload_submit_button button { padding-left: 6px; padding-right: 6px; }
 }
 """
 
@@ -924,30 +1248,6 @@ def validate_form_input(
     return problem_messages
 
 
-def save_document_and_get_path(uploaded_document: Optional[UploadedFile]) -> Optional[str]:
-    """บันทึกไฟล์ที่ผู้ใช้เลือกลง local_uploads/ แล้วคืนที่อยู่ไฟล์
-
-    Args:
-        uploaded_document: ไฟล์จาก st.file_uploader (UploadedFile)
-
-    Returns:
-        ที่อยู่ไฟล์ (relative), หรือ None ถ้าบันทึกไม่สำเร็จ (แสดง st.error ให้แล้ว)
-    """
-    try:
-        return save_document_locally(uploaded_document.getvalue(), uploaded_document.name)
-    except LocalStorageError as error:
-        st.error(f"❌ {error}")
-        return None
-
-    # --- SharePoint ปิดไว้: เตรียมไว้สำหรับเชื่อมต่อในอนาคต ---
-    # เปิดใช้โดยแทนที่การเรียก save_document_locally ด้านบนด้วยโค้ดนี้ (และเปิด import ด้านบนไฟล์)
-    # try:
-    #     return upload_document_to_sharepoint(uploaded_document.getvalue(), uploaded_document.name)
-    # except SharePointError as error:
-    #     st.error(f"❌ {error}")
-    #     return None
-
-
 def _field_key(field_name: str, form_counter: int) -> str:
     """สร้าง key ของช่องกรอก (ต่อท้ายด้วยตัวนับ เพื่อให้ฟอร์มว่างใหม่หลังบันทึกสำเร็จ)"""
     return f"overview_field_{field_name}_{form_counter}"
@@ -998,35 +1298,9 @@ OVERDUE_TABLE_COLUMNS: dict[str, str] = {
     "total_price": "ราคารวม (บาท)",
     "days_pending": "ค้างมาแล้ว (วัน)",
 }
-OVERDUE_TABLE_COLUMN_WIDTHS: dict[str, Optional[int]] = {
-    "รหัส": 90,
-    "วันที่": 140,
-    "ผู้ขาย": None,
-    "เลขที่ PO": None,
-    "ราคารวม (บาท)": 170,
-    "ค้างมาแล้ว (วัน)": 190,
-}
 # ค้างตั้งแต่กี่วันขึ้นไปถือว่า "วิกฤต" (ป้ายวันที่ค้างเป็นสีแดงเข้ม) ที่เหลือเป็นสีส้ม แก้ตัวเลขตรงนี้ได้
 OVERDUE_CRITICAL_DAYS: int = 30
 
-# ป้ายจำนวนวันที่ค้างในตาราง: สร้างด้วย element ไม่ต่อสตริง HTML เพื่อกัน XSS
-# OVERDUE_CRITICAL_DAYS ถูกแทนด้วยค่าคงที่ข้างบน
-OVERDUE_DAYS_BADGE_RENDERER_JS: str = r"""
-class OverdueDaysBadgeRenderer {
-    init(params) {
-        const days = Number(params.value);
-        this.eGui = document.createElement('span');
-        if (!isFinite(days)) { this.eGui.textContent = String(params.value || ''); return; }
-        const critical = days >= OVERDUE_CRITICAL_DAYS;
-        const badge = document.createElement('span');
-        badge.textContent = (critical ? '🔥 ' : '⏰ ') + days + ' วัน';
-        badge.style.cssText = 'display:inline-block;padding:2px 12px;border-radius:999px;font-weight:700;font-size:15px;line-height:26px;'
-            + (critical ? 'background:#FEE2E2;color:#B91C1C;' : 'background:#FFEDD5;color:#C2410C;');
-        this.eGui.appendChild(badge);
-    }
-    getGui() { return this.eGui; }
-}
-"""
 
 
 def build_overdue_alert_html(overdue_count: int, longest_days: int) -> str:
@@ -1055,32 +1329,79 @@ def build_overdue_alert_html(overdue_count: int, longest_days: int) -> str:
     )
 
 
+def format_overdue_date(date_text: Any) -> str:
+    """แปลงวันที่ "YYYY-MM-DD" เป็น DD/MM/YYYY (แปลงไม่ได้ให้คืนข้อความเดิม ไม่แครช)
+
+    Args:
+        date_text: วันที่จาก DB
+
+    Returns:
+        ข้อความวันที่สำหรับแสดงผล
+    """
+    try:
+        return date.fromisoformat(str(date_text)).strftime("%d/%m/%Y")
+    except ValueError:
+        return str(date_text or "")
+
+
+def format_overdue_price(price: Any) -> str:
+    """จัดรูปเงินแบบมีคอมม่าทศนิยม 2 ตำแหน่ง (ค่าว่าง/แปลงไม่ได้ให้ขีด "-")
+
+    Args:
+        price: ราคารวมจาก DB
+
+    Returns:
+        ข้อความราคาสำหรับแสดงผล
+    """
+    try:
+        return f"{float(price):,.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def build_overdue_table_html(overdue_transactions: list[dict[str, Any]]) -> str:
+    """สร้าง HTML ตารางรายการที่ค้างแบบ modern (สไตล์อยู่ใน PAGE_CSS_RULES หัวข้อ "ตารางรายการที่ค้าง")
+
+    Args:
+        overdue_transactions: รายการที่ค้างเกินกำหนด (จาก find_overdue_transactions มีคอลัมน์ days_pending)
+
+    Returns:
+        สตริง HTML (ข้อความจากผู้ใช้ผ่าน html.escape แล้วทุกจุด)
+
+    Raises:
+        KeyError: ถ้าข้อมูลขาดคอลัมน์ที่ตารางต้องใช้
+    """
+    headers = "".join(f"<span>{html.escape(title)}</span>" for title in OVERDUE_TABLE_COLUMNS.values())
+    parts: list[str] = ['<div class="od-table"><div class="od-scroll">', f'<div class="od-head">{headers}</div>']
+    for index, transaction in enumerate(overdue_transactions):
+        days = int(transaction["days_pending"])
+        is_critical = days >= OVERDUE_CRITICAL_DAYS
+        vendor = html.escape(str(transaction["vendor"] or "-"))
+        po_no = html.escape(str(transaction["po_no"] or "-"))
+        badge_class = "od-badge-critical" if is_critical else "od-badge-warn"
+        parts.append(
+            f'<div class="od-row{" od-row-critical" if is_critical else ""}" style="--i:{min(index, 12)}">'
+            f'<span class="od-id">{html.escape(str(transaction["id"]))}</span>'
+            f'<span class="od-date">{format_overdue_date(transaction["date"])}</span>'
+            f'<span class="od-vendor" title="{vendor}">{vendor}</span>'
+            f'<span class="od-po" title="{po_no}">{po_no}</span>'
+            f'<span class="od-price">{format_overdue_price(transaction["total_price"])}</span>'
+            f'<span class="od-days"><b class="od-badge {badge_class}">{"🔥" if is_critical else "⏰"} {days} วัน</b></span>'
+            "</div>"
+        )
+    parts.append("</div></div>")
+    return "".join(parts)
+
+
 def render_overdue_table(overdue_transactions: list[dict[str, Any]]) -> None:
-    """วาดตารางรายการที่ค้างให้เต็มความกว้าง หน้าตาเดียวกับตารางหลัก (วันที่เป็น DD/MM/YYYY, เงินมีคอมม่า)
+    """วาดตารางรายการที่ค้างเป็น HTML modern (วันที่เป็น DD/MM/YYYY, เงินมีคอมม่า, ป้ายวันที่ค้าง)
 
     Args:
         overdue_transactions: รายการที่ค้างเกินกำหนด (จาก find_overdue_transactions มีคอลัมน์ days_pending)
     """
     try:
-        overdue_table = pd.DataFrame(overdue_transactions)[list(OVERDUE_TABLE_COLUMNS)]
-        overdue_table.columns = list(OVERDUE_TABLE_COLUMNS.values())
-        grid_options = build_grid_options(
-            overdue_table,
-            column_widths=OVERDUE_TABLE_COLUMN_WIDTHS,
-            money_columns=("ราคารวม (บาท)",),
-            date_columns=("วันที่",),
-            extra_column_options={
-                "ค้างมาแล้ว (วัน)": {
-                    "cellRenderer": JsCode(
-                        OVERDUE_DAYS_BADGE_RENDERER_JS.replace("OVERDUE_CRITICAL_DAYS", str(OVERDUE_CRITICAL_DAYS))
-                    ),
-                },
-            },
-        )
-        # ต่อท้าย key ด้วยค่าแฮชของข้อมูล: ข้อมูลเปลี่ยนแล้วตารางวาดใหม่ ไม่ค้างข้อมูลเก่า
-        content_hash = int(pd.util.hash_pandas_object(overdue_table.reset_index(drop=True), index=False).sum() % 10**9)
-        show_grid(overdue_table, grid_options, f"overdue_table_{content_hash}")
-    except (KeyError, ValueError) as error:
+        st.markdown(build_overdue_table_html(overdue_transactions), unsafe_allow_html=True)
+    except (KeyError, ValueError, TypeError) as error:
         logger.warning("วาดตารางรายการที่ค้างไม่สำเร็จ: %s", error)
         st.error("แสดงตารางรายการที่ค้างไม่สำเร็จ กรุณารีเฟรชหน้าอีกครั้ง")
 
@@ -1185,7 +1506,11 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 "unit_price": transaction.get("unit_price"),  # None = ยังไม่มีราคา แสดงเป็นช่องว่าง
                 # ลิงก์ไฟล์บน SharePoint: ใส่เฉพาะที่ขึ้นต้น http(s):// (ที่เหลือเว้นว่าง ไม่แสดงไอคอน)
                 # ไม่มีลิงก์ให้ใส่ "" (ถ้าใส่ None ตารางจะแสดงคำว่า None)
-                "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url")) or "",
+                # มีลิงก์ออนไลน์ (โฟลเดอร์ SharePoint) -> ไอคอนเปิดลิงก์นั้นในแท็บใหม่
+                # ไม่มี (ยังไม่ได้สิทธิ์) -> ไอคอนเปิดไฟล์ในระบบ (ถ้าเปิด LOCAL_DESKTOP_EXPORT = คัดลอกไป Desktop ดู handle_file_icon_click)
+                "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url"))
+                or build_local_file_url(transaction.get("file_path"))
+                or "",
             }
         )
     # หมายเหตุ: ตารางนี้ใช้ index ลำดับ 0,1,2,... (ไม่ใช่ id)
@@ -1420,6 +1745,8 @@ def build_transaction_grid_options(grid_table: pd.DataFrame) -> dict[str, Any]:
         "sharepoint_url": {
             "cellRenderer": JsCode(
                 FILE_LINK_RENDERER_JS
+                .replace("FILE_STATIC_PREFIX", re.escape(STATIC_URL_PREFIX).replace("/", "\\/"))
+                .replace("FILE_DESKTOP_MODE", "true" if DESKTOP_EXPORT_ENABLED else "false")
                 .replace("FILE_ICON", FILE_LINK_ICON)
                 .replace("FILE_CIRCLE_PX", str(FILE_LINK_CIRCLE_PX))
                 .replace("FILE_HOVER_BG", FILE_LINK_HOVER_BACKGROUND)
@@ -1442,6 +1769,7 @@ def build_transaction_grid_options(grid_table: pd.DataFrame) -> dict[str, Any]:
         paginated=True,
         filterable=True,
         extra_column_options=extra_column_options,
+        row_id_column=ROW_POSITION_COLUMN,  # ลำดับแถวไม่ซ้ำกัน ใช้เป็น id แถว
     )
 
 
@@ -1504,6 +1832,71 @@ def get_selected_positions(grid_response: Any) -> list[int]:
     return sorted({int(record[ROW_POSITION_COLUMN]) for record in records if record.get(ROW_POSITION_COLUMN) is not None})
 
 
+def find_clicked_file_position(grid_response: Any) -> Optional[int]:
+    """อ่านว่าผู้ใช้เพิ่งกดไอคอนในคอลัมน์ File ของแถวไหน (จาก event cellClicked)
+
+    Args:
+        grid_response: ผลจาก show_grid (None = ไม่มีเหตุการณ์)
+
+    Returns:
+        ตำแหน่งแถวตาม ROW_POSITION_COLUMN หรือ None ถ้าไม่ใช่การกดคอลัมน์ File
+    """
+    event_data = getattr(grid_response, "event_data", None)
+    if not isinstance(event_data, dict) or event_data.get("type") != "cellClicked":
+        return None
+    column_id = (event_data.get("colId") or (event_data.get("column") or {}).get("colId") or "")
+    row_data = event_data.get("data") or (event_data.get("node") or {}).get("data") or {}
+    # colId ในตารางจริงคือชื่อฟิลด์ (sharepoint_url) ส่วนหัวคอลัมน์ "File" เป็นแค่ข้อความแสดง
+    if column_id not in ("sharepoint_url", TABLE_COLUMNS["sharepoint_url"]) or row_data.get(ROW_POSITION_COLUMN) is None:
+        return None
+    return int(row_data[ROW_POSITION_COLUMN])
+
+
+def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[str, Any]]) -> None:
+    """กดไอคอน File: คัดลอกไฟล์ของแถวนั้นไป Desktop/ปี/เดือน/วัน/Vendor แล้วเปิดโฟลเดอร์ใน Explorer
+
+    ใช้วันที่ created_at ของแถว (วันที่บันทึกรายการ = วันที่อัปโหลด) ตั้งชื่อโฟลเดอร์
+    event ค้างอยู่ทุกครั้งที่หน้ารีรัน (และไม่มีเวลากำกับ) จึงจัดการเสร็จแล้วเปลี่ยน key ของตารางแล้วรีรัน
+    ตารางใหม่ไม่มี event ค้าง -> ไม่ทำซ้ำ และกดไอคอนเดิมซ้ำได้
+
+    Args:
+        grid_response: ผลจาก show_grid
+        visible_transactions: รายการที่แสดงในตาราง (แถวที่ n ในตาราง = ตัวที่ n)
+    """
+    if not DESKTOP_EXPORT_ENABLED:
+        return  # โหมดปกติ (Server): ไอคอนเป็นลิงก์เปิดไฟล์ในเบราว์เซอร์ ไม่ต้องคัดลอกอะไร
+    position = find_clicked_file_position(grid_response)
+    if position is None or not 0 <= position < len(visible_transactions):
+        return
+
+    transaction = visible_transactions[position]
+    try:
+        uploaded_at = datetime.fromisoformat(str(transaction.get("created_at") or ""))
+    except ValueError:
+        uploaded_at = datetime.fromisoformat(f"{transaction['date']}T00:00:00")  # ไม่มี created_at: ใช้วันที่ของรายการ
+    message: tuple[str, str]
+    try:
+        folder = export_files_to_desktop(transaction.get("file_path") or "", transaction["vendor"], uploaded_at)
+    except LocalStorageError as error:
+        message = ("error", f"❌ {error}")
+    else:
+        message = ("success", f"📁 เก็บไฟล์ไว้ที่ {folder}")
+        _open_folder_in_explorer(folder)
+    st.session_state[SESSION_KEY_STATUS_MESSAGES] = [message]  # แสดงหลังรีรัน (ดู render ด้านบนของหน้า)
+    st.session_state[SESSION_KEY_EDITOR_VERSION] = st.session_state.get(SESSION_KEY_EDITOR_VERSION, 0) + 1
+    st.rerun()
+
+
+def _open_folder_in_explorer(folder: Path) -> None:
+    """เปิดโฟลเดอร์ใน Explorer (Windows เท่านั้น) ถ้าเปิดไม่ได้แค่บันทึก log ไม่ให้ขั้นคัดลอกล้ม"""
+    if sys.platform != "win32":
+        return
+    try:
+        os.startfile(folder)  # noqa: S606 - เปิดโฟลเดอร์ที่เราเพิ่งสร้างเอง
+    except OSError:
+        logger.warning("เปิดโฟลเดอร์ใน Explorer ไม่สำเร็จ", exc_info=True)
+
+
 def convert_table_to_csv_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
     """แปลงตารางเป็นไฟล์ CSV (UTF-8 แบบมี BOM เพื่อให้ Excel เปิดภาษาไทยไม่เพี้ยน)
 
@@ -1554,22 +1947,24 @@ def render_table_card(
     with st.container(key="table_card"):
         # แถบตัวกรองแถวเดียว: ช่องค้นหา (กว้างสุด) + dropdown Item + dropdown Vendor
         # ถ้าจะเพิ่มตัวกรองใหม่ ให้เพิ่มสัดส่วนใน st.columns ด้านล่าง แล้วเพิ่มเงื่อนไขกรองต่อจาก selected_vendor
-        search_column, item_column, vendor_column = st.columns([3, 1.3, 1.7])
+        # key="table_filters" ให้ CSS (PAGE_CSS_RULES ข้อ 1.6) จับเฉพาะแถบกรองนี้
+        with st.container(key="table_filters"):
+            search_column, item_column, vendor_column = st.columns([3, 1.3, 1.7])
 
-        # ช่องค้นหา: ค้นในชื่อผู้ขาย, เลข PO, เลขรัน PR, Tax ID (ดู database.get_transactions)
-        search_keyword = search_column.text_input(
-            "Search bar",
-            placeholder="🔍 ค้นหา (ผู้ขาย, เลข PO, เลขรัน PR, Tax ID)",
-            label_visibility="collapsed",
-        ).strip()
+            # ช่องค้นหา: ค้นเฉพาะชื่อ Vendor และ Tel. (ดู database.get_transactions)
+            search_keyword = search_column.text_input(
+                "Search bar",
+                placeholder="🔍 ค้นหา ชื่อ Vendor, Tel.",
+                label_visibility="collapsed",
+            ).strip()
 
-        selected_item = item_column.selectbox(
-            "Item", [ALL_ITEMS_LABEL, *CATEGORY_OPTIONS], label_visibility="collapsed"
-        )
-        vendor_options = [ALL_VENDORS_LABEL, *sorted({t["vendor"] for t in range_transactions})]
-        selected_vendor = vendor_column.selectbox(
-            "Vendor", vendor_options, label_visibility="collapsed"
-        )
+            selected_item = item_column.selectbox(
+                "Item", [ALL_ITEMS_LABEL, *CATEGORY_OPTIONS], label_visibility="collapsed"
+            )
+            vendor_options = [ALL_VENDORS_LABEL, *sorted({t["vendor"] for t in range_transactions})]
+            selected_vendor = vendor_column.selectbox(
+                "Vendor", vendor_options, label_visibility="collapsed"
+            )
 
         # ถ้ามีคำค้นหาให้ query ใหม่ตามคำค้น ไม่งั้นใช้รายการทั้งช่วงวันที่ที่มีอยู่แล้ว (ไม่ query ซ้ำ)
         visible_transactions = (
@@ -1594,9 +1989,10 @@ def render_table_card(
         with st.container(key="table_inner"):
             # สรุปราคา: ยอดรวมของรายการที่แสดงอยู่ในตารางขณะนี้ (เปลี่ยนตาม Date Filter / Search / Item / Vendor)
             total_price = sum(float(t.get("total_price") or 0) for t in visible_transactions)
-            summary_column, count_column = st.columns(2)
-            summary_column.metric("Total Price (บาท)", f"{total_price:,.2f}")
-            count_column.metric("จำนวนรายการ", f"{len(display_table):,}")
+            with st.container(key="table_kpis"):  # key ให้ CSS จับการ์ด KPI (ข้อ 1.6)
+                summary_column, count_column = st.columns(2)
+                summary_column.metric("Total Price (บาท)", f"{total_price:,.2f}")
+                count_column.metric("จำนวนรายการ", f"{len(display_table):,}")
 
             # ตาราง AgGrid แบบแก้ไข/ลบได้ (CRUD): ดับเบิลคลิกช่องเพื่อแก้ไขค่า / ติ๊กเลือกแถวแล้วกดปุ่ม "ลบ" เพื่อลบ
             # ทุกการแก้ไขหรือลบจะถูกซิงก์ลงฐานข้อมูลทันที (ดู apply_table_edits)
@@ -1615,8 +2011,10 @@ def render_table_card(
                 grid_table,
                 build_transaction_grid_options(grid_table),
                 grid_key,
-                update_on=["cellValueChanged", "selectionChanged"],  # ส่งค่ากลับเมื่อแก้ไขเซลล์ / เปลี่ยนแถวที่เลือก
+                # ส่งค่ากลับเมื่อแก้ไขเซลล์ / เปลี่ยนแถวที่เลือก / กดเซลล์ (ใช้จับการกดไอคอน File)
+                update_on=["cellValueChanged", "selectionChanged", "cellClicked"],
             )
+            handle_file_icon_click(grid_response, visible_transactions)
 
             editor_state: dict[str, Any] = {
                 "edited_rows": collect_grid_changes(grid_table, grid_response),
@@ -1684,56 +2082,6 @@ def render_table_card(
 # ---------------------------------------------------------------------------
 # ส่วนที่ 2: การ์ด Upload File (กล่องลากไฟล์ 2 ช่อง)
 # ---------------------------------------------------------------------------
-
-
-def _prefill_form_from_purchase_document(purchase_document: UploadedFile, form_counter: int) -> str:
-    """ดึง TaxID / Vendor จากไฟล์ PO แล้วเติมลงช่องของฟอร์ม
-
-    ต้องเรียกก่อนที่ฟอร์มจะถูกวาดในรอบเดียวกัน (ดูลำดับใน render()) เพราะ Streamlit
-    ให้ตั้งค่าช่องผ่าน session_state ได้เฉพาะก่อนช่องนั้นถูกสร้าง
-
-    Args:
-        purchase_document: ไฟล์ที่ผู้ใช้อัปโหลด (UploadedFile)
-        form_counter: ตัวนับของฟอร์มปัจจุบัน (ใช้สร้าง key ของช่อง)
-
-    Returns:
-        ข้อความสรุปผลให้แสดงผู้ใช้ (ว่างไม่ได้ เพราะต้องบอกผู้ใช้เสมอว่าต้องตรวจเอง)
-    """
-    if not purchase_document.name.lower().endswith(AUTO_EXTRACT_EXTENSIONS):
-        return "⚠️ ไฟล์รูปภาพยังดึงข้อความอัตโนมัติไม่ได้ กรุณากรอกข้อมูลเอง"
-
-    # เลือกวิธีอ่านตามนามสกุล (PDF / Excel) ถ้าอ่านไม่ได้ฟิลด์จะว่างและระบบแจ้งให้กรอกเอง
-    extracted_fields = extract_fields_from_file(purchase_document, purchase_document.name)
-
-    # เติมเฉพาะฟิลด์ที่หาเจอ (ค่าว่างไม่เขียนทับสิ่งที่ผู้ใช้พิมพ์ไว้)
-    if extracted_fields.tax_id:
-        st.session_state[_field_key("tax_id", form_counter)] = extracted_fields.tax_id
-    if extracted_fields.vendor:
-        st.session_state[_field_key("vendor", form_counter)] = extracted_fields.vendor
-    if extracted_fields.total_amount:
-        st.session_state[_field_key("total_price", form_counter)] = float(extracted_fields.total_amount)
-
-    # ฟิลด์ Master-List (โครงร่างการสกัดยังเป็น Logic จำลอง) ชื่อฟิลด์ตรงกับ key ของช่องในฟอร์ม
-    # ถ้าเพิ่มฟิลด์ข้อความใหม่ ให้เพิ่มชื่อในรายการนี้
-    for text_field_name in ("tel", "pr_run_no", "qt_no", "description"):
-        extracted_value = getattr(extracted_fields, text_field_name)
-        if extracted_value:
-            st.session_state[_field_key(text_field_name, form_counter)] = extracted_value
-    pr_request_date = _parse_iso_date_or_none(extracted_fields.pr_request_date)
-    if pr_request_date:
-        st.session_state[_field_key("pr_request_date", form_counter)] = pr_request_date
-    if extracted_fields.unit_price:
-        st.session_state[_field_key("unit_price", form_counter)] = float(extracted_fields.unit_price)
-
-    # พบใบกำกับภาษีในไฟล์ -> ตั้งสถานะเป็น "มีใบกำกับภาษี" (Completed) ให้เอง ผู้ใช้แก้ในฟอร์มได้
-    tax_invoice_notice = ""
-    if extracted_fields.has_tax_invoice:
-        st.session_state[SESSION_KEY_ENTRY_HAS_INVOICE] = INVOICE_CHOICE_HAS
-        tax_invoice_notice = " 🧾 พบใบกำกับภาษีในไฟล์ ตั้งสถานะเป็น Completed ให้อัตโนมัติ"
-
-    if extracted_fields.warning_message:
-        return f"⚠️ {extracted_fields.warning_message}{tax_invoice_notice}"
-    return f"✅ เติมข้อมูลจากไฟล์ให้แล้ว กรุณาตรวจความถูกต้องก่อนกด Upload{tax_invoice_notice}"
 
 
 # สคริปต์ตอบรับตอนลากไฟล์ (ค่าคงที่ ไม่รับข้อมูลจากผู้ใช้) ผูก event ที่ document ของหน้าหลักเพียงครั้งเดียว
@@ -1814,135 +2162,135 @@ def _render_upload_card_heading(icon: str, title: str, hint: str, badge: str) ->
     )
 
 
-def _prefill_form_from_extract_documents(extract_documents: list[UploadedFile], form_counter: int) -> str:
-    """ดึงข้อมูลจากไฟล์หลายไฟล์ในกล่อง Extract: ใช้ไฟล์แรกที่อ่านข้อความได้ (PDF/Excel) เติมลงฟอร์ม
+def _merge_extracted_fields(extracted_list: list[ExtractedFields]) -> ExtractedFields:
+    """รวมผลดึงข้อมูลจากหลายไฟล์: แต่ละฟิลด์ใช้ค่าแรกที่ไม่ว่างจากไฟล์ที่เรียงมา (ไฟล์ก่อนหน้าสำคัญกว่า)"""
+    merged = ExtractedFields()
+    for extracted in extracted_list:
+        for field_name in merged.__dataclass_fields__:
+            if not getattr(merged, field_name):
+                setattr(merged, field_name, getattr(extracted, field_name))
+    return merged
+
+
+def is_pr_document(file_name: str) -> bool:
+    """ไฟล์นี้เป็นไฟล์ PR ที่ระบบอ่านข้อมูลได้หรือไม่: ชื่อขึ้นต้นด้วย PR และนามสกุลเป็น .pdf / .xlsx"""
+    lowered_name = (file_name or "").strip().lower()
+    return lowered_name.startswith(PR_FILE_NAME_PREFIX) and lowered_name.endswith(AUTO_EXTRACT_EXTENSIONS)
+
+
+def build_record_from_documents(
+    documents: list[UploadedFile], category: str, invoice_choice: str
+) -> tuple[RecordFields, str]:
+    """Extract ข้อมูลจากไฟล์ PR ที่วาง (ชื่อขึ้นต้น PR นามสกุล .pdf/.xlsx) แล้วประกอบเป็นรายการพร้อมบันทึก
+
+    ไฟล์อื่นที่วางมาด้วยไม่ถูกอ่านข้อมูล แต่ยังถูกแนบและเก็บไว้ในโฟลเดอร์เดียวกัน (ดู submit_record)
 
     Args:
-        extract_documents: ไฟล์ที่ผู้ใช้อัปโหลด (ต้องมีอย่างน้อย 1 ไฟล์)
-        form_counter: ตัวนับของฟอร์มปัจจุบัน
+        documents: ไฟล์ที่วาง (ไฟล์ที่ไม่ใช่ PR ถูกแนบอย่างเดียว)
+        category: หมวดหมู่จากขั้นที่ 1
+        invoice_choice: สถานะใบกำกับภาษีจากขั้นที่ 1
 
     Returns:
-        ข้อความสรุปผลให้แสดงผู้ใช้
+        (รายการ, ข้อความเตือนถ้ามีฟิลด์ที่ดึงไม่ได้ — ว่างถ้าได้ครบ)
     """
-    readable_documents = [
-        document for document in extract_documents if document.name.lower().endswith(AUTO_EXTRACT_EXTENSIONS)
-    ]
-    source_document = readable_documents[0] if readable_documents else extract_documents[0]
-    summary_message = _prefill_form_from_purchase_document(source_document, form_counter)
-    if len(extract_documents) > 1:
-        summary_message += f" (อ่านจากไฟล์ {source_document.name} จากทั้งหมด {len(extract_documents)} ไฟล์)"
-    return summary_message
+    readable = [document for document in documents if is_pr_document(document.name)]
+    extracted = _merge_extracted_fields([extract_fields_from_file(document, document.name) for document in readable])
+    warning = (
+        extracted.warning_message
+        if readable
+        else "ไม่พบไฟล์ PR (ชื่อขึ้นต้นด้วย PR นามสกุล .pdf หรือ .xlsx) จึงไม่ได้อ่านข้อมูล เก็บไฟล์ไว้ในโฟลเดอร์ Unknown"
+    )
+
+    # พบใบกำกับภาษีในไฟล์ -> ตั้งสถานะเป็น Completed ให้เอง
+    if extracted.has_tax_invoice:
+        invoice_choice = INVOICE_CHOICE_HAS
+    pr_request_date = _parse_iso_date_or_none(extracted.pr_request_date)
+    record = RecordFields(
+        date=date.today().isoformat(),  # เอกสารไม่มีฟิลด์วันที่ให้ดึง ใช้วันที่อัปโหลด
+        vendor=extracted.vendor or UNKNOWN_VENDOR_FOLDER,
+        total_price=float(extracted.total_amount) if extracted.total_amount else 0.0,
+        tax_id=extracted.tax_id or None,
+        pr_run_no=extracted.pr_run_no or None,
+        category=category,
+        invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
+        tel=extracted.tel or None,
+        pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
+        qt_no=extracted.qt_no or None,
+        description=extracted.description or None,
+        unit_price=float(extracted.unit_price) if extracted.unit_price else None,
+    )
+    return record, warning
 
 
-def upload_attachments_to_sharepoint_if_ready(attached_documents: list[UploadedFile]) -> tuple[Optional[str], str]:
-    """ส่งไฟล์ที่แนบขึ้น SharePoint (เฉพาะเมื่อตั้งค่า SHAREPOINT_* ใน .env ครบ) คืนลิงก์ไฟล์แรกกับข้อความเตือน
+def build_submit_summary(result: SubmitResult, extra_warning: str = "") -> str:
+    """สรุปผลการส่งเป็นข้อความ (markdown) ต่อปลายทาง: เว็บ / ไฟล์ออนไลน์ / Master-List"""
+    lines = [f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {result.transaction_id}) · แสดงบนเว็บแล้ว"]
+    if result.storage_status == "ok":
+        lines.append(f"☁️ ส่งไฟล์ไปที่เก็บไฟล์ออนไลน์แล้ว {len(result.storage_links)} ไฟล์")
+    elif result.storage_status in ("skipped", "error"):
+        lines.append(f"⚠️ {result.storage_message}")
+    lines.append(
+        "📤 ส่งเข้า Master-List แล้ว" if result.masterlist_sent else f"⏳ Master-List: {result.masterlist_message}"
+    )
+    if extra_warning:
+        lines.append(f"⚠️ {extra_warning}")
+    return "\n\n".join(lines)
 
-    ถ้าส่งไม่สำเร็จจะไม่ทำให้การบันทึกรายการล้ม (ไฟล์ยังเก็บในเครื่องแล้ว) แต่คืนข้อความเตือนให้แสดงผู้ใช้
+
+def finish_submission(summary_message: str, form_counter: int) -> None:
+    """ส่งสำเร็จ: เก็บข้อความสรุป ล้างฟอร์ม รีเซ็ตกลับขั้นที่ 1 แล้วโหลดหน้าใหม่ (หน้าต่างปิดเอง ตารางอัปเดต)"""
+    st.session_state[SESSION_KEY_SUCCESS_MESSAGE] = summary_message
+    st.session_state[SESSION_KEY_FORM_COUNTER] = form_counter + 1
+    st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
+    st.rerun()
+
+
+def render_upload_mode(form_counter: int) -> None:
+    """โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload ได้เลย ไม่มีช่องให้กรอกเพิ่ม
+
+    ตอนกด Upload: Extract ข้อมูลจากไฟล์ -> ส่งออกไป เว็บไซต์ (ฐานข้อมูล) / ที่เก็บไฟล์ออนไลน์ / Master-List ผ่าน submit_record
+    ฟิลด์ที่ดึงไม่ได้ไม่บล็อกการบันทึก (แสดงเป็นข้อความเตือนหลังส่ง)
 
     Args:
-        attached_documents: ไฟล์จากกล่อง Purchase
-
-    Returns:
-        (ลิงก์ SharePoint ของไฟล์แรก หรือ None, ข้อความเตือน ว่างถ้าไม่มีปัญหา)
-    """
-    if not attached_documents or not is_sharepoint_configured():
-        return None, ""
-
-    first_link: Optional[str] = None
-    try:
-        for document in attached_documents:
-            uploaded_link = upload_document_to_sharepoint(document.getvalue(), document.name)
-            if first_link is None:
-                first_link = uploaded_link
-    except SharePointError as error:
-        logger.error("ส่งไฟล์ขึ้น SharePoint ไม่สำเร็จ: %s", error)
-        return first_link, f"⚠️ บันทึกรายการแล้ว แต่ส่งไฟล์ขึ้น SharePoint ไม่สำเร็จ: {error}"
-    return first_link, ""
-
-
-def render_upload_section(form_counter: int) -> bool:
-    """วาดการ์ด "Upload File": 2 กล่องแยกเป็นการ์ดคนละใบ วางคู่กัน กล่องละหลายไฟล์ได้
-
-    - Upload P/O to Purchase: ไฟล์ขึ้นแสดงที่หน้าเว็บไซต์ (แนบกับรายการ) และส่งขึ้น SharePoint ตอนกดบันทึก
-      (SharePoint ส่งจริงเมื่อตั้งค่า SHAREPOINT_* ใน .env แล้วเท่านั้น)
-    - Upload P/O (เก็บในเครื่อง): Extract Text จากไฟล์ เติมข้อมูลที่ต้องการลงฟอร์มเพื่อส่งเข้า Master-List
-      และเก็บไฟล์ไว้ใน local_uploads/ ผูกกับรายการเมื่อกดบันทึก
-
-    Args:
-        form_counter: ตัวนับของฟอร์มปัจจุบัน (ทำให้กล่องว่างใหม่หลังบันทึกสำเร็จ)
-
-    Returns:
-        True ถ้ามีไฟล์ถูกอัปโหลดแล้วอย่างน้อย 1 กล่อง (ผู้เรียกใช้ตัดสินใจแสดงฟอร์มตรวจสอบ)
+        form_counter: ตัวนับของฟอร์มปัจจุบัน (ทำให้กล่องวางไฟล์ว่างใหม่หลังส่งสำเร็จ)
     """
     _inject_drag_feedback_script()
-    purchase_column, extract_column = st.columns(2, gap="large")
-
-    # --- กล่องที่ 1: Upload P/O to Purchase (ขึ้นเว็บไซต์ + SharePoint) ---
-    with purchase_column, st.container(key="upload_box_purchase"):
+    with st.container(key="upload_box_extract"):
         _render_upload_card_heading(
-            "📄", "Upload P/O to Purchase", "แนบไฟล์กับรายการ · หลายไฟล์ได้", "ขึ้นเว็บไซต์ + SharePoint"
+            "📄", "Upload P/O", "วางได้หลายไฟล์ ระบบอ่านข้อมูลเฉพาะไฟล์ PR (.pdf / .xlsx)", "เว็บไซต์ + Drive + Master-List"
         )
-        purchase_documents: list[UploadedFile] = st.file_uploader(
-            "Upload P/O to Purchase",
+        documents: list[UploadedFile] = st.file_uploader(
+            "Upload P/O",
             type=ALLOWED_FILE_TYPES,
             accept_multiple_files=True,
-            key=_field_key("purchase_uploader", form_counter),
+            key=_field_key("upload_files", form_counter),
             label_visibility="collapsed",
         )
-        if purchase_documents and not is_sharepoint_configured():
-            st.caption("ℹ️ ยังไม่ได้เชื่อม SharePoint ไฟล์จะแสดงบนเว็บไซต์ก่อน (ตั้งค่า SHAREPOINT_* ใน .env เพื่อเปิดส่งขึ้น SharePoint)")
+    # ชิปบอกปลายทางหลังกด Upload (แสดงเสมอ)
+    st.markdown(
+        '<div class="upload-dest-chips"><span>🌐 เว็บไซต์</span><span>☁️ Drive</span><span>📋 Master-List</span></div>',
+        unsafe_allow_html=True,
+    )
 
-    # --- กล่องที่ 2: Upload P/O (เก็บในเครื่อง) Extract Text -> Master-List + เก็บไฟล์ใน local_uploads/ ---
-    # เลือกไฟล์แล้วบันทึกทันที เก็บที่อยู่ไฟล์ไว้ใน session แล้วผูกกับรายการเมื่อกดปุ่มบันทึกในการ์ดตรวจสอบ
-    with extract_column, st.container(key="upload_box_extract"):
-        _render_upload_card_heading(
-            "🔎", "Upload P/O (เก็บในเครื่อง)", "อ่านข้อมูลอัตโนมัติ · หลายไฟล์ได้", "Extract → Master-List"
+    back_column, upload_column = st.columns([1, 2])
+    back_column.button("⬅️ ย้อนกลับ", on_click=go_back_to_questions_step, width="stretch", key="upload_back_button")
+    is_clicked = upload_column.button(
+        "⬆️ Upload", type="primary", width="stretch", disabled=not documents, key="upload_submit_button"
+    )
+    if not is_clicked or not documents:
+        return
+
+    with st.spinner("กำลังอ่านข้อมูลและส่งออก..."):
+        record, extract_warning = build_record_from_documents(
+            documents,
+            st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0]),
+            st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET),
         )
-        extract_documents: list[UploadedFile] = st.file_uploader(
-            "Upload P/O (เก็บในเครื่อง)",
-            type=ALLOWED_FILE_TYPES,
-            accept_multiple_files=True,
-            key=_field_key("local_uploader", form_counter),
-            label_visibility="collapsed",
-        )
-        if not extract_documents:
-            # ผู้ใช้กดลบไฟล์ออก ล้างสถานะ เพื่อให้อัปโหลดไฟล์เดิมซ้ำแล้วดึงข้อมูลใหม่ได้
-            st.session_state.pop(SESSION_KEY_EXTRACT_FILE_ID, None)
-            st.session_state.pop(SESSION_KEY_EXTRACT_NOTICE, None)
-            st.session_state.pop(SESSION_KEY_LOCAL_FILE_ID, None)
-            st.session_state.pop(SESSION_KEY_LOCAL_NOTICE, None)
-            st.session_state.pop(SESSION_KEY_LOCAL_PATH, None)
-        else:
-            # ประมวลผลแค่ครั้งเดียวต่อชุดไฟล์ (Streamlit รันสคริปต์ซ้ำทุกครั้งที่มีการกดอะไรสักอย่าง)
-            extract_file_id = "|".join(f"{document.name}:{document.size}" for document in extract_documents)
-            extract_file_id += f":{form_counter}"
-            if st.session_state.get(SESSION_KEY_EXTRACT_FILE_ID) != extract_file_id:
-                st.session_state[SESSION_KEY_EXTRACT_FILE_ID] = extract_file_id
-                st.session_state[SESSION_KEY_EXTRACT_NOTICE] = _prefill_form_from_extract_documents(
-                    extract_documents, form_counter
-                )
-                try:
-                    saved_paths = [
-                        save_document_locally(document.getvalue(), document.name) for document in extract_documents
-                    ]
-                    st.session_state[SESSION_KEY_LOCAL_PATH] = FILE_PATH_SEPARATOR.join(saved_paths)
-                    st.session_state[SESSION_KEY_LOCAL_NOTICE] = (
-                        "success",
-                        f"💾 เก็บไฟล์ในเครื่องแล้ว {len(saved_paths)} ไฟล์ จะผูกกับรายการเมื่อกดบันทึก",
-                    )
-                except LocalStorageError as error:
-                    st.session_state.pop(SESSION_KEY_LOCAL_PATH, None)
-                    st.session_state[SESSION_KEY_LOCAL_NOTICE] = ("error", f"❌ {error}")
-
-            st.caption(st.session_state.get(SESSION_KEY_EXTRACT_NOTICE, ""))
-            notice_level, notice_message = st.session_state.get(SESSION_KEY_LOCAL_NOTICE, ("", ""))
-            if notice_level == "error":
-                st.error(notice_message)
-            elif notice_message:
-                st.caption(notice_message)
-
-    return bool(purchase_documents) or bool(extract_documents)
-
+        result = submit_record(record, [(document.name, document.getvalue()) for document in documents])
+    if result.transaction_id is None:
+        st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
+        return
+    finish_submission(build_submit_summary(result, extract_warning), form_counter)
 
 # ---------------------------------------------------------------------------
 # ส่วนที่ 1: การ์ดกรอกข้อมูล (ฟอร์ม)
@@ -2195,59 +2543,33 @@ def render_entry_form(
             st.error(f"❌ {problem_message}")
         return
 
-    # ไฟล์ที่แนบกับรายการ: (1) ไฟล์ใต้ฟอร์ม (2) ไฟล์จากกล่อง Purchase (โหมด Upload ข้อมูล) บันทึกตอนนี้เลย
-    # (3) ไฟล์ที่บันทึกไว้แล้วจากกล่อง "เก็บในเครื่อง" รวมทุกที่อยู่คั่นด้วย FILE_PATH_SEPARATOR
-    # ถ้าไฟล์ใดบันทึกไม่สำเร็จจะไม่บันทึกรายการ เพื่อไม่ให้ไฟล์หายไปเงียบๆ
-    purchase_documents: list[UploadedFile] = list(
-        st.session_state.get(_field_key("purchase_uploader", form_counter)) or []
+    # ไฟล์แนบจากช่อง Upload ใต้ฟอร์ม ส่งออกแบบเดียวกับหน้า Upload (เก็บในเครื่อง + ที่เก็บไฟล์ออนไลน์ + DB + Master-List)
+    # ถ้าส่งไม่สำเร็จจะไม่ล้างฟอร์ม ผู้ใช้กดบันทึกซ้ำได้โดยไม่ต้องกรอกใหม่
+    result = submit_record(
+        RecordFields(
+            date=document_date.isoformat(),  # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD
+            vendor=vendor_name,
+            total_price=total_price,
+            tax_id=tax_id or None,
+            po_no=purchase_order_number or None,
+            pr_run_no=pr_run_number or None,
+            category=category_name,
+            invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
+            tel=tel or None,
+            email=email or None,
+            contact_name=contact_name or None,
+            sharepoint_url=sharepoint_url or None,  # ลิงก์ที่กรอกเอง (ไม่บังคับ) มาก่อนลิงก์ที่ส่งขึ้นให้
+            pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
+            qt_no=qt_no or None,
+            description=description or None,
+            unit_price=unit_price or None,  # 0 = ไม่ได้กรอก เก็บเป็น NULL
+        ),
+        [(document.name, document.getvalue()) for document in (uploaded_po_documents or [])],
     )
-    documents_to_attach: list[UploadedFile] = list(uploaded_po_documents or []) + purchase_documents
-    attached_file_paths: list[str] = []
-    for document_to_attach in documents_to_attach:
-        saved_path = save_document_and_get_path(document_to_attach)
-        if saved_path is None:
-            return  # save_document_and_get_path แสดง error ให้แล้ว
-        attached_file_paths.append(saved_path)
-    already_saved_paths: Optional[str] = st.session_state.get(SESSION_KEY_LOCAL_PATH)
-    if already_saved_paths:
-        attached_file_paths.append(already_saved_paths)
-    final_file_path: Optional[str] = FILE_PATH_SEPARATOR.join(attached_file_paths) or None
-
-    # ไฟล์จากกล่อง Purchase ส่งขึ้น SharePoint ด้วย (ข้ามเมื่อยังไม่ตั้งค่า .env) ลิงก์ไฟล์แรกเก็บใน sharepoint_url
-    sharepoint_link, sharepoint_warning = upload_attachments_to_sharepoint_if_ready(purchase_documents)
-    final_sharepoint_url: str = sharepoint_url or sharepoint_link or ""
-
-    new_transaction_id = add_transaction(
-        date=document_date.isoformat(),  # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD
-        vendor=vendor_name,
-        total_price=total_price,
-        tax_id=tax_id or None,
-        po_no=purchase_order_number or None,
-        pr_run_no=pr_run_number or None,
-        category=category_name,
-        tel=tel or None,
-        email=email or None,
-        contact_name=contact_name or None,
-        file_path=final_file_path,
-        invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
-        sharepoint_url=final_sharepoint_url or None,  # ลิงก์ที่กรอกเอง (ไม่บังคับ) มาก่อน ไม่มีก็ใช้ลิงก์ที่ส่งขึ้นให้
-        pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
-        qt_no=qt_no or None,
-        description=description or None,
-        unit_price=unit_price or None,  # 0 = ไม่ได้กรอก เก็บเป็น NULL
-    )
-
-    if new_transaction_id is None:
-        return  # add_transaction แสดง error ให้แล้ว (ไฟล์ที่บันทึกไปแล้วยังอยู่ ผู้ใช้กดบันทึกซ้ำได้)
-
-    # ส่วนที่ 5: บันทึกสำเร็จ -> เคลียร์ฟอร์มแล้วโหลดหน้าใหม่
-    st.session_state[SESSION_KEY_SUCCESS_MESSAGE] = (
-        f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {new_transaction_id})"
-        + (f"\n\n{sharepoint_warning}" if sharepoint_warning else "")
-    )
-    st.session_state[SESSION_KEY_FORM_COUNTER] = form_counter + 1
-    st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS  # เปิดครั้งหน้าเริ่มที่ขั้นที่ 1 เสมอ
-    st.rerun()
+    if result.transaction_id is None:
+        st.error(f"❌ {result.error}")
+        return
+    finish_submission(build_submit_summary(result), form_counter)
 
 
 # ---------------------------------------------------------------------------
@@ -2260,7 +2582,7 @@ def render_entry_form(
 def render_entry_dialog(form_counter: int) -> None:
     """หน้าต่างป๊อปอัป "เพิ่มข้อมูล": ขั้นที่ 1 ถามข้อมูลเบื้องต้น ขั้นที่ 2 แท็บ [กรอก Form | Upload ข้อมูล]
 
-    ภายในใช้ฟังก์ชันเดิมทั้งหมด (render_upload_section / render_entry_form) ไม่เปลี่ยน Logic
+    ภายในใช้ฟังก์ชันเดิมทั้งหมด (render_upload_mode / render_entry_form) ไม่เปลี่ยน Logic
     - ปุ่ม Upload สำเร็จ -> render_entry_form สั่ง st.rerun() ทั้งหน้า หน้าต่างจะปิดเองและตารางอัปเดต
     - กรอกไม่ครบ/บันทึกไม่สำเร็จ -> หน้าต่างค้างไว้พร้อมข้อความ error ข้อมูลที่กรอกไม่หาย
     - ปิดหน้าต่างด้วยปุ่ม x ได้เสมอ (ค่าที่กรอกค้างจะถูกล้างเมื่อเปิดใหม่)
@@ -2317,24 +2639,13 @@ def _render_dialog_step_body(form_counter: int) -> None:
     )
     # โหมด "กรอก Form": แสดงเฉพาะฟอร์ม ไม่มีแท็บ Upload ข้อมูลปนอยู่
     if st.session_state.get(SESSION_KEY_ENTRY_MODE) != ENTRY_MODE_UPLOAD:
-        st.session_state.pop(SESSION_KEY_LOCAL_PATH, None)  # ไม่ให้ไฟล์จากแท็บที่ไม่แสดงค้างมาผูกกับรายการ
         with st.container(key="entry_form_card"):
             render_entry_form(form_counter)
         return
 
-    # โหมด "Upload ข้อมูล": กล่องอัปโหลด 2 กล่อง แล้วเมื่อมีไฟล์ แสดงการ์ดตรวจสอบ/แก้ข้อมูลก่อนบันทึก (ไม่มีแท็บ)
-    # ต้องวาดกล่องอัปโหลดก่อนฟอร์ม เพราะมันเติมค่าลงช่องของฟอร์ม
-    # (Streamlit ตั้งค่าช่องผ่าน session_state ได้เฉพาะก่อนช่องนั้นถูกสร้างในรอบนั้น)
+    # โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload ได้เลย ไม่มีฟอร์มให้กรอกเพิ่ม
     with st.container(key="upload_card"):
-        has_uploaded_files: bool = render_upload_section(form_counter)
-    if has_uploaded_files:
-        with st.container(key="entry_form_card"):
-            render_entry_form(form_counter, show_po_uploader=False, title="ตรวจสอบข้อมูลก่อนบันทึก")
-    else:
-        st.markdown(
-            '<p class="upload-review-hint">อัปโหลดไฟล์ด้านบน แล้วระบบจะอ่านข้อมูลมาให้ตรวจสอบก่อนบันทึก</p>',
-            unsafe_allow_html=True,
-        )
+        render_upload_mode(form_counter)
 
 
 def render_add_button(form_counter: int) -> None:
@@ -2379,11 +2690,15 @@ def render_equipment_summary(start_date: date, end_date: date) -> None:
         end_date: วันที่สิ้นสุดจาก Date Filter
     """
     # วาดตารางเมื่อกางออกแล้วเท่านั้น (เหตุผลเดียวกับแถบ "ดูรายการที่ค้าง" ใน render_overdue_alert)
-    equipment_expander = st.expander("Quantity of equipment", expanded=False, on_change="rerun")
-    if equipment_expander.open:
-        with equipment_expander:
-            with st.container(key="equipment_inner"):
-                render_equipment_table(start_date, end_date)
+    with st.container(key="equipment_summary"):
+        equipment_expander = st.expander("Quantity of equipment", expanded=False, on_change="rerun")
+        if equipment_expander.open:
+            with equipment_expander:
+                # ตารางเป็น HTML ที่ประกอบเอง (สไตล์/แอนิเมชันอยู่ใน PAGE_CSS_RULES ข้อ eq-*)
+                st.markdown(
+                    build_equipment_cards_html(get_equipment_quantities(start_date, end_date)),
+                    unsafe_allow_html=True,
+                )
 
 
 def render(start_date: date, end_date: date) -> None:

@@ -88,7 +88,7 @@ def render_page_header(menu_item: MenuItem) -> tuple[date, date]:
     # key="page_header" ใช้ให้ CSS ใน config/styles.py จับแถบนี้ได้ (บนจอแคบ ตัวกรองวันที่จะตกลงมาอยู่บรรทัดล่าง)
     with st.container(key="page_header"):
         # ซ้าย = ชื่อหน้า / กลาง = ที่ว่างดัน Date Filter ไปชิดขวา / ขวา = Date Filter (Start To End แนวนอน)
-        title_column, spacer_column, filter_column = st.columns([4, 2, 4], vertical_alignment="center")
+        title_column, spacer_column, filter_column = st.columns([3, 1, 6], vertical_alignment="center")
         with title_column:
             st.header(menu_item.label)
             if menu_item.subtitle:
@@ -107,7 +107,7 @@ def main() -> None:
         page_title="IT PR/PO",
         page_icon="📋",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="auto",  # auto = จอกว้างเปิดเมนูไว้ จอแคบ (มือถือ) พับเมนูไว้ ไม่บังเนื้อหา
     )
 
     # ฉีด CSS ธีมกลาง (ฟอนต์ สี ความมน เงา) ให้ทั้งระบบ ต้องทำก่อนวาดส่วนอื่น (โค้ดอยู่ใน config/styles.py)

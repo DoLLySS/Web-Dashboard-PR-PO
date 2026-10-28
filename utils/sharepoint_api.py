@@ -1,7 +1,7 @@
 """เชื่อมต่อ SharePoint: อัปโหลดไฟล์เอกสาร (PR/PO/ใบกำกับภาษี) แล้วคืนลิงก์ของไฟล์
 
-*** เตรียมไว้สำหรับเชื่อมต่อในอนาคต *** ตอนนี้ระบบยังไม่เรียกใช้ไฟล์นี้ (ปิดการเรียกใช้ใน pages_ui/overview.py)
-ระหว่างนี้ไฟล์ถูกเก็บในโฟลเดอร์ data/local_uploads/ ผ่าน utils/local_storage.py แทน
+*** เตรียมไว้รอสิทธิ์ *** ถูกเรียกผ่าน utils/storage_backend.py เมื่อ STORAGE_BACKEND=sharepoint และตั้งค่าครบเท่านั้น
+(ยังไม่ได้ทดสอบกับ SharePoint จริง) ระหว่างนี้ไฟล์ถูกเก็บในโฟลเดอร์ static/local_uploads/ ผ่าน utils/local_storage.py
 
 ตั้งค่าผ่านไฟล์ .env (ห้ามใส่รหัสผ่านในโค้ด และ .env ถูกกันไม่ให้ขึ้น Git แล้ว):
     SHAREPOINT_URL            เช่น https://yourcompany.sharepoint.com/sites/IT
@@ -17,6 +17,7 @@
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote, urlparse
 
 from config.logging_setup import get_logger
@@ -106,12 +107,45 @@ def build_file_url(site_url: str, folder_path: str, stored_file_name: str) -> st
     return f"{parsed_site.scheme}://{parsed_site.netloc}{quote(f'{site_path}/{folder_path}/{stored_file_name}')}"
 
 
-def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
+def build_folder_url(site_url: str, folder_path: str) -> str:
+    """ประกอบลิงก์เปิดโฟลเดอร์บน SharePoint (ยังไม่ได้ทดสอบกับ SharePoint จริง)
+
+    ใช้รูป <ไลบรารี>/Forms/AllItems.aspx?id=<path เต็มของโฟลเดอร์> ซึ่งเปิดมุมมองโฟลเดอร์ได้ตรงกว่า URL ดิบ
+
+    Args:
+        site_url: URL ของ Site เช่น https://x.sharepoint.com/sites/IT
+        folder_path: โฟลเดอร์ใต้ Site เช่น "Shared Documents/PR-PO/2026/Oct/28/ABC" (ส่วนแรก = ชื่อไลบรารี)
+
+    Returns:
+        URL เต็มของโฟลเดอร์ (เข้ารหัสอักขระพิเศษและภาษาไทยแล้ว)
+    """
+    parsed_site = urlparse(site_url)
+    site_path = parsed_site.path.rstrip("/")
+    library_name = folder_path.strip("/").split("/", 1)[0]
+    folder_full_path = f"{site_path}/{folder_path.strip('/')}"
+    return (
+        f"{parsed_site.scheme}://{parsed_site.netloc}{quote(f'{site_path}/{library_name}')}"
+        f"/Forms/AllItems.aspx?id={quote(folder_full_path, safe='')}"
+    )
+
+
+def get_folder_url_for(sub_folders: list[str]) -> str:
+    """ลิงก์โฟลเดอร์ปลายทางของการอัปโหลดที่ใช้ sub_folders เดียวกับ upload_document_to_sharepoint
+
+    Raises:
+        SharePointError: ตั้งค่า SharePoint ไม่ครบ
+    """
+    settings = load_sharepoint_settings()
+    return build_folder_url(settings["site_url"], "/".join([settings["folder_path"], *sub_folders]))
+
+
+def upload_document_to_sharepoint(file_bytes: bytes, file_name: str, sub_folders: Optional[list[str]] = None) -> str:
     """อัปโหลดไฟล์ขึ้น SharePoint แล้วคืนลิงก์ของไฟล์
 
     Args:
         file_bytes: เนื้อไฟล์ (bytes)
         file_name: ชื่อไฟล์ (ระบบจะใส่เวลานำหน้าให้เพื่อกันชื่อซ้ำ)
+        sub_folders: โฟลเดอร์ย่อยใต้โฟลเดอร์ปลายทาง เช่น ["2026", "Oct", "28", "ABC"] (สร้างให้ถ้ายังไม่มี; ยังไม่ได้ทดสอบกับ SharePoint จริง)
 
     Returns:
         URL ของไฟล์บน SharePoint
@@ -125,6 +159,8 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
 
     settings = load_sharepoint_settings()
     stored_file_name = build_safe_file_name(file_name)
+    if sub_folders:
+        settings["folder_path"] = "/".join([settings["folder_path"], *sub_folders])
 
     try:
         # import ในฟังก์ชัน เพื่อให้แอปเปิดได้แม้ยังไม่ได้ติดตั้งไลบรารีนี้ (จะแจ้งเตือนตอนใช้งานจริงเท่านั้น)
@@ -155,7 +191,12 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str) -> str:
         #     UserCredential(get_env_text("SHAREPOINT_USERNAME"), get_env_text("SHAREPOINT_PASSWORD"))
         # )
         # โฟลเดอร์ปลายทางต้องมีอยู่แล้วบน SharePoint (ใช้ path แบบเทียบจาก root ของ Site)
-        target_folder = client_context.web.get_folder_by_server_relative_path(settings["folder_path"])
+        if sub_folders:
+            # สร้างโฟลเดอร์ซ้อนชั้นให้ถ้ายังไม่มี (ต้องใช้ path แบบเต็มจาก root ของ Site)
+            site_path = urlparse(settings["site_url"]).path.rstrip("/")
+            target_folder = client_context.web.ensure_folder_path(f"{site_path}/{settings['folder_path']}").execute_query()
+        else:
+            target_folder = client_context.web.get_folder_by_server_relative_path(settings["folder_path"])
         target_folder.upload_file(stored_file_name, file_bytes).execute_query()
     # ดักเฉพาะ Error ที่คาดว่าจะเกิด: ClientRequestException (SharePoint ตอบ 401/403/404 ฯลฯ ซึ่งเป็น OSError อยู่แล้ว),
     # OSError (เน็ตหลุด/DNS/timeout), ValueError (URL หรือ Client ID รูปแบบผิด), KeyError (ตอบกลับไม่ครบ)

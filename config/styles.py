@@ -42,7 +42,7 @@ TYPOGRAPHY_PX: dict[str, int] = {
 
 # ความสูงของแถวในตาราง (px) ใช้กับตาราง AgGrid ทุกตัวผ่านธีมใน ui_grid.py
 # ยิ่งสูงยิ่งโปร่ง แก้ที่นี่ที่เดียวแล้วทุกตารางเปลี่ยนตาม
-TABLE_ROW_HEIGHT_PX: int = 52
+TABLE_ROW_HEIGHT_PX: int = 58
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่: สี (Color Palette) รหัส HEX
@@ -76,11 +76,17 @@ SHADOW: str = "0 1px 3px rgba(0, 0, 0, 0.1)"
 MOBILE_MAX_PX: int = 767  # Mobile: 0 - 767
 TABLET_MIN_PX: int = 768  # iPad/Tablet: 768 - 1024
 TABLET_MAX_PX: int = 1024
-LAPTOP_MIN_PX: int = 1025  # Laptop: 1025 - 1440 (ขนาดมาตรฐานที่ออกแบบไว้)
-LAPTOP_MAX_PX: int = 1440
-DESKTOP_MIN_PX: int = 1441  # Desktop จอใหญ่: 1441 ขึ้นไป
+DESKTOP_MIN_PX: int = 1025  # Desktop/Laptop: 1025 ขึ้นไป (เนื้อหากว้างสูงสุด CONTENT_MAX_PX)
+LARGE_DESKTOP_MIN_PX: int = 1440  # Large Desktop: 1440 ขึ้นไป (ช่องไฟโปร่งขึ้น)
+CONTENT_MAX_PX: int = 1200  # ความกว้างสูงสุดของเนื้อหาบน Desktop (แนะนำ 1140 - 1200px)
+MENU_GUTTER_MIN_PX: int = 1280  # จอตั้งแต่ค่านี้ขึ้นไปมีช่องว่างข้างเนื้อหาพอวางปุ่ม ☰ (ตอนเมนูพับ) ไว้นอกกรอบเนื้อหา
+MENU_BUTTON_PX: int = 44  # ขนาดปุ่ม ☰ (ต้องตรงกับ width/height ในข้อ 10)
+MENU_BUTTON_GAP_PX: int = 12  # ระยะเว้นระหว่างปุ่ม ☰ กับเนื้อหา
+LARGE_CONTENT_MAX_PX: int = 2200 # ความกว้างสูงสุดของเนื้อหาบน Large Desktop (1440px ขึ้นไป ขยายตามจอจนถึงค่านี้)
 
-# ตัวแปรที่เปลี่ยนค่าตามช่วงจอ (ค่าใน "laptop" คือค่าเริ่มต้นของทุกช่วง ช่วงอื่นระบุเฉพาะที่ต่างออกไป)
+# ตัวแปรที่เปลี่ยนค่าตามช่วงจอ
+#   ค่าของ "desktop" คือค่าเริ่มต้นของทุกช่วง (ใช้ clamp ให้ไหลต่อเนื่องจาก 320px ถึง 1200px จึงไม่กระโดดที่ขอบช่วง)
+#   "mobile" / "tablet" / "large" ระบุเฉพาะตัวแปรที่ต่างออกไป
 #   heading-scale    : ตัวคูณขนาดหัวข้อ h1/h2/h3 (0.8 = เล็กลง 20%)
 #   card-padding     : ระยะห่างภายในการ์ด/ฟอร์ม
 #   inner-padding    : ระยะห่างภายในกล่องด้านใน
@@ -91,45 +97,34 @@ DESKTOP_MIN_PX: int = 1441  # Desktop จอใหญ่: 1441 ขึ้นไ�
 #   container-max    : ความกว้างสูงสุดของเนื้อหาหลัก (none = เต็มพื้นที่)
 #   block-gap        : ช่องไฟระหว่างกล่องแนวตั้งในพื้นที่เนื้อหาหลัก
 RESPONSIVE_VARIABLES: dict[str, dict[str, str]] = {
-    "laptop": {
+    "desktop": {
         "heading-scale": "1",
-        "card-padding": "24px",  # โปร่งขึ้นจากเดิม 16px
-        "inner-padding": "16px",
-        "card-title": "28px",
-        "metric-value": "30px",
-        "main-padding-x": "5rem",
+        # ไหลต่อเนื่อง: ค่าต่ำสุดที่จอ 320px → ค่าสูงสุดที่จอ 1200px (สูตร = ความชัน * vw + ค่าตั้งต้น)
+        "card-padding": "clamp(16px, 1.82vw + 10.2px, 32px)",
+        "inner-padding": "clamp(12px, 0.91vw + 9.1px, 20px)",
+        "card-title": "clamp(22px, 0.91vw + 19.1px, 30px)",
+        "metric-value": "clamp(24px, 1.14vw + 20.4px, 34px)",
+        "main-padding-x": "clamp(0.75rem, 4.09vw - 1px, 3rem)",
         "main-padding-top": "2.5rem",
-        "container-max": "none",
+        "container-max": f"{CONTENT_MAX_PX}px",
         "block-gap": "1.5rem",  # ช่องไฟระหว่างการ์ด
     },
     "mobile": {
         "heading-scale": "0.8",  # หัวข้อเล็กลง 20% ไม่ให้ล้นจอ
-        "card-padding": "16px",  # ประหยัดพื้นที่แต่ยังไม่อึดอัด
-        "inner-padding": "12px",
-        "card-title": "22px",
-        "metric-value": "24px",
-        "main-padding-x": "0.75rem",
-        "main-padding-top": "3.5rem",
+        "main-padding-top": "1.25rem",  # ปุ่ม ☰ ลอยอยู่ขวาบนแล้ว ไม่ต้องเว้นที่ด้านบนฝั่งซ้าย
     },
     "tablet": {
         "heading-scale": "0.9",  # ขนาดปานกลาง
-        "card-padding": "20px",
-        "inner-padding": "14px",
-        "card-title": "25px",
-        "metric-value": "27px",
-        "main-padding-x": "2rem",
-        "main-padding-top": "2.5rem",
     },
-    "desktop": {
-        "heading-scale": "1",
-        "card-padding": "32px",  # โปร่งสบายตาบนจอความละเอียดสูง
-        "inner-padding": "20px",
-        "card-title": "30px",
-        "metric-value": "34px",
-        "main-padding-x": "3rem",
-        "main-padding-top": "2.5rem",
-        "container-max": "1800px",  # ขยายเนื้อหาให้กว้างขึ้น ไม่กระจุกอยู่กลางจอ (แต่ไม่ยืดจนอ่านยากบนจอ 4K)
-        "block-gap": "1.5rem",
+    "large": {
+        # Large Desktop (>= 1440px): เนื้อหาขยายตามความกว้างจอแบบไหลต่อเนื่อง (ค่าเริ่มต้นที่ 1440px เท่ากับค่าสูงสุดของ desktop จึงไม่กระโดด)
+        # container-max: 84vw แต่ไม่ต่ำกว่า CONTENT_MAX_PX และไม่เกิน LARGE_CONTENT_MAX_PX (กันบรรทัดยาวเกินบนจอ ultrawide)
+        "container-max": f"clamp({CONTENT_MAX_PX}px, 84vw, {LARGE_CONTENT_MAX_PX}px)",
+        "card-padding": "clamp(32px, 0.9vw + 19px, 44px)",
+        "inner-padding": "clamp(20px, 0.4vw + 14.2px, 28px)",
+        "card-title": "clamp(30px, 0.5vw + 22.8px, 38px)",
+        "metric-value": "clamp(34px, 0.8vw + 22.5px, 46px)",
+        "block-gap": "2rem",  # Large Desktop: ช่องไฟโปร่งขึ้น
     },
 }
 
@@ -311,18 +306,76 @@ html, body, .stApp, [data-testid="stApp"],
 [data-testid="stMetricValue"] { font-weight: 800; }
 /* ตัวเลขใน Metric ต้องสืบทอดขนาดใหญ่จากกล่อง ไม่ถูกกฎข้อความทั่วไป (16px) ทับ */
 [data-testid="stMetricValue"] p, [data-testid="stMetricValue"] div { font-size: inherit !important; }
+/* ตัวเลขยาว (เช่น 207,800.00) ในการ์ดแคบ: ขึ้นบรรทัดใหม่แทนการถูกตัดเป็น "..." */
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] > div { overflow: visible !important; text-overflow: clip !important; white-space: normal !important; overflow-wrap: anywhere; }
 /* ตาราง HTML (st.table) ให้ตัวหนังสือในเซลล์ใหญ่ขึ้น */
 [data-testid="stTable"] td, [data-testid="stTable"] th { font-size: var(--app-fs-body); padding: 0.6rem 0.75rem; }
 
 /* ===== 10) ซ่อนส่วนเริ่มต้นของ Streamlit ให้ดูเป็น Web App ขององค์กร ===== */
 /* เมนูแฮมเบอร์เกอร์ (#MainMenu คือชื่อเดิม, stMainMenu คือชื่อของ Streamlit รุ่นปัจจุบัน) ปุ่ม Deploy และ Footer */
 #MainMenu, [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
-[data-testid="stToolbar"], [data-testid="stDecoration"],
+[data-testid="stDecoration"],
 footer, [data-testid="stFooter"] {
     visibility: hidden;
 }
-/* หมายเหตุ: ไม่ซ่อนทั้ง Header (header {visibility: hidden}) เพราะมีปุ่มเปิด/ปิด Sidebar อยู่ ซึ่งจำเป็นบนมือถือ
-   จึงทำให้ Header โปร่งใส (ข้อ 2) และซ่อนเฉพาะเมนู/ปุ่ม Deploy/แถบสีด้านบนแทน */
+/* หมายเหตุ: ไม่ซ่อนทั้ง Header (header {visibility: hidden}) และไม่ซ่อน stToolbar ทั้งก้อน
+   เพราะปุ่มเปิด Sidebar ตอนพับ (stExpandSidebarButton) อยู่ใน stToolbar ถ้าซ่อนจะไม่มีทางเปิดเมนูกลับมา
+   จึงซ่อนเฉพาะเมนู/ปุ่ม Deploy/แถบสีด้านบน (ด้านบน) และทำให้ปุ่มเปิด Sidebar เห็นชัดตามด้านล่าง */
+[data-testid="stExpandSidebarButton"] {
+    visibility: visible;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+    color: var(--app-primary);
+    position: relative;
+    transition: scale 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                box-shadow 0.25s ease, border-color 0.25s ease;
+}
+/* ซ่อนไอคอนลูกศร » เดิม (เป็นตัวอักษร Material) แล้ววาดไอคอน 3 ขีดแทนด้วย CSS */
+[data-testid="stExpandSidebarButton"] span {
+    visibility: hidden;
+}
+[data-testid="stExpandSidebarButton"]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 22px;
+    height: 16px;
+    background:
+        linear-gradient(var(--app-primary), var(--app-primary)) top / 100% 3px no-repeat,
+        linear-gradient(var(--app-primary), var(--app-primary)) center / 100% 3px no-repeat,
+        linear-gradient(var(--app-primary), var(--app-primary)) bottom / 100% 3px no-repeat;
+    border-radius: 3px;
+    transition: height 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                background-size 0.25s ease;
+}
+/* ชี้เมาส์: ปุ่มขยาย + เรืองแสงรอบปุ่ม ขีดทั้ง 3 ห่างขึ้นและขีดกลางสั้นลง */
+[data-testid="stExpandSidebarButton"]:hover {
+    scale: 1.1;
+    border-color: var(--app-primary);
+    box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3), 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+[data-testid="stExpandSidebarButton"]:hover::before {
+    height: 20px;
+    background-size: 100% 3px, 70% 3px, 100% 3px;
+}
+/* กด: ปุ่มยุบลงเหมือนถูกกดจริง */
+[data-testid="stExpandSidebarButton"]:active {
+    scale: 0.92;
+    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.2), 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+[data-testid="stExpandSidebarButton"]:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stExpandSidebarButton"]::before { transition: none; }
+}
 
 /* หัวข้อทุกระดับใช้ตัวหนาปานกลาง (600) ให้เด่นกว่าเนื้อหาแต่ไม่หนาเกิน */
 .stApp h1, .stApp h2, .stApp h3, .stApp h4 { font-weight: 600; }
@@ -393,25 +446,67 @@ footer, [data-testid="stFooter"] {
     .st-key-page_header [data-testid="stColumn"] [data-testid="stColumn"] {
         flex: 0 0 auto !important; width: auto !important; min-width: 0 !important;
     }
-    .st-key-page_header [data-testid="stDateInput"] { width: 168px; }
+    .st-key-page_header [data-testid="stDateInput"] { width: 272px; }  /* ความกว้างช่องวันที่ */
+    .st-key-page_header [data-testid="stDateInput"] [data-baseweb="input"],
+    .st-key-page_header [data-testid="stDateInputField"] { min-height: 58px; height: 58px; }
+    .st-key-page_header [data-testid="stDateInput"] input { font-size: 20px !important; font-weight: 600; letter-spacing: 0.03em; padding-left: 16px; }
+    /* ตัวเลข วัน/เดือน/ปี จริงเป็น span (spinbutton) และตัวคั่น "/" ต้องปรับขนาดที่ตัวเหล่านี้ */
+    .st-key-page_header [data-testid="stDateInputField"] [role="group"],
+    .st-key-page_header [data-testid="stDateInputField"] [role="group"] span { font-size: 20px; font-weight: 600; line-height: 1.3; }
+    .st-key-page_header [data-testid="stDateInputField"] [role="group"] { height: auto; min-height: 0; padding-left: 4px; }
+    .st-key-page_header [data-testid="stDateInputField"] [role="spinbutton"] { padding: 2px 3px; }
+    .st-key-page_header [data-testid="stDateInputField"] > div { align-items: center; }
+    /* กล่องของตัวคั่น To ต้องสูงเท่าแคปซูล ไม่งั้นถูกจัดกลางตามกล่อง 42px แล้วตกลงต่ำกว่าช่องวันที่ */
+    .st-key-page_header [data-testid="stElementContainer"]:has(.date-to-chip),
+    .st-key-page_header [data-testid="stMarkdown"]:has(.date-to-chip),
+    .st-key-page_header [data-testid="stMarkdown"]:has(.date-to-chip) > div { height: auto !important; min-height: 0 !important; }
+    .st-key-page_header [data-testid="stDateInput"] svg { width: 30px; height: 30px; }
 }
+/* Streamlit ใส่ margin-bottom ติดลบให้ markdown ทำให้กล่องหดสั้นกว่าแคปซูล ต้องยกเลิก (ทุกขนาดจอ) */
+.st-key-page_header [data-testid="stMarkdownContainer"]:has(.date-to-chip) { margin-bottom: 0 !important; }
+.st-key-page_header [data-testid="stElementContainer"]:has(.date-to-chip),
+.st-key-page_header [data-testid="stMarkdown"]:has(.date-to-chip),
+.st-key-page_header [data-testid="stMarkdown"]:has(.date-to-chip) > div { height: auto !important; min-height: 0 !important; }
 .st-key-page_header [data-testid="stDateInputField"] {
+    background: #FFFFFF; border: 1.5px solid #E2E8F0; border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 6px 16px -8px rgba(37, 99, 235, 0.25);
     transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+/* จัดตัวเลข วัน/เดือน/ปี ให้อยู่กึ่งกลางช่อง (แนวนอนและแนวตั้ง) ส่วนไอคอนอยู่ขวาเหมือนเดิม */
+.st-key-page_header [data-testid="stDateInputField"] [role="group"] {
+    flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+    padding-left: 0 !important; padding-right: 0 !important;
 }
 .st-key-page_header [data-testid="stDateInputField"]:hover {
     border-color: #93C5FD;
-    box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
+    box-shadow: 0 8px 20px -8px rgba(37, 99, 235, 0.45);
     transform: translateY(-1px);
 }
-.st-key-page_header [data-testid="stDateInputField"]:focus-within { transform: translateY(-1px); }
+.st-key-page_header [data-testid="stDateInputField"]:focus-within {
+    transform: translateY(-1px); border-color: #2563EB;
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15), 0 8px 20px -8px rgba(37, 99, 235, 0.45);
+}
 .st-key-page_header [data-testid="stDateInput"] svg { transition: transform 0.2s ease, color 0.2s ease; }
-.st-key-page_header [data-testid="stDateInputField"]:hover ~ * svg,
-.st-key-page_header [data-testid="stDateInput"]:hover svg { transform: scale(1.15); color: var(--app-primary); }
-/* ตัวคั่น "To" เป็นแคปซูลเล็ก ๆ สีเทาอ่อน */
+.st-key-page_header [data-testid="stDateInput"]:hover svg { transform: scale(1.12) rotate(-4deg); }
+/* ตัวคั่น "To": แคปซูลไล่สีฟ้า-ม่วง ตัวขาว สูงเท่ากล่องวันที่ มุมโค้งเท่ากัน (สมมาตร) */
 .date-to-chip {
-    display: inline-block; padding: 2px 10px; border-radius: 999px;
-    background: #EEF2FF; color: #4F46E5; font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
-    position: relative; top: -7px;  /* ยกให้อยู่กึ่งกลางแนวเดียวกับช่องวันที่ */
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 44px; height: 44px; border-radius: 14px;
+    background: linear-gradient(135deg, #2563EB, #7C3AED); color: #FFFFFF;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+    box-shadow: 0 6px 14px -4px rgba(79, 70, 229, 0.55);
+}
+@media (min-width: 768px) { .date-to-chip { width: 64px; height: 58px; border-radius: 16px; font-size: 16px; } }
+/* จอ 768-1279px พื้นที่ฝั่งขวาแคบ: ย่อช่องลงเล็กน้อยไม่ให้ทับคำอธิบายหน้า (To สูงเท่ากล่องเสมอ) */
+@media (min-width: 768px) and (max-width: 1279px) {
+    .st-key-page_header [data-testid="stDateInput"] { width: 188px; }
+    .st-key-page_header [data-testid="stDateInput"] [data-baseweb="input"],
+    .st-key-page_header [data-testid="stDateInputField"] { min-height: 50px; height: 50px; }
+    .st-key-page_header [data-testid="stDateInput"] input { font-size: 17px !important; padding-left: 10px; }
+    .st-key-page_header [data-testid="stDateInputField"] [role="group"],
+    .st-key-page_header [data-testid="stDateInputField"] [role="group"] span { font-size: 17px; }
+    .st-key-page_header [data-testid="stDateInput"] svg { width: 24px; height: 24px; }
+    .date-to-chip { width: 44px; height: 50px; font-size: 15px; border-radius: 14px; }
 }
 /* ===== 11.1.3) ปฏิทินเลือกวันที่ (ใช้กับ date_input ทุกช่องในแอป) =====
    - ขนาดคงที่ทุกเดือน: กว้าง 300px และสูงเท่ากับเดือนที่มี 6 สัปดาห์ (เดือน 5 สัปดาห์จะเหลือที่ว่างด้านล่างแทนที่จะหดตัว)
@@ -419,18 +514,18 @@ footer, [data-testid="stFooter"] {
    - เปิดปฏิทินแล้วเด้งนุ่ม (ใช้ opacity/transform เท่านั้น ไม่กระทบตำแหน่ง popover)
    ปรับความกว้างที่ width / ความสูงขั้นต่ำที่ min-height ของ role="application" */
 [data-testid="stDateInputCalendar"] {
-    width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
+    width: 320px; max-width: calc(100vw - 16px); box-sizing: border-box;
     border-radius: 14px; overflow: hidden;
     box-shadow: 0 4px 6px rgba(15, 23, 42, 0.05), 0 18px 40px -8px rgba(37, 99, 235, 0.28) !important;
     transform-origin: top left;
     animation: calendar-pop-in 0.18s cubic-bezier(.2,.8,.2,1) both;
 }
-[data-testid="stDateInputCalendar"] [role="application"] { width: 100%; min-height: 304px; box-sizing: border-box; }
+[data-testid="stDateInputCalendar"] [role="application"] { width: 100%; min-height: 336px; box-sizing: border-box; }
 [data-testid="stDateInputCalendar"] table[role="grid"] { width: 100%; table-layout: fixed; }
 [data-testid="stDateInputCalendar"] th { font-size: 12px; font-weight: 700; color: #64748B; text-align: center; padding: 6px 0; }
-[data-testid="stDateInputCalendar"] td { height: 40px !important; padding: 2px 0 !important; text-align: center; }
+[data-testid="stDateInputCalendar"] td { height: 44px !important; padding: 2px 0 !important; text-align: center; }
 [data-testid="stDateInputCalendar"] td > [role="button"] {
-    width: 36px !important; height: 36px !important; margin: 0 auto; border-radius: 50% !important;
+    width: 40px !important; height: 40px !important; margin: 0 auto; border-radius: 50% !important;
     display: flex; align-items: center; justify-content: center;
     font-size: 15px; font-weight: 500; cursor: pointer;
     transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
@@ -462,6 +557,10 @@ footer, [data-testid="stFooter"] {
     .st-key-page_header [data-testid="stDateInputField"], .st-key-page_header [data-testid="stDateInput"] svg { transition: none; transform: none !important; }
 }
 
+/* กล่องสคริปต์พับ Sidebar อัตโนมัติ (sidebar_ui.py) ไม่มีเนื้อหาที่มองเห็น ไม่ให้กินช่องว่างในหน้า */
+.st-key-sidebar_collapse_script,
+[data-testid="stLayoutWrapper"]:has(> .st-key-sidebar_collapse_script) { display: none; }
+
 /* ===== 11.2) ตารางข้อมูล (st.dataframe / data_editor): พื้นขาว เงาบาง ๆ เหมือน Card ===== */
 [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
     background: var(--app-surface);
@@ -482,7 +581,7 @@ def build_responsive_css() -> str:
     """สร้าง Media Queries ของแต่ละช่วงจอ (เปลี่ยนค่าตัวแปร CSS + กฎเฉพาะช่วงจอ)
 
     Returns:
-        ข้อความ CSS ของ @media ทั้ง 4 ช่วง (Mobile, Tablet, Laptop, Desktop)
+        ข้อความ CSS ของ @media (Mobile, Tablet, Large Desktop; Desktop ใช้ค่าใน :root)
     """
 
     def variables_block(breakpoint_name: str) -> str:
@@ -539,6 +638,48 @@ def build_responsive_css() -> str:
   /* ปุ่ม/ช่องกรอกสูงพอสำหรับนิ้ว (>= 44px) และฟอนต์ช่องกรอก >= 16px กัน iOS ซูมหน้าเองตอนแตะ */
   button, [data-baseweb="select"] > div, [data-baseweb="input"] {{ min-height: 44px; }}
   input, textarea {{ font-size: 16px !important; }}
+
+  /* Date Filter (วันที่เริ่ม · To · วันที่สิ้นสุด) บนมือถือ: เรียงแถวเดียว ช่องเล็กลง ประหยัดพื้นที่
+     (ใส่ไว้หลังกฎ "คอลัมน์เต็มแถว" ด้านบน และใช้ class ซ้อนสองชั้นให้ชนะกฎนั้น) */
+  .st-key-page_header.st-key-page_header [data-testid="stColumn"] [data-testid="stHorizontalBlock"] {{
+    flex-wrap: nowrap; gap: 0.4rem; align-items: center;
+  }}
+  .st-key-page_header.st-key-page_header [data-testid="stColumn"] [data-testid="stColumn"] {{
+    flex: 1 1 0; min-width: 0; width: auto;
+  }}
+  .st-key-page_header.st-key-page_header [data-testid="stColumn"] [data-testid="stColumn"]:nth-child(2) {{
+    flex: 0 0 auto;  /* คอลัมน์ "To" กว้างเท่าแคปซูล */
+  }}
+  .date-to-chip {{ width: 36px; height: 44px; font-size: 12px; border-radius: 12px; }}
+  .st-key-page_header [data-testid="stDateInput"] [data-baseweb="input"],
+  .st-key-page_header [data-testid="stDateInputField"] {{ min-height: 44px; height: 44px; }}
+  .st-key-page_header [data-testid="stDateInput"] input {{ font-size: 15px !important; padding-left: 10px; padding-right: 4px; }}
+  .st-key-page_header [data-testid="stDateInputField"] [role="group"],
+  .st-key-page_header [data-testid="stDateInputField"] [role="group"] span {{ font-size: 15px; font-weight: 600; }}
+  .st-key-page_header [data-testid="stDateInput"] svg {{ width: 20px; height: 20px; }}
+
+  /* Menu อยู่ฝั่งขวาบนมือถือ: สลับลำดับ Sidebar/เนื้อหา, ปุ่ม ☰ ลอยมุมขวาบน, แผงเมนูเลื่อนเข้า-ออกทางขวา */
+  [data-testid="stAppViewContainer"] {{ flex-direction: row-reverse; }}
+  [data-testid="stSidebar"] {{ padding: 12px 12px 12px 0; }}
+  [data-testid="stSidebar"][data-collapsed="true"] {{ transform: translateX(100%) !important; }}
+  [data-testid="stSidebar"][data-collapsed="false"] {{ transform: none !important; }}
+  [data-testid="stSidebarCollapseButton"] {{ scale: -1 1; }}  /* ลูกศร « กลับเป็น » ชี้ไปทางขวาที่แผงจะเลื่อนกลับ */
+  [data-testid="stExpandSidebarButton"] {{ position: fixed; top: calc(var(--app-main-padding-top) - 4px); right: 12px; left: auto; z-index: 999990; }}
+  /* กล่องที่มีแต่ <style> (CSS ของหน้า) ไม่มีเนื้อหาที่มองเห็น แต่ถูกนับเป็นบล็อกและเพิ่มช่องไฟด้านบน ซ่อนกล่องแล้วกฎ CSS ยังทำงานเหมือนเดิม */
+  [data-testid="stMainBlockContainer"] [data-testid="stElementContainer"]:has(style) {{ display: none; }}
+  /* ชื่อหน้าชิดซ้ายบน: ไม่ต้องเว้นที่ให้ปุ่ม ☰ แล้ว แต่กันข้อความยาววิ่งไปทับปุ่มด้านขวา */
+  .st-key-page_header h2, .st-key-page_header [data-testid="stCaptionContainer"] {{ padding-right: 56px; }}
+}}
+
+/* ===== 12.1) มือถือจอเล็ก (กว้างไม่เกิน 360px เช่น 320px): ย่อช่อง Date ให้เห็นปีครบ ไม่ถูกตัด ===== */
+@media (max-width: 360px) {{
+  .st-key-page_header [data-testid="stDateInput"] input {{ font-size: 12px !important; padding-left: 6px; padding-right: 2px; }}
+  .st-key-page_header [data-testid="stDateInputField"] [role="group"],
+  .st-key-page_header [data-testid="stDateInputField"] [role="group"] span {{ font-size: 12px; }}
+  .st-key-page_header [data-testid="stDateInput"] svg {{ width: 14px; height: 14px; }}
+  .st-key-page_header [data-testid="stDateInput"] [data-baseweb="input"],
+  .st-key-page_header [data-testid="stDateInputField"] {{ min-height: 40px; height: 40px; }}
+  .date-to-chip {{ width: 26px; height: 40px; font-size: 10px; border-radius: 10px; }}
 }}
 
 /* ===== 13) Responsive: iPad/Tablet ({TABLET_MIN_PX}-{TABLET_MAX_PX}px) ===== */
@@ -554,6 +695,9 @@ def build_responsive_css() -> str:
     flex-basis: 400px;
   }}
   [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {{ min-width: 300px; }}
+  /* เมนูข้างแคบลง (240px) ให้เนื้อหาหลักมีพื้นที่มากขึ้นบน iPad
+     ใช้เฉพาะตอนเมนูเปิด: ถ้าบังคับกว้าง 240px ตอนพับด้วย จะเกิดช่องว่างผีทางซ้ายดันเนื้อหาไปทางขวา */
+  [data-testid="stSidebar"][data-collapsed="false"] {{ width: 240px !important; min-width: 240px !important; }}
   /* แถบหัวหน้า: ถ้าที่ไม่พอ ให้ตัวกรองวันที่ (Date To Date) ตกลงมาบรรทัดล่าง แทนการบีบจนเหลือแค่ตัวเลขวัน
      (เลือกเฉพาะ block ที่มีคอลัมน์ซ้อนอยู่ข้างใน คือแถวหัวหน้า ไม่กระทบคอลัมน์ From/To ด้านใน) */
   .st-key-page_header [data-testid="stHorizontalBlock"]:has([data-testid="stColumn"] [data-testid="stColumn"]) {{
@@ -591,20 +735,93 @@ def build_responsive_css() -> str:
   }}
 }}
 
-/* ===== 14) Responsive: Laptop ({LAPTOP_MIN_PX}-{LAPTOP_MAX_PX}px) ใช้ค่ามาตรฐาน (ค่าใน :root ด้านบน) ไม่ต้องปรับเพิ่ม ===== */
-@media (min-width: {LAPTOP_MIN_PX}px) and (max-width: {LAPTOP_MAX_PX}px) {{
-  :root {{
-{variables_block("laptop")}
+/* ===== 13.1) Tablet ขึ้นไปตอนเมนูพับ: Streamlit เหลือแถบว่าง 12px ทางซ้าย ลดขอบซ้ายลง 12px ให้ขอบซ้าย-ขวาเท่ากัน ===== */
+@media (min-width: {TABLET_MIN_PX}px) {{
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) [data-testid="stMainBlockContainer"] {{
+    padding-left: calc(var(--app-page-padding-x, var(--app-main-padding-x)) - 12px) !important;  /* หน้าที่จำกัดขอบเองให้ตั้ง --app-page-padding-x */
   }}
 }}
 
-/* ===== 15) Responsive: Desktop จอใหญ่ ({DESKTOP_MIN_PX}px ขึ้นไป) ===== */
-@media (min-width: {DESKTOP_MIN_PX}px) {{
+/* ===== 13.2) แถบหัวหน้า: ชื่อหน้า (ซ้าย) กับ Date To Date (ขวา) อยู่แถวเดียวกันเสมอ + ลดช่องว่างก่อนเนื้อหาถัดไป =====
+   เดิม Streamlit ตัดบรรทัดคอลัมน์ [4,2,4] เมื่อเนื้อหากว้างไม่พอ (เช่น จอ 1440px ตอนเมนูเปิด) Date จึงตกลงบรรทัดล่าง
+   ตอนนี้: ชื่อหน้ากินที่ที่เหลือ (ข้อความยาวตัดบรรทัดในคอลัมน์ตัวเอง) / Date กว้างตามเนื้อหาชิดขวา / ซ่อนคอลัมน์ว่าง
+   จอ Tablet (768-1024px) ตอนเมนูเปิด เนื้อหาแคบมาก จึงยกเว้นให้ Date ตกบรรทัดล่างได้ (กฎข้อ 13) */
+@media (min-width: 1025px) {{
+  .st-key-page_header.st-key-page_header [data-testid="stHorizontalBlock"]:has([data-testid="stColumn"] [data-testid="stColumn"]) {{
+    flex-wrap: nowrap; align-items: center;
+  }}
+  .st-key-page_header.st-key-page_header [data-testid="stColumn"]:has(.header-spacer) {{ display: none; }}
+  .st-key-page_header.st-key-page_header [data-testid="stHorizontalBlock"]:has([data-testid="stColumn"] [data-testid="stColumn"]) > [data-testid="stColumn"]:first-child {{
+    flex: 1 1 0; min-width: 0; width: auto;
+  }}
+  .st-key-page_header.st-key-page_header [data-testid="stColumn"]:has([data-testid="stColumn"]) {{
+    flex: 0 0 auto; width: auto; min-width: max-content;
+  }}
+}}
+@media (min-width: {TABLET_MIN_PX}px) and (max-width: 1024px) {{
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header.st-key-page_header [data-testid="stHorizontalBlock"]:has([data-testid="stColumn"] [data-testid="stColumn"]) {{
+    flex-wrap: nowrap; align-items: center;
+  }}
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header.st-key-page_header [data-testid="stHorizontalBlock"]:has([data-testid="stColumn"] [data-testid="stColumn"]) > [data-testid="stColumn"]:first-child {{
+    flex: 1 1 0; min-width: 0; width: auto;
+  }}
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header.st-key-page_header [data-testid="stColumn"]:has([data-testid="stColumn"]) {{
+    flex: 0 0 auto; width: auto; min-width: max-content;
+  }}
+}}
+@media (min-width: {TABLET_MIN_PX}px) {{
+  /* กล่องที่มีแต่ <style> (CSS ของหน้า) ไม่มีเนื้อหาที่มองเห็น แต่ถูกนับเป็นบล็อกและเพิ่มช่องไฟ 1rem ซ่อนกล่อง (กฎ CSS ยังทำงานเหมือนเดิม) */
+  [data-testid="stMainBlockContainer"] [data-testid="stElementContainer"]:has(style) {{ display: none; }}
+  .st-key-page_header {{ margin-bottom: -0.25rem; }}  /* ลดช่องว่างระหว่างแถบหัวหน้ากับแถบแจ้งเตือน (ปรับเลขนี้ถ้าต้องการชิด/ห่างขึ้น) */
+}}
+
+/* ===== 13.3) ตำแหน่งปุ่มเมนู ☰ ตอนเมนูพับ: อยู่คู่กับเนื้อหา ไม่ลอยโดดเดี่ยวมุมจอ และไม่ทับชื่อหน้า =====
+   --app-content-left = ขอบซ้ายของเนื้อหาตอนเมนูพับ (ตรงกับข้อ 13.1)
+   Tablet/Laptop เล็ก: ปุ่มอยู่แถวเดียวกับชื่อหน้า แล้วดันชื่อหน้าหนีปุ่ม (วิธีเดียวกับมือถือที่เว้นด้านขวา)
+   จอ {MENU_GUTTER_MIN_PX}px ขึ้นไป: ปุ่มอยู่ในช่องว่างซ้ายของเนื้อหา ชิดแนวเดียวกับชื่อหน้า */
+@media (min-width: {TABLET_MIN_PX}px) {{
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) {{
+    --app-content-left: calc(max(0px, (100vw - var(--app-container-max)) / 2) + var(--app-page-padding-x, var(--app-main-padding-x)) - 12px);
+  }}
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) [data-testid="stExpandSidebarButton"] {{
+    position: fixed; z-index: 999990;
+    left: var(--app-content-left);
+    top: calc(var(--app-main-padding-top) - 4px);
+  }}
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header h2,
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header [data-testid="stCaptionContainer"] {{
+    padding-left: {MENU_BUTTON_PX + MENU_BUTTON_GAP_PX}px;
+  }}
+}}
+@media (min-width: {TABLET_MIN_PX}px) and (max-width: {MENU_GUTTER_MIN_PX - 1}px) {{
+  /* เนื้อหาเต็มความกว้าง: แถบว่าง 12px ของ Streamlit ยังอยู่ทางซ้าย จึงบวกกลับให้ปุ่มตรงขอบเนื้อหา */
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) {{ --app-content-left: calc(var(--app-page-padding-x, var(--app-main-padding-x))); }}
+}}
+@media (min-width: {MENU_GUTTER_MIN_PX}px) {{
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) [data-testid="stExpandSidebarButton"] {{
+    left: max({MENU_BUTTON_GAP_PX}px, calc(var(--app-content-left) - {MENU_BUTTON_PX + MENU_BUTTON_GAP_PX}px));
+  }}
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header h2,
+  .stApp:has([data-testid="stSidebar"][data-collapsed="true"]) .st-key-page_header [data-testid="stCaptionContainer"] {{
+    padding-left: 0;
+  }}
+}}
+
+/* ===== 14) Desktop/Laptop ({DESKTOP_MIN_PX}px ขึ้นไป): ใช้ค่าใน :root (เนื้อหากว้างสูงสุด {CONTENT_MAX_PX}px จัดกึ่งกลาง) ไม่ต้องมี Media Query แยก ===== */
+
+/* ===== 15) Responsive: Large Desktop ({LARGE_DESKTOP_MIN_PX}px ขึ้นไป) เนื้อหาขยายตามจอ (ไม่เกิน {LARGE_CONTENT_MAX_PX}px) การ์ด/ตัวเลข/ช่องไฟโตตาม ===== */
+@media (min-width: {LARGE_DESKTOP_MIN_PX}px) {{
   :root {{
-{variables_block("desktop")}
+{variables_block("large")}
   }}
   /* เพิ่มช่องไฟระหว่างคอลัมน์ให้โปร่งขึ้น */
-  [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {{ gap: 1.5rem; }}
+  [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {{ gap: 2rem; }}
+  /* Streamlit คำนวณความกว้างคอลัมน์โดยเผื่อช่องไฟ 1rem เมื่อช่องไฟใหญ่ขึ้นผลรวมเกินแถว คอลัมน์สุดท้ายจึงตกบรรทัดใหม่
+     จอใหญ่มีที่พอเสมอ จึงห้ามตัดบรรทัด (คอลัมน์หดตามสัดส่วนแทน) */
+  [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap; }}
+  [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{ min-width: 0; }}
+  /* หัวข้อหน้าโตต่อจากค่าเดิม (2.6rem ที่ 1440px) ไหลต่อเนื่องจนถึง 3.2rem */
+  .st-key-page_header h2 {{ font-size: clamp(2.6rem, 1.52rem + 1.2vw, 3.2rem) !important; }}
 }}
 """
 
@@ -620,8 +837,8 @@ def build_global_css() -> str:
     css_variables += f"\n--app-font: {FONT_FAMILY};\n--app-shadow: {SHADOW};"
     # ตัวแปรขนาดตัวอักษร เช่น --app-fs-body: 16px;
     css_variables += "\n" + "\n".join(f"--app-fs-{name}: {size}px;" for name, size in TYPOGRAPHY_PX.items())
-    # ค่าเริ่มต้นของตัวแปร responsive = ค่าของ Laptop (ช่วงจออื่นจะถูกแทนที่ด้วย Media Query ด้านล่าง)
-    css_variables += "\n" + "\n".join(f"--app-{n}: {v};" for n, v in RESPONSIVE_VARIABLES["laptop"].items())
+    # ค่าเริ่มต้นของตัวแปร responsive = ค่าของ Desktop (ช่วงจออื่นจะถูกแทนที่ด้วย Media Query ด้านล่าง)
+    css_variables += "\n" + "\n".join(f"--app-{n}: {v};" for n, v in RESPONSIVE_VARIABLES["desktop"].items())
     css_rules = GLOBAL_CSS_RULES.replace("RADIUS", f"{RADIUS_PX}px")
     # @import ต้องอยู่บรรทัดแรกสุดของ <style> เสมอ ไม่เช่นนั้นเบราว์เซอร์จะข้ามไป
     return (

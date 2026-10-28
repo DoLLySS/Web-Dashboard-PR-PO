@@ -2,6 +2,24 @@
 # ค่าชุดนี้ควบคุมส่วนที่ CSS แตะไม่ได้ เช่น สีหัวตารางและลิงก์ในตาราง (st.dataframe วาดด้วย canvas)
 # บังคับธีมสว่างด้วย เพื่อไม่ให้เครื่องที่ตั้ง Dark mode เห็นตัวหนังสือขาวบนพื้นสว่าง
 # หมายเหตุ: แก้ไฟล์นี้แล้วต้องหยุดและรัน streamlit ใหม่จึงจะมีผล
+# เสิร์ฟไฟล์ใน static/ (เอกสารที่อัปโหลดอยู่ที่ static/local_uploads/) ให้เปิดจากไอคอนในคอลัมน์ File ที่ /app/static/...
+# ผู้ที่เข้าเว็บแอปและรู้ URL เปิดไฟล์ได้ (ไม่มีล็อกอิน) ต้องรัน streamlit ใหม่จึงมีผล
+#
+# ค่าสำหรับรันบน Server (รายละเอียดและเช็กลิสต์ดู DEPLOY.md): headless = ไม่เปิดเบราว์เซอร์/ไม่ถามอีเมลบน Server,
+# maxUploadSize (MB) = ขนาดไฟล์อัปโหลดสูงสุดต่อไฟล์, XSRF = กันเว็บอื่นแอบส่งคำสั่งแทนผู้ใช้
+# ไม่ตั้ง address / port ที่นี่ ให้ทีม IT กำหนดตอนสั่งรัน (--server.address / --server.port)
+[server]
+enableStaticServing = true
+headless = true
+maxUploadSize = 50
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"               # ซ่อนเมนู Deploy / Settings ของนักพัฒนา ผู้ใช้ทั่วไปเห็นเฉพาะที่จำเป็น
+
 [theme]
 base = "light"
 primaryColor = "#2563EB"             # สีหลัก: ปุ่ม สวิตช์ ลิงก์

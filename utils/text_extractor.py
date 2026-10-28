@@ -65,6 +65,8 @@ THIRTEEN_DIGIT_PATTERN: str = r"(?<!\d)(?:\d[\s-]?){12}\d(?!\d)"
 # คำนำหน้ายอดรวม เรียงจาก "เจาะจงที่สุด" ไป "กว้างที่สุด" ระบบจะลองตามลำดับนี้
 # และใช้ผลของคำแรกที่เจอ (กัน "ยอดรวม" ของสินค้าแต่ละบรรทัดมาแทนที่ยอดสุทธิ)
 TOTAL_AMOUNT_LABELS: list[str] = [
+    r"ราคารวมหลังภาษี(?:มูลค่าเพิ่ม)?",  # ยอดรวมที่บวก VAT แล้ว (ฟอร์ม PR) ต้องมาก่อน "ราคารวม" ซึ่งเป็นยอดก่อนภาษี
+    r"รวมหลังภาษี(?:มูลค่าเพิ่ม)?",
     r"จำนวนเงินรวมทั้งสิ้น",
     r"ยอดรวมทั้งสิ้น",
     r"รวมเงินทั้งสิ้น",
@@ -78,6 +80,9 @@ TOTAL_AMOUNT_LABELS: list[str] = [
     r"ราคารวม",
     r"Total",
 ]
+
+# ป้ายกว้างสุด: ตัวเลขต้องอยู่บรรทัดเดียวกับป้ายเท่านั้น (กันไปหยิบเลขลำดับแถวสินค้าจากหัวตาราง "Total")
+SAME_LINE_ONLY_TOTAL_LABELS: frozenset[str] = frozenset({r"Total"})
 
 # ตัวเลขเงิน เช่น 1,234.50 / 1234.5 / 1234 (ไม่รับตัวเลขติดตัวอักษร)
 MONEY_PATTERN: str = r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?"
@@ -95,6 +100,13 @@ VENDOR_LABELS: list[str] = [
     r"Supplier",
     r"Seller",
 ]
+
+# หัวข้อกล่อง "บริษัทที่แนะนำให้ติดต่อ (Suggest source)" ใน PR: ชื่อบริษัทผู้ขายและเบอร์โทรของผู้ขายอยู่ในกล่องนี้
+SUGGEST_SOURCE_LABEL_PATTERN: str = r"บริษัทที่แนะนำให้ติดต่อ|Suggest\s*source"
+# ป้ายชื่อบริษัทในกล่องนั้น เช่น "บริษัท (Company):"
+SUGGEST_SOURCE_COMPANY_LABEL_PATTERN: str = r"บริษัท\s*\(\s*Company\s*\)"
+# จำนวนบรรทัดหลังหัวข้อที่นับว่าอยู่ในกล่อง (กล่องจริงยาวราว 3 บรรทัด)
+SUGGEST_SOURCE_SECTION_LINE_LIMIT: int = 8
 
 # คำที่บ่งบอกว่าบรรทัดนั้นคือชื่อบริษัท (ใช้เป็นแผนสำรองเมื่อไม่มีคำนำหน้า)
 COMPANY_KEYWORD_PATTERN: str = (
@@ -398,11 +410,11 @@ def find_total_amount(text: str) -> str:
         for label_pattern in TOTAL_AMOUNT_LABELS:
             # กำลังค้นหาตัวเลขเงินที่ตามหลังคำนำหน้ายอดรวม
             # [^\d\n]{0,25} = ยอมให้มี ":" หรือ "บาท" หรือเว้นวรรคคั่นได้ ในบรรทัดเดียวกัน
+            # (?:\n[^\d\n]{0,25})? = ยอมให้ตัวเลขอยู่บรรทัดถัดไปได้ 1 บรรทัด (ฟอร์ม PR เขียน "บาท (Baht) : 47080" ใต้ป้าย)
             # \b นำหน้าคำภาษาอังกฤษ ทำให้ "Subtotal" ไม่ถูกนับว่าเป็น "Total"
             label_prefix = rf"\b{label_pattern}" if label_pattern.isascii() else label_pattern
-            matches = re.findall(
-                rf"{label_prefix}[^\d\n]{{0,25}}({MONEY_PATTERN})", text, re.IGNORECASE
-            )
+            gap = r"[^\d\n]{0,25}" + ("" if label_pattern in SAME_LINE_ONLY_TOTAL_LABELS else r"(?:\n[^\d\n]{0,25})?")
+            matches = re.findall(rf"{label_prefix}{gap}({MONEY_PATTERN})", text, re.IGNORECASE)
             if matches:
                 amount = float(matches[-1].replace(",", ""))
                 return f"{amount:.2f}"
@@ -419,10 +431,30 @@ def _clean_vendor_name(raw_name: str) -> str:
     return re.sub(r"\s+", " ", without_tax_part).strip(" :-\t")
 
 
+def _get_suggest_source_section(text: str) -> str:
+    """คืนข้อความของกล่อง "บริษัทที่แนะนำให้ติดต่อ (Suggest source)" (หัวข้อ + บรรทัดถัดไปตามที่กำหนด)
+
+    Args:
+        text: ข้อความทั้งเอกสาร
+
+    Returns:
+        ข้อความของกล่อง หรือ "" ถ้าเอกสารไม่มีหัวข้อนี้ (ใช้หัวข้อตัวสุดท้ายที่เจอ)
+    """
+    lines = text.splitlines()
+    heading_indexes = [
+        index for index, line in enumerate(lines) if re.search(SUGGEST_SOURCE_LABEL_PATTERN, line, re.IGNORECASE)
+    ]
+    if not heading_indexes:
+        return ""
+    start_index = heading_indexes[-1]
+    return "\n".join(lines[start_index : start_index + SUGGEST_SOURCE_SECTION_LINE_LIMIT])
+
+
 def find_vendor(text: str) -> str:
     """หาชื่อผู้ขายจากข้อความ
 
     ลำดับการค้นหา:
+      0) PR: ค่าหลัง "บริษัท (Company):" ในกล่อง "บริษัทที่แนะนำให้ติดต่อ (Suggest source)" (ตัดที่ตัวคั่น " : ")
       1) ข้อความหลังคำว่า "ผู้ขาย" / "ผู้จำหน่าย" / "Vendor" / "Supplier" ในบรรทัดเดียวกัน (เชื่อถือสุด)
       2) แผนสำรอง: บรรทัดแรก (ภายใน COMPANY_SEARCH_LINE_LIMIT บรรทัดแรก)
          ที่มีคำบอกชื่อบริษัท เช่น "บริษัท", "หจก.", "Co., Ltd."
@@ -436,6 +468,16 @@ def find_vendor(text: str) -> str:
         ชื่อผู้ขาย หรือ "" ถ้าหาไม่เจอ
     """
     try:
+        # ขั้นที่ 0: กำลังค้นหาชื่อบริษัทในกล่อง Suggest source (Excel ต่อเซลล์ด้วย " : " จึงตัดที่ตัวคั่นแรก)
+        suggest_section = _get_suggest_source_section(text)
+        company_match = re.search(
+            rf"{SUGGEST_SOURCE_COMPANY_LABEL_PATTERN}[ \t]*[:：]?[ \t]*(.+)", suggest_section, re.IGNORECASE
+        )
+        if company_match:
+            suggested_name = _clean_vendor_name(re.split(r"\s:\s", company_match.group(1))[0])
+            if suggested_name:
+                return suggested_name
+
         # ขั้นที่ 1: กำลังค้นหาข้อความหลังคำนำหน้าผู้ขาย
         # [ \t]*[:：]?[ \t]* = ยอมให้มี ":" หรือเว้นวรรคคั่น แล้ว (.+) = เอาที่เหลือของบรรทัดนั้น
         for label_pattern in VENDOR_LABELS:
@@ -512,6 +554,9 @@ def _find_pattern_after_label(text: str, label_patterns: list[str], value_patter
 def find_tel(text: str) -> str:
     """หาเบอร์โทรศัพท์ของบริษัท (คืนตามที่เขียนในเอกสาร ไม่แปลงรูปแบบ)
 
+    ถ้าเป็น PR จะหาในกล่อง "บริษัทที่แนะนำให้ติดต่อ (Suggest source)" ก่อน (เบอร์ผู้ขาย ไม่ใช่เบอร์ผู้ร้องขอ)
+    ไม่เจอจึงหาทั้งเอกสาร
+
     Args:
         text: ข้อความทั้งเอกสาร
 
@@ -519,7 +564,12 @@ def find_tel(text: str) -> str:
         เบอร์โทร เช่น "02-123-4567" หรือ "" ถ้าหาไม่เจอ
     """
     try:
-        tel_number = _find_pattern_after_label(text, TEL_LABELS, TEL_NUMBER_PATTERN)
+        suggest_section = _get_suggest_source_section(text)
+        tel_number = ""
+        if suggest_section:
+            tel_number = _find_pattern_after_label(suggest_section, TEL_LABELS, TEL_NUMBER_PATTERN)
+        if not tel_number:
+            tel_number = _find_pattern_after_label(text, TEL_LABELS, TEL_NUMBER_PATTERN)
         return re.sub(r"\s+", " ", tel_number)
     except FIND_ERRORS as error:
         logger.warning("หาเบอร์โทรไม่สำเร็จ: %s", error)

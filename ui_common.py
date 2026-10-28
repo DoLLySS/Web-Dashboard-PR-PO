@@ -7,6 +7,7 @@
     ชื่อ key ต้องลงท้ายด้วย _card หรือ _inner CSS จึงจะจับได้
 """
 
+import html
 from datetime import date
 
 import pandas as pd
@@ -102,6 +103,54 @@ def build_css(extra_rules: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
+def get_equipment_quantities(start_date: date, end_date: date) -> list[tuple[str, int]]:
+    """นับจำนวนรายการแต่ละหมวดอุปกรณ์ในช่วงวันที่ (หมวดที่ไม่มีรายการได้ 0 เพื่อให้มีครบทุกแถวเสมอ)
+
+    Args:
+        start_date: วันที่เริ่มต้นจาก Date Filter
+        end_date: วันที่สิ้นสุดจาก Date Filter
+
+    Returns:
+        รายการ (ชื่อหมวด, จำนวน) เรียงตาม EQUIPMENT_CATEGORIES
+    """
+    quantity_by_category = {
+        row["category"]: row["quantity"]
+        for row in get_category_counts(start_date.isoformat(), end_date.isoformat())
+    }
+    return [(name, int(quantity_by_category.get(name, 0))) for name in EQUIPMENT_CATEGORIES]
+
+
+def build_equipment_cards_html(rows: list[tuple[str, int]]) -> str:
+    """สร้าง HTML ตารางสรุปอุปกรณ์แบบ modern: ชื่อหมวด | แถบสัดส่วน | จำนวน + แถวรวม (สไตล์อยู่ใน CSS ของหน้า Overview)
+
+    Args:
+        rows: รายการ (ชื่อหมวด, จำนวน)
+
+    Returns:
+        สตริง HTML (ชื่อหมวดผ่าน html.escape แล้ว)
+    """
+    total = sum(quantity for _, quantity in rows)
+    max_quantity = max((quantity for _, quantity in rows), default=0)
+    parts: list[str] = [
+        '<div class="eq-table">',
+        '<div class="eq-head"><span>Equipment</span><span></span><span>Qty.</span></div>',
+    ]
+    for index, (name, quantity) in enumerate(rows):
+        # ความยาวแถบเทียบกับหมวดที่มากที่สุด (ไม่มีข้อมูลเลย = 0% ไม่หารศูนย์)
+        percent = round(quantity / max_quantity * 100) if max_quantity else 0
+        parts.append(
+            f'<div class="eq-row" style="--i:{index}">'
+            f'<span class="eq-name"><i class="eq-dot eq-dot-{index % 4}"></i>{html.escape(name)}</span>'
+            f'<span class="eq-bar"><b class="eq-fill eq-dot-{index % 4}" style="width:{percent}%"></b></span>'
+            f'<span class="eq-qty">{quantity:,}</span></div>'
+        )
+    parts.append(
+        f'<div class="eq-row eq-total" style="--i:{len(rows)}"><span class="eq-name">Total</span>'
+        f'<span></span><span class="eq-qty">{total:,}</span></div></div>'
+    )
+    return "".join(parts)
+
+
 def render_equipment_table(start_date: date, end_date: date, key_prefix: str = "overview") -> None:
     """แสดงตาราง Equipment / Qty. = จำนวนรายการในแต่ละหมวด (Hardware, Software, Network, Service)
 
@@ -110,16 +159,9 @@ def render_equipment_table(start_date: date, end_date: date, key_prefix: str = "
         end_date: วันที่สิ้นสุดจาก Date Filter
         key_prefix: คำนำหน้า key ของตาราง (ต้องต่างกันในแต่ละหน้า)
     """
-    quantity_by_category = {
-        row["category"]: row["quantity"]
-        for row in get_category_counts(start_date.isoformat(), end_date.isoformat())
-    }
-    # หมวดที่ไม่มีรายการให้แสดงเป็น 0 เพื่อให้ตารางมีครบทุกแถวเสมอ
+    quantities = get_equipment_quantities(start_date, end_date)
     equipment_table = pd.DataFrame(
-        {
-            "Equipment": EQUIPMENT_CATEGORIES,
-            "Qty.": [quantity_by_category.get(name, 0) for name in EQUIPMENT_CATEGORIES],
-        }
+        {"Equipment": [name for name, _ in quantities], "Qty.": [quantity for _, quantity in quantities]}
     )
     # เรียกได้ทั้งหน้า Overview และ Dashboard จึงต้องแยก key ด้วย key_prefix
     render_readonly_grid(

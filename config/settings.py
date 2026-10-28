@@ -29,6 +29,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 DEFAULT_LOG_LEVEL: str = "INFO"
 # รอสูงสุดกี่วินาทีถ้าฐานข้อมูลถูกล็อก
 DEFAULT_DB_TIMEOUT_SECONDS: int = 10
+# โหมดบันทึกของ SQLite: DELETE = ค่าเดิมของ SQLite (ปลอดภัยกับโฟลเดอร์ที่ OneDrive ซิงก์)
+# WAL = รองรับผู้ใช้หลายคนพร้อมกันดีกว่า ใช้ได้เฉพาะเมื่อไฟล์ DB อยู่ดิสก์ในเครื่อง Server (ห้ามอยู่ network share / OneDrive)
+DEFAULT_DB_JOURNAL_MODE: str = "DELETE"
 # โฟลเดอร์ปลายทางบน SharePoint (เทียบจาก root ของ Site)
 DEFAULT_SHAREPOINT_FOLDER_PATH: str = "Shared Documents/PR-PO"
 
@@ -49,6 +52,26 @@ def get_env_text(variable_name: str, default_value: str = "") -> str:
     raw_value = os.getenv(variable_name, "")
     cleaned_value = raw_value.strip() if isinstance(raw_value, str) else ""
     return cleaned_value or default_value
+
+
+def get_env_flag(variable_name: str, default_value: bool = False) -> bool:
+    """อ่านค่าเปิด/ปิดจาก .env (1 / true / yes / on = เปิด, 0 / false / no / off = ปิด)
+
+    Args:
+        variable_name: ชื่อตัวแปร เช่น "LOCAL_DESKTOP_EXPORT"
+        default_value: ค่าที่ใช้เมื่อไม่มีตัวแปรนี้ หรือเขียนไม่เข้าใจ
+
+    Returns:
+        True/False (ไม่โยน Error)
+    """
+    raw_value = get_env_text(variable_name).lower()
+    if raw_value in ("1", "true", "yes", "on"):
+        return True
+    if raw_value in ("0", "false", "no", "off"):
+        return False
+    if raw_value:
+        _logger.warning("ค่า %s ใน .env ('%s') ไม่ใช่ 1/0 จึงใช้ค่าเริ่มต้น %s แทน", variable_name, raw_value, default_value)
+    return default_value
 
 
 def get_env_int(variable_name: str, default_value: int) -> int:

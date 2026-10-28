@@ -44,6 +44,18 @@ SHAREPOINT_FOLDER_PATH=Shared Documents/PR-PO   # ไม่บังคับ
 2. อัปโหลดไฟล์ทดสอบ 1 ไฟล์ → ตรวจว่าไฟล์ขึ้นในโฟลเดอร์บน SharePoint และไอคอนไฟล์ในตารางเปิดลิงก์ได้
 3. ถ้า Error: ข้อความไทยบนหน้าจอบอกสิ่งที่ควรตรวจ และดูรายละเอียดใน `logs/app.log`
 
+## 2.4 ทดสอบส่งไฟล์ขึ้น Google Drive (แทน SharePoint ระหว่างรอสิทธิ์)
+
+ไฟล์จากหน้า Upload / ฟอร์ม จะถูกส่งไปที่ `<โฟลเดอร์ราก>/ปี/เดือน/วัน/Vendor/` (ใช้วันที่อัปโหลดจริง) ผ่าน `utils/storage_backend.py`
+1. สร้าง Service Account ใน Google Cloud (เปิด Drive API) แล้วดาวน์โหลดไฟล์ JSON key เก็บไว้นอกโปรเจค/Git
+2. สร้างโฟลเดอร์ใน **Shared Drive** (Service Account ไม่มีพื้นที่เก็บของตัวเองใน My Drive) แล้วแชร์ให้อีเมลของ Service Account แบบ Editor
+3. ใส่ใน `.env`: `STORAGE_BACKEND=gdrive`, `GDRIVE_SERVICE_ACCOUNT_FILE=<path ของ JSON key>`, `GDRIVE_ROOT_FOLDER_ID=<ID โฟลเดอร์>` แล้วรีสตาร์ทแอป
+4. เมื่อได้สิทธิ์ SharePoint: เปลี่ยนเป็น `STORAGE_BACKEND=sharepoint` (โครงโฟลเดอร์เดียวกัน; ส่วนสร้างโฟลเดอร์ย่อยบน SharePoint ยังไม่เคยทดสอบจริง)
+   - เมื่อ SharePoint ตั้งค่าครบ: ตอน Upload ระบบสร้างโฟลเดอร์ `ปี/เดือน(Jan..Dec)/วัน/Vendor` แล้วส่งไฟล์ขึ้นทันที และเก็บ **ลิงก์โฟลเดอร์** ลงคอลัมน์ File — ไอคอน File จะเปิดโฟลเดอร์นั้นในแท็บใหม่ (`utils/sharepoint_api.py` `build_folder_url`; รูปลิงก์ `Forms/AllItems.aspx?id=` ยังไม่ยืนยันกับ SharePoint จริง)
+   - แถวที่ยังไม่มีลิงก์ออนไลน์ ไอคอนยังคัดลอกไฟล์ไป Desktop เหมือนเดิม
+   - **เมื่อได้สิทธิ์และยืนยันแล้ว ให้ลบฟีเจอร์ Desktop**: `export_files_to_desktop` + `get_desktop_directory` ใน `utils/local_storage.py`, `handle_file_icon_click` / `find_clicked_file_position` / `_open_folder_in_explorer` ใน `pages_ui/overview.py` (+ `cellClicked` ใน `update_on`) และกิ่ง `isLocalFile` ใน `FILE_LINK_RENDERER_JS`
+5. Master-List: `utils/masterlist_client.py` เป็น stub รอ API (ตั้ง `MASTERLIST_API_URL` และเติมการเรียกจริงใน `send_to_masterlist`)
+
 ## 2.5 ภารกิจหลักรอบถัดไป: AgGrid + Typography
 
 1. ยกเลิกตาราง Streamlit พื้นฐาน และติดตั้ง `streamlit-aggrid` สำหรับหน้า Overview และ Dashboard
@@ -60,7 +72,8 @@ SHAREPOINT_FOLDER_PATH=Shared Documents/PR-PO   # ไม่บังคับ
 
 - **ยังไม่เคยทดสอบกับ SharePoint จริง** อาจต้องปรับเล็กน้อยตอนต่อจริง
 - ไฟล์เก่าที่อยู่ใน `data/local_uploads/` จะไม่ถูกย้ายขึ้น SharePoint อัตโนมัติ (ต้องเขียนสคริปต์ย้ายเองถ้าต้องการ)
-- โฟลเดอร์โปรเจคอยู่ใน OneDrive: ไม่เปิดโหมด WAL ของ SQLite ตั้งใจ (ไฟล์ `-wal/-shm` ที่ถูก sync อาจทำให้ DB เสีย) ถ้าใช้งานจริงแนะนำย้าย `data/` ออกจาก OneDrive
+- โฟลเดอร์โปรเจคอยู่ใน OneDrive: ค่าเริ่มต้นไม่เปิดโหมด WAL ของ SQLite ตั้งใจ (ไฟล์ `-wal/-shm` ที่ถูก sync อาจทำให้ DB เสีย) บน Server ให้ตั้ง `DB_FILE_PATH` ชี้ดิสก์ในเครื่อง + `DB_JOURNAL_MODE=WAL` ใน `.env`
+- การนำขึ้น Server: ดู `DEPLOY.md` (ล็อกอิน/SSO, HTTPS, service, backup เป็นงานฝั่ง IT) และ `LOCAL_DESKTOP_EXPORT` ต้องเป็น `0` บน Server (ฟีเจอร์ Desktop ยังไม่ลบ จะลบเมื่อได้สิทธิ์ SharePoint)
 - ถ้าบันทึกรายการไม่สำเร็จแล้วกดซ้ำ ไฟล์แนบอาจถูกบันทึกซ้ำใน `local_uploads/` (ไฟล์เหลือทิ้งเล็กน้อย)
 - `planning.md` เป็นเอกสารช่วงแรก อาจไม่ตรงกับโครงสร้างปัจจุบัน ให้ยึด `README.md` เป็นหลัก
 - `generate_mock_data.py` ยังใช้ `print()` (เป็นสคริปต์ CLI ตั้งใจไว้)

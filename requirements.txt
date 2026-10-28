@@ -15,3 +15,7 @@ xlrd==2.0.2            # อ่านไฟล์ Excel .xls เก่า
 # --- SharePoint (utils/sharepoint_api.py — ติดตั้งไว้ล่วงหน้า แม้ยังไม่เปิดใช้) ---
 python-dotenv==1.2.4                  # อ่านรหัสจากไฟล์ .env
 Office365-REST-Python-Client==3.3.0   # เชื่อม SharePoint
+
+# --- Google Drive (utils/gdrive_api.py — ใช้ทดสอบแทน SharePoint ระหว่างรอสิทธิ์) ---
+google-api-python-client==2.150.0   # Drive API
+google-auth==2.35.0                 # ล็อกอินด้วย Service Account

@@ -10,6 +10,7 @@
 อยากเปลี่ยนหน้าตาตารางทั้งระบบ ให้แก้ค่าคงที่ GRID_* ด้านล่างที่เดียว
 """
 
+import json
 from typing import Any, Optional
 
 import pandas as pd
@@ -26,15 +27,15 @@ logger = get_logger(__name__)
 # ค่าคงที่หน้าตาตาราง (แก้ที่นี่ที่เดียว มีผลทุกตาราง)
 # ---------------------------------------------------------------------------
 
-GRID_FONT_SIZE_PX: int = 18  # ขนาดตัวหนังสือในเซลล์ (18px: อ่านง่าย แลกกับข้อความถูกตัด … มากขึ้น ตารางเลื่อนแนวนอนได้เอง)
-GRID_HEADER_FONT_SIZE_PX: int = 16  # ขนาดตัวหนังสือหัวตาราง (เล็กกว่าเนื้อหาเล็กน้อย แยกด้วยตัวหนาและสีพื้น)
+GRID_FONT_SIZE_PX: int = 20  # ขนาดตัวหนังสือในเซลล์ (20px: อ่านง่าย แลกกับข้อความถูกตัด … มากขึ้น ตารางเลื่อนแนวนอนได้เอง)
+GRID_HEADER_FONT_SIZE_PX: int = 17 # ขนาดตัวหนังสือหัวตาราง (เล็กกว่าเนื้อหาเล็กน้อย แยกด้วยตัวหนาและสีพื้น)
 GRID_HEADER_FONT_WEIGHT: int = 700  # น้ำหนักตัวหนังสือหัวตาราง (700 = bold)
 GRID_TEXT_COLOR: str = "#334155"  # สีตัวหนังสือในเซลล์: เทาเข้ม (Charcoal) ไม่ดำสนิท อ่านสบายตา
 GRID_BORDER_COLOR: str = "#E8EDF3"  # สีเส้นขอบตาราง/เส้นคั่นแถว: อ่อนมาก ไม่แย่งความสนใจจากตัวหนังสือ
-GRID_HEADER_HEIGHT_PX: int = 48  # ความสูงแถวหัวตาราง
-GRID_CELL_PADDING_PX: int = 12  # ช่องไฟซ้าย-ขวาในเซลล์ (ยิ่งมากยิ่งโปร่ง)
+GRID_HEADER_HEIGHT_PX: int = 52 # ความสูงแถวหัวตาราง
+GRID_CELL_PADDING_PX: int = 16 # ช่องไฟซ้าย-ขวาในเซลล์ (ยิ่งมากยิ่งโปร่ง)
 GRID_HEADER_BACKGROUND: str = "#F4F6F8"  # สีพื้นหัวตาราง
-GRID_ZEBRA_COLOR: str = "#FFF8E8"  # สีแถวสลับ (แถวที่ 1, 3, 5 ...) ครีมอ่อนมาก ไม่ให้ป้ายสีสถานะกลืนกับพื้น
+GRID_ZEBRA_COLOR: str = "#FFFBF0" # สีแถวสลับ (แถวที่ 1, 3, 5 ...) ครีมอ่อนมาก ไม่ให้ป้ายสีสถานะกลืนกับพื้น
 GRID_ROW_HOVER_COLOR: str = "#EEF4FF"  # สีแถวเมื่อเอาเมาส์ชี้ (ฟ้าอ่อน ช่วยให้ตามอ่านแถวได้ง่าย)
 GRID_PAGE_SIZE: int = 15  # จำนวนแถวต่อหน้าของตารางที่เปิด Pagination
 GRID_PAGE_SIZE_CHOICES: list[int] = [10, 15, 25, 50, 100]  # ตัวเลือกจำนวนแถวต่อหน้า
@@ -43,7 +44,7 @@ GRID_FLEXIBLE_WIDTH_PX: int = 200  # ความกว้างที่ต้�
 # จอแคบย่อคอลัมน์ได้ถึงกี่เท่าของความกว้างที่ต้องการ: คอลัมน์ตัวเลข/วันที่/สถานะย่อได้น้อย (ไม่ให้ตัวเลขถูกตัด)
 # ส่วนคอลัมน์ข้อความ (ชื่อผู้ขาย, คำอธิบาย) ย่อได้มาก (ตัดด้วย ... และชี้เมาส์ดูข้อความเต็มได้) ถ้าย่อสุดแล้วยังไม่พอจอ จะมีแถบเลื่อนแนวนอน
 GRID_MIN_WIDTH_RATIO_FIXED: float = 0.95
-GRID_MIN_WIDTH_RATIO_SHRINKABLE: float = 0.6
+GRID_MIN_WIDTH_RATIO_SHRINKABLE: float = 0.85  # (เดิม 0.6 ชื่อผู้ขายถูกตัดเป็น "Netwo…" เลื่อนแนวนอนดูแทนการตัดข้อความ)
 GRID_MIN_WIDTH_FLEXIBLE_PX: int = 80  # ความกว้างต่ำสุดของคอลัมน์ข้อความยาว (Description)
 GRID_PAGINATION_HEIGHT_PX: int = 56  # ความสูงแถบเปลี่ยนหน้าด้านล่างตาราง (ใช้คำนวณความสูงตาราง)
 
@@ -63,6 +64,55 @@ function(params) {
     return parts.length === 3 ? parts[2] + '/' + parts[1] + '/' + parts[0] : params.value;
 }
 """
+
+GRID_PIN_MIN_WIDTH_PX: int = 520  # กล่องตารางกว้างอย่างน้อยเท่านี้และต้องเลื่อนแนวนอน จึงตรึงคอลัมน์แรกไว้ซ้าย (แคบกว่านี้ไม่ตรึง เหลือที่ให้ดูข้อมูลน้อยเกิน)
+GRID_SCROLLBAR_HEIGHT_PX: int = 12  # ความหนาแถบเลื่อนแนวนอน (ตารางต้องเผื่อความสูงส่วนนี้)
+GRID_PAGING_NARROW_PX: int = 720  # กล่องตารางแคบกว่านี้ = ย่อแถบ Pagination (ลดฟอนต์ ซ่อนคำ "Size:"/"Page" และปุ่มหน้าแรก/สุดท้าย)
+GRID_PAGING_TINY_PX: int = 460  # แคบกว่านี้อีก = ซ่อนข้อความสรุปจำนวนแถว "1 - 9 / 9" เหลือแต่ตัวเลือก/ปุ่มเปลี่ยนหน้า
+GRID_PAGING_FONT_NARROW_PX: int = 14  # ขนาดตัวหนังสือแถบ Pagination ตอนจอแคบ
+# ข้อความสั้นลงของแถบ Pagination: "1 to 9 of 9" -> "1 - 9 / 9", "Page 1 of 1" -> "Page 1 / 1"
+GRID_LOCALE_TEXT: dict[str, str] = {"to": "-", "of": "/"}
+
+# จัดคอลัมน์ใหม่ทุกครั้งที่กล่องตารางเปลี่ยนขนาด (เปิด/พับเมนู ย่อ-ขยายหน้าต่าง หมุนจอ)
+# autoSizeStrategy ทำงานแค่ตอนสร้างตาราง จึงไม่ปรับตามขนาดที่เปลี่ยนทีหลัง คอลัมน์จะค้างกว้างเกินแล้วล้นจอ
+# - autoSizeAllColumns: กว้างตามเนื้อหาจริงก่อน แล้ว sizeColumnsToFit ขยายพอดีกล่องถ้ามีที่เหลือ / ไม่พอ = เลื่อนแนวนอนดูที่เหลือ
+# - ต้องเลื่อนแนวนอน (ผลรวม minWidth เกินกล่อง) และกล่องไม่แคบเกิน = ตรึงคอลัมน์แรกของข้อมูลไว้ซ้าย ดูแถวไม่หลง
+_FIT_COLUMNS_BODY_JS: str = """
+function fitColumns(api) {
+    var wrapper = document.querySelector('.ag-root-wrapper');
+    var boxWidth = wrapper ? wrapper.clientWidth - 2 : 0;
+    if (!boxWidth) { return; }
+    // สลับ class ตามความกว้างกล่อง ให้ CSS ย่อแถบ Pagination (ดู GRID_CUSTOM_CSS)
+    wrapper.classList.toggle('grid-narrow', boxWidth < __PAGING_NARROW_PX__);
+    wrapper.classList.toggle('grid-tiny', boxWidth < __PAGING_TINY_PX__);
+    var columns = api.getAllDisplayedColumns().filter(function(column) {
+        return column.getColId().indexOf('ag-Grid') !== 0;
+    });
+    if (!columns.length) { return; }
+    // ขั้นแรก: ทุกคอลัมน์กว้างตามเนื้อหาจริง (ข้อความไม่ถูกตัดด้วย ...) ถ้าเหลือที่ว่างค่อยขยายให้พอดีกล่อง
+    api.autoSizeAllColumns();
+    var totalWidth = 0;
+    api.getAllDisplayedColumns().forEach(function(column) { totalWidth += column.getActualWidth(); });
+    var needsScroll = totalWidth > boxWidth;
+    if (!needsScroll) { api.sizeColumnsToFit(); }
+    var shouldPin = needsScroll && boxWidth >= __PIN_MIN_WIDTH__;
+    var firstColumn = columns[0];
+    var isPinned = firstColumn.getPinned() === 'left';
+    if (shouldPin !== isPinned) {
+        api.applyColumnState({state: [{colId: firstColumn.getColId(), pinned: shouldPin ? 'left' : null}]});
+    }
+}
+""".replace("__PIN_MIN_WIDTH__", str(GRID_PIN_MIN_WIDTH_PX)).replace(
+    "__PAGING_NARROW_PX__", str(GRID_PAGING_NARROW_PX)
+).replace("__PAGING_TINY_PX__", str(GRID_PAGING_TINY_PX))
+
+# กล่องเปลี่ยนขนาด = จัดใหม่ / ตารางแสดงข้อมูลครั้งแรก = จัดทันที แล้วจัดซ้ำหลังฟอนต์โหลดเสร็จ (ก่อนฟอนต์โหลด วัดความกว้างข้อความแคบกว่าจริง)
+FIT_COLUMNS_ON_RESIZE_JS: str = _FIT_COLUMNS_BODY_JS.replace("function fitColumns(api) {", "function(params) {\n    var api = params.api;", 1)
+FIT_COLUMNS_ON_FIRST_RENDER_JS: str = (
+    "function(params) {\n    var api = params.api;\n    var run = (" + _FIT_COLUMNS_BODY_JS.strip() + ");\n"
+    "    run(api);\n    setTimeout(function() { run(api); }, 400);\n"
+    "    if (document.fonts && document.fonts.ready) { document.fonts.ready.then(function() { run(api); }); }\n}"
+)
 
 
 def build_grid_theme() -> StAggridTheme:
@@ -85,7 +135,7 @@ def build_grid_theme() -> StAggridTheme:
         rowHoverColor=GRID_ROW_HOVER_COLOR,  # สีแถวตอนเมาส์ชี้
         cellHorizontalPadding=GRID_CELL_PADDING_PX,  # ช่องไฟซ้าย-ขวาในเซลล์
         borderColor=GRID_BORDER_COLOR,  # สีเส้นขอบ
-        wrapperBorderRadius=8,  # มุมมนของกรอบตาราง
+        wrapperBorderRadius=12,  # มุมมนของกรอบตาราง
     )
 
 
@@ -99,7 +149,28 @@ GRID_CUSTOM_CSS: dict[str, dict[str, str]] = {
         "text-rendering": "optimizeLegibility",
     },
     ".ag-header-cell-text": {"font-size": f"{GRID_HEADER_FONT_SIZE_PX}px !important", "font-weight": f"{GRID_HEADER_FONT_WEIGHT} !important", "letter-spacing": "0.01em"},
-    ".ag-paging-panel": {"font-size": f"{GRID_FONT_SIZE_PX}px !important"},  # แถบ Pagination ด้านล่าง
+    # แถบ Pagination ด้านล่าง: ไม่ตกบรรทัด ความสูงคงที่ตรงกับ GRID_PAGINATION_HEIGHT_PX
+    ".ag-paging-panel": {
+        "font-size": f"{GRID_FONT_SIZE_PX}px !important",
+        "height": f"{GRID_PAGINATION_HEIGHT_PX}px !important",
+        "min-height": f"{GRID_PAGINATION_HEIGHT_PX}px !important",
+        "flex-wrap": "nowrap !important",
+        "white-space": "nowrap !important",
+        "overflow": "hidden",
+    },
+    ".ag-paging-panel > *, .ag-paging-row-summary-panel, .ag-paging-page-summary-panel, .ag-paging-page-size": {
+        "white-space": "nowrap !important", "flex-shrink": "0",
+    },
+    # จอแคบ (class grid-narrow/grid-tiny สลับโดย FIT_COLUMNS_*_JS ตามความกว้างกล่องจริง)
+    ".grid-narrow .ag-paging-panel": {
+        "font-size": f"{GRID_PAGING_FONT_NARROW_PX}px !important", "gap": "4px !important",
+        "padding": "0 6px !important", "justify-content": "space-between !important",
+    },
+    ".grid-narrow .ag-paging-page-size .ag-label, .grid-narrow .ag-paging-page-summary-panel .ag-paging-description > span:first-child, "
+    ".grid-narrow .ag-paging-button[ref='btFirst'], .grid-narrow .ag-paging-button[ref='btLast'], "
+    ".grid-narrow [data-ref='btFirst'], .grid-narrow [data-ref='btLast']": {"display": "none !important"},
+    ".grid-narrow .ag-paging-row-summary-panel, .grid-narrow .ag-paging-page-summary-panel": {"margin": "0 !important"},
+    ".grid-tiny .ag-paging-row-summary-panel": {"display": "none !important"},
     ".ag-cell": {"line-height": f"{TABLE_ROW_HEIGHT_PX - 2}px !important"},  # จัดตัวหนังสือกึ่งกลางแถวสูง
     # ปุ่มกรองที่หัวคอลัมน์ซ่อนไว้ จนกว่าจะเอาเมาส์ชี้ (ประหยัดที่ให้คอลัมน์ไม่ถูกตัด)
     ".ag-header-cell:not(:hover) .ag-header-cell-filter-button": {"display": "none !important"},
@@ -109,6 +180,14 @@ GRID_CUSTOM_CSS: dict[str, dict[str, str]] = {
         "border": "1px solid transparent !important",
         "box-shadow": "none !important",
         "outline": "none !important",
+    },
+    # แถบเลื่อนแนวนอนหนาและเห็นชัด (จอแคบต้องเลื่อนดูคอลัมน์ที่เหลือ) เลื่อนด้วยนิ้วบนมือถือไม่ดันหน้าเว็บ
+    ".ag-body-horizontal-scroll-viewport, .ag-center-cols-viewport": {"overscroll-behavior-x": "contain"},
+    ".ag-body-horizontal-scroll-viewport::-webkit-scrollbar, .ag-center-cols-viewport::-webkit-scrollbar": {
+        "height": f"{GRID_SCROLLBAR_HEIGHT_PX}px",
+    },
+    ".ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb, .ag-center-cols-viewport::-webkit-scrollbar-thumb": {
+        "background": "#94A3B8", "border-radius": "6px",
     },
     ".ag-popup, .ag-menu, .ag-filter": {"font-size": f"{GRID_FONT_SIZE_PX}px !important"},  # เมนู Filter / dropdown
 }
@@ -128,6 +207,7 @@ def build_grid_options(
     paginated: bool = False,
     filterable: bool = False,
     extra_column_options: Optional[dict[str, dict[str, Any]]] = None,
+    row_id_column: Optional[str] = None,
 ) -> dict[str, Any]:
     """สร้าง gridOptions ของ AgGrid: ขยายคอลัมน์ให้พอดีหน้าจอ + เรียงลำดับ + (ตัวกรอง / Pagination / เลือกแถว) ตามที่ขอ
 
@@ -147,6 +227,7 @@ def build_grid_options(
         paginated: True = แบ่งหน้า (GRID_PAGE_SIZE แถวต่อหน้า)
         filterable: True = มีตัวกรองที่หัวคอลัมน์
         extra_column_options: ตั้งค่าคอลัมน์เพิ่มเอง {ชื่อคอลัมน์: {ตัวเลือกของ AgGrid}} เช่น dropdown / ไอคอนลิงก์
+        row_id_column: คอลัมน์ที่ค่าไม่ซ้ำกันทุกแถว ใช้เป็น id ของแถว (None = ให้ AgGrid สร้างเอง และเตือนใน Console)
 
     Returns:
         dict พร้อมส่งให้พารามิเตอร์ gridOptions ของ AgGrid
@@ -203,16 +284,23 @@ def build_grid_options(
         )
     if paginated:
         builder.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=GRID_PAGE_SIZE)
-        builder.configure_grid_options(paginationPageSizeSelector=GRID_PAGE_SIZE_CHOICES)
+        builder.configure_grid_options(paginationPageSizeSelector=GRID_PAGE_SIZE_CHOICES, localeText=GRID_LOCALE_TEXT)
 
     # autoSizeStrategy=fitGridWidth: ขยาย/หดคอลัมน์ให้พอดีความกว้างหน้าจอ ไม่มีแถบเลื่อนแนวนอน
     builder.configure_grid_options(
         autoSizeStrategy={"type": "fitGridWidth"},
+        onGridSizeChanged=JsCode(FIT_COLUMNS_ON_RESIZE_JS),  # จัดคอลัมน์ใหม่เมื่อกล่องเปลี่ยนขนาด
+        onFirstDataRendered=JsCode(FIT_COLUMNS_ON_FIRST_RENDER_JS),  # จัดคอลัมน์ตอนแสดงข้อมูลครั้งแรก + หลังฟอนต์โหลด
         suppressMovableColumns=True,
         enableCellTextSelection=True,  # ลากคลุมข้อความในเซลล์เพื่อคัดลอกได้
         singleClickEdit=False,  # ดับเบิลคลิกเพื่อแก้ไข กันแก้ไขโดยไม่ตั้งใจ
         stopEditingWhenCellsLoseFocus=True,  # คลิกที่อื่นแล้วถือว่ายืนยันค่าที่พิมพ์
     )
+    if row_id_column:
+        # id ของแถวต้องเป็นข้อความ และคงที่แม้ข้อมูลถูกโหลดใหม่ (เลือกแถว/ตำแหน่งเลื่อนจึงไม่หลุด)
+        builder.configure_grid_options(
+            getRowId=JsCode(f"function(params) {{ return String(params.data[{json.dumps(row_id_column)}]); }}")
+        )
     return builder.build()
 
 
@@ -230,7 +318,8 @@ def calculate_grid_height(row_count: int, is_paginated: bool) -> int:
     """
     visible_rows = max(1, min(row_count, GRID_PAGE_SIZE) if is_paginated else row_count)
     pagination_height = GRID_PAGINATION_HEIGHT_PX if is_paginated else 0
-    return GRID_HEADER_HEIGHT_PX + visible_rows * TABLE_ROW_HEIGHT_PX + pagination_height + 4  # +4 = เส้นขอบ
+    # +4 = เส้นขอบ, + แถบเลื่อนแนวนอน (ขึ้นเมื่อจอแคบ ไม่ให้ทับแถวสุดท้าย)
+    return GRID_HEADER_HEIGHT_PX + visible_rows * TABLE_ROW_HEIGHT_PX + pagination_height + 4 + GRID_SCROLLBAR_HEIGHT_PX
 
 
 def show_grid(

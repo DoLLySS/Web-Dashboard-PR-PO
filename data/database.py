@@ -16,7 +16,7 @@ from typing import Any, Iterator, Optional
 import streamlit as st
 
 from config.logging_setup import get_logger
-from config.settings import DEFAULT_DB_TIMEOUT_SECONDS, get_env_int
+from config.settings import DEFAULT_DB_JOURNAL_MODE, DEFAULT_DB_TIMEOUT_SECONDS, get_env_int, get_env_text
 
 logger = get_logger(__name__)
 
@@ -24,8 +24,14 @@ logger = get_logger(__name__)
 # ค่าคงที่
 # ---------------------------------------------------------------------------
 
-# ที่อยู่ไฟล์ฐานข้อมูล (อยู่โฟลเดอร์ data/ เดียวกับไฟล์นี้)
-DB_PATH: Path = Path(__file__).parent / "masterlist.db"
+# ที่อยู่ไฟล์ฐานข้อมูล: ค่าเริ่มต้นอยู่โฟลเดอร์ data/ เดียวกับไฟล์นี้
+# บน Server ตั้ง DB_FILE_PATH ใน .env ให้ชี้ดิสก์ในเครื่อง (ไม่ใช่ OneDrive / network share ที่ทำให้ไฟล์ SQLite เสียได้)
+DB_PATH: Path = Path(get_env_text("DB_FILE_PATH") or Path(__file__).parent / "masterlist.db")
+
+# โหมดบันทึกของ SQLite ที่อนุญาต (กันค่าแปลกจาก .env ไปต่อใน PRAGMA)
+ALLOWED_JOURNAL_MODES: frozenset[str] = frozenset({"DELETE", "WAL"})
+_requested_journal_mode = get_env_text("DB_JOURNAL_MODE", DEFAULT_DB_JOURNAL_MODE).upper()
+DB_JOURNAL_MODE: str = _requested_journal_mode if _requested_journal_mode in ALLOWED_JOURNAL_MODES else DEFAULT_DB_JOURNAL_MODE
 
 # รอสูงสุดกี่วินาทีถ้าฐานข้อมูลถูกคนอื่นล็อกอยู่ ก่อนจะถือว่า Error
 # ปรับได้ผ่าน DB_TIMEOUT_SECONDS ใน .env (ไม่ใส่ = ค่าเริ่มต้นใน config/settings.py)
@@ -181,6 +187,12 @@ def _get_connection() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     try:
+        # WAL ให้ผู้อ่านไม่ขวางผู้เขียน (ค่าถูกจำในไฟล์ DB ตั้งซ้ำทุกครั้งได้ ไม่เสียหาย); ตั้งไม่ได้ก็ใช้โหมดเดิมต่อ
+        if DB_JOURNAL_MODE != DEFAULT_DB_JOURNAL_MODE:
+            try:
+                conn.execute(f"PRAGMA journal_mode={DB_JOURNAL_MODE}")  # ค่ามาจากรายการอนุญาตด้านบนเท่านั้น
+            except sqlite3.Error:
+                logger.warning("ตั้ง journal_mode=%s ไม่สำเร็จ ใช้โหมดเดิมต่อ", DB_JOURNAL_MODE, exc_info=True)
         yield conn
         conn.commit()
     except BaseException:
@@ -431,7 +443,7 @@ def get_transactions(
         start_date: วันที่เริ่ม "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         end_date: วันที่สิ้นสุด "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         invoice_status: กรองตามสถานะใบกำกับภาษี ถ้า None คือทุกสถานะ
-        keyword: ค้นหาในชื่อผู้ขาย (บริษัท), เลข PO, เลขรัน PR, เลขที่ Quotation, เลขผู้เสียภาษี
+        keyword: ค้นหาเฉพาะชื่อผู้ขาย (Vendor) และเบอร์โทร (Tel.)
 
     Returns:
         list ของ dict (ว่างถ้าไม่พบหรือเกิด Error) ใช้ pd.DataFrame(result) ได้ทันที
@@ -452,11 +464,15 @@ def get_transactions(
             conditions.append("invoice_status = ?")
             params.append(invoice_status)
         if keyword:
-            conditions.append(
-                "(vendor LIKE ? OR po_no LIKE ? OR pr_run_no LIKE ? "
-                "OR qt_no LIKE ? OR tax_id LIKE ?)"
-            )
-            params.extend([f"%{keyword}%"] * 5)
+            # ค้นเฉพาะชื่อผู้ขายและเบอร์โทร; เบอร์โทรเทียบแบบไม่สนขีด/ช่องว่าง (081-234 ตรงกับ 081234)
+            phone_keyword = keyword.replace("-", "").replace(" ", "")
+            phone_condition = "REPLACE(REPLACE(COALESCE(tel, ''), '-', ''), ' ', '') LIKE ?"
+            if phone_keyword:
+                conditions.append(f"(vendor LIKE ? OR tel LIKE ? OR {phone_condition})")
+                params.extend([f"%{keyword}%", f"%{keyword}%", f"%{phone_keyword}%"])
+            else:
+                conditions.append("vendor LIKE ?")
+                params.append(f"%{keyword}%")
 
         where_clause = f"WHERE {' AND '.join(conditions)}"
         sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC"
