@@ -4,6 +4,7 @@
 อยากเปลี่ยนสี / ชื่อเว็บ / โลโก้ ให้แก้ที่ "ค่าคงที่" ด้านบนไฟล์นี้ ไม่ต้องแตะ CSS ด้านล่าง
 """
 
+import html
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -109,23 +110,39 @@ SIDEBAR_CSS_RULES: str = """
     background: linear-gradient(90deg, var(--accent-from), var(--accent-to), transparent);
 }
 .sidebar-logo {
-    width: 48px; height: 48px; flex-shrink: 0;
-    border-radius: 50%;
+    width: 46px; height: 46px; flex-shrink: 0;
+    border-radius: 14px;
     display: flex; align-items: center; justify-content: center;
     font-size: 11px; font-weight: 800; letter-spacing: 0.04em; color: #FFFFFF;
-    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));  /* โลโก้วงกลมไล่สี */
-    animation: sidebar-logo-glow 3.2s ease-in-out infinite;
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));  /* โลโก้สี่เหลี่ยมมุมมนไล่สี */
+    box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.55);
+    animation: sidebar-logo-glow 3.6s ease-in-out infinite;
 }
-.sidebar-title { font-size: 17px; font-weight: 800; color: var(--text); line-height: 1.2; }
-.sidebar-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.sidebar-title { font-size: 18px; font-weight: 800; color: var(--text); line-height: 1.2; letter-spacing: -0.01em; }
+.sidebar-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+
+/* ป้ายหัวกลุ่มเมนู (แทน expander): ตัวพิมพ์ใหญ่เล็ก ๆ + เส้นไล่สีจางต่อท้าย */
+.sidebar-section {
+    display: flex; align-items: center; gap: 10px; margin: 14px 4px 6px 6px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.12em; color: var(--text-muted);
+    animation: sidebar-fade-in 0.4s 0.1s ease-out backwards;
+}
+.sidebar-section::after {
+    content: ""; flex: 1; height: 1px;
+    background: linear-gradient(90deg, rgba(148, 163, 184, 0.55), transparent);
+}
 
 @keyframes sidebar-fade-in {
     from { opacity: 0; translate: 0 -6px; }
     to { opacity: 1; translate: 0 0; }
 }
 @keyframes sidebar-logo-glow {  /* วงแหวนเรืองแสงเต้นช้า ๆ รอบโลโก้ */
-    0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
-    50% { box-shadow: 0 0 0 7px rgba(37, 99, 235, 0); }
+    0%, 100% { box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.55), 0 0 0 0 rgba(37, 99, 235, 0.3); }
+    50% { box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.55), 0 0 0 7px rgba(37, 99, 235, 0); }
+}
+@keyframes sidebar-icon-pop {  /* ไอคอนของเมนูที่เพิ่งถูกเลือกเด้งเบา ๆ */
+    from { scale: 0.7; rotate: -12deg; }
+    to { scale: 1; rotate: 0deg; }
 }
 @keyframes sidebar-item-in {  /* เมนูไหลเข้าจากซ้าย */
     from { opacity: 0; translate: -10px 0; }
@@ -136,47 +153,23 @@ SIDEBAR_CSS_RULES: str = """
     to { scale: 1 1; }
 }
 
-/* 3) การ์ดกลุ่มเมนู (st.expander): พื้นขาว ขอบมน เส้นขอบบาง */
-[data-testid="stSidebar"] [data-testid="stExpander"] {
-    background: transparent;
-    border: none;  /* ไม่มีเส้นขอบ/เงารอบกลุ่มเมนู ให้ดูโล่งแบบ Web App */
-    box-shadow: none;
-    border-radius: GROUP_RADIUS;
-    margin-bottom: 6px;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] details { border: none; }
-/* หัวกลุ่ม (DASHBOARD / ORGANIZATION): ตัวเล็ก สีจาง ตัวพิมพ์ใหญ่ */
-[data-testid="stSidebar"] [data-testid="stExpander"] summary p {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--text-muted);
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] summary {
-    border-radius: BUTTON_RADIUS;
-    transition: background 0.2s ease;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover { background: var(--hover-from); }
-[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover p { color: var(--active-text); }
-/* ลูกศรหัวกลุ่มหมุนนุ่ม ๆ ตอนยุบ/ขยาย */
-[data-testid="stSidebar"] [data-testid="stExpander"] summary svg,
-[data-testid="stSidebar"] [data-testid="stExpander"] summary [data-testid="stIconMaterial"] {
-    transition: transform 0.25s ease;
-}
-
-/* 4) ปุ่มเมนูทุกปุ่ม: โปร่งใส จัดชิดซ้าย ไม่มีขอบ
+/* 3) ปุ่มเมนูทุกปุ่ม: โปร่งใส จัดชิดซ้าย ไม่มีขอบ ตัวใหญ่อ่านง่าย
       ใช้ class st-key-menu_button_* (Streamlit สร้างจาก key ของปุ่ม) เพื่อให้กระทบเฉพาะปุ่มเมนู
       ไม่กระทบปุ่มอื่นใน Sidebar เช่นปุ่มพับ Sidebar */
 [class*="st-key-menu_button_"] button {
     justify-content: flex-start;
     background: transparent;
     border: none;
-    border-radius: BUTTON_RADIUS;
+    border-radius: 12px;
     color: var(--text);
     box-shadow: none;
-    padding: 6px 10px;
+    padding: 7px 12px 7px 8px;
+    min-height: 48px;
     position: relative;
-    transition: background 0.2s ease, translate 0.2s ease, box-shadow 0.2s ease, scale 0.12s ease;
+    transition: background 0.25s ease, translate 0.25s cubic-bezier(.2,.8,.2,1), box-shadow 0.25s ease, scale 0.12s ease;
 }
 /* เมนูไหลเข้าทีละรายการตอนโหลด (หน่วงตามลำดับ) */
-[class*="st-key-menu_button_"] { animation: sidebar-item-in 0.35s ease-out both; }
+[class*="st-key-menu_button_"] { animation: sidebar-item-in 0.4s cubic-bezier(.2,.8,.2,1) backwards; }
 [class*="st-key-menu_button_"]:nth-child(2) { animation-delay: 0.08s; }
 [class*="st-key-menu_button_"]:nth-child(3) { animation-delay: 0.16s; }
 [class*="st-key-menu_button_"]:nth-child(4) { animation-delay: 0.24s; }
@@ -187,39 +180,71 @@ SIDEBAR_CSS_RULES: str = """
     width: 100%;
     text-align: left !important;
 }
-/* hover: พื้นไล่เฉดฟ้า-เขียวจาง เลื่อนไปขวา 4px ไอคอนขยายและเป็นสีฟ้า */
+[class*="st-key-menu_button_"] button > div { align-items: center; }
+[class*="st-key-menu_button_"] button > div > span { gap: 12px; align-items: center; }
+/* กล่องห่อไอคอน (Streamlit ให้กว้างแค่ 16px) ขยายให้พอดีชิป ไม่งั้นไอคอนล้นไปทับข้อความ */
+[class*="st-key-menu_button_"] button > div > span > span:has(> [data-testid="stIconMaterial"]) {
+    width: 36px !important; flex: 0 0 36px; display: flex; align-items: center; justify-content: center;
+}
+/* ข้อความเมนู */
+[class*="st-key-menu_button_"] button p {
+    font-size: 15.5px !important; font-weight: 600 !important; letter-spacing: 0.005em;
+}
+/* ไอคอนเมนูอยู่ในชิปสี่เหลี่ยมมุมมน (ชิปพื้นฟ้าอ่อน ไอคอนสีเข้ม) */
+[class*="st-key-menu_button_"] button [data-testid="stIconMaterial"] {
+    width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px !important; color: var(--text-muted);
+    background: rgba(148, 163, 184, 0.14);
+    transition: background 0.25s ease, color 0.25s ease, scale 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease;
+}
+/* hover: พื้นไล่เฉดฟ้า-เขียวจาง เลื่อนไปขวา 4px ชิปไอคอนขยายและเป็นสีฟ้า */
 [class*="st-key-menu_button_"] button:hover {
     background: linear-gradient(90deg, var(--hover-from), var(--hover-to));
     translate: 4px 0;
 }
+[class*="st-key-menu_button_"] button:hover [data-testid="stIconMaterial"] {
+    scale: 1.1; color: var(--active-text); background: rgba(37, 99, 235, 0.14);
+}
 [class*="st-key-menu_button_"] button:active { scale: 0.97; }  /* กดแล้วยุบเล็กน้อย */
-[class*="st-key-menu_button_"] button [data-testid="stIconMaterial"] { transition: transform 0.2s ease, color 0.2s ease; }
-[class*="st-key-menu_button_"] button:hover [data-testid="stIconMaterial"] { transform: scale(1.18); color: var(--active-text); }
+[class*="st-key-menu_button_"] button:focus-visible {  /* คีย์บอร์ด: วงแหวนโฟกัสชัดเจน */
+    outline: 2px solid var(--active-bar); outline-offset: 2px;
+}
 
-/* 5) ปุ่มเมนูที่ "เลือกอยู่" (type="primary"): พื้นไล่เฉดฟ้าอ่อน + เงานุ่ม + แถบสีไล่เฉดด้านซ้าย ตัวหนา */
+/* 4) ปุ่มเมนูที่ "เลือกอยู่" (type="primary"): พื้นไล่เฉด + เงานุ่ม + แถบสีด้านซ้าย ตัวหนา ชิปไอคอนเป็นสีเต็มไอคอนขาว */
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] {
     background: linear-gradient(90deg, var(--active-from), var(--active-to));
     color: var(--active-text);
-    font-weight: 700;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+    box-shadow: 0 4px 14px -4px rgba(37, 99, 235, 0.35);
 }
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] p { font-weight: 800 !important; }
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"]::before {
-    content: ""; position: absolute; left: 0; top: 18%; bottom: 18%; width: 4px; border-radius: 4px;
+    content: ""; position: absolute; left: 0; top: 20%; bottom: 20%; width: 4px; border-radius: 4px;
     background: linear-gradient(180deg, var(--accent-from), var(--accent-to));
-    animation: sidebar-bar-in 0.3s ease-out both;
+    animation: sidebar-bar-in 0.35s cubic-bezier(.2,.8,.2,1) both;
+}
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"] {
+    color: #FFFFFF; background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+    box-shadow: 0 6px 12px -4px rgba(37, 99, 235, 0.6);
+    animation: sidebar-icon-pop 0.45s cubic-bezier(.34,1.56,.64,1) backwards;
 }
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] p,
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] span { color: var(--active-text); }
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"] { color: #FFFFFF; }
 [class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"]:hover {
     background: linear-gradient(90deg, var(--active-from), var(--active-to));
+}
+[class*="st-key-menu_button_"] button[data-testid="stBaseButton-primary"]:hover [data-testid="stIconMaterial"] {
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to)); color: #FFFFFF;
 }
 
 /* ผู้ใช้ที่ตั้งค่าลดการเคลื่อนไหว: ปิด animation/transition ทั้งหมดของ Sidebar */
 @media (prefers-reduced-motion: reduce) {
-    .sidebar-brand, .sidebar-logo, [class*="st-key-menu_button_"],
-    [class*="st-key-menu_button_"] button::before { animation: none !important; }
+    .sidebar-brand, .sidebar-logo, .sidebar-section, [class*="st-key-menu_button_"],
+    [class*="st-key-menu_button_"] button::before,
+    [class*="st-key-menu_button_"] button [data-testid="stIconMaterial"] { animation: none !important; }
     [class*="st-key-menu_button_"] button, [class*="st-key-menu_button_"] button * { transition: none !important; }
-    [class*="st-key-menu_button_"] button:hover { translate: none; }
+    [class*="st-key-menu_button_"] button:hover, [class*="st-key-menu_button_"] button:hover * { translate: none; scale: none; }
 }
 """
 
@@ -287,8 +312,7 @@ def _render_brand_header() -> None:
         logo_columns = st.columns([1, 3], vertical_alignment="center")
         logo_columns[0].image(str(LOGO_PATH))
         logo_columns[1].markdown(
-            f'<div class="sidebar-title">{WEBSITE_NAME}</div>'
-            f'<div class="sidebar-subtitle">{WEBSITE_SUBTITLE}</div>',
+            f'<div class="sidebar-title">{WEBSITE_NAME}</div><div class="sidebar-subtitle">{WEBSITE_SUBTITLE}</div>',
             unsafe_allow_html=True,
         )
         return
@@ -326,21 +350,23 @@ def render_sidebar(menu_groups: dict[str, list[MenuItem]]) -> MenuItem:
         st.markdown(build_sidebar_css(), unsafe_allow_html=True)
         _render_brand_header()
 
-        # วาดแต่ละกลุ่มเป็น Expander (กดยุบ/ขยายได้) เปิดไว้เป็นค่าเริ่มต้น
+        # วาดแต่ละกลุ่ม: ป้ายหัวกลุ่ม (ตัวพิมพ์ใหญ่ + เส้นไล่สีจาง) ตามด้วยปุ่มเมนูของกลุ่ม
         for group_title, menu_items in menu_groups.items():
-            with st.expander(group_title.upper(), expanded=True):
-                for menu_item in menu_items:
-                    is_current_page = menu_item.label == current_page_label
-                    st.button(
-                        menu_item.label,
-                        icon=menu_item.icon,
-                        # primary = ปุ่มที่เลือกอยู่ (CSS ข้อ 5 ไฮไลท์ให้) / secondary = ปุ่มปกติ
-                        type="primary" if is_current_page else "secondary",
-                        width="stretch",
-                        key=f"menu_button_{menu_item.label}",
-                        on_click=_select_page,
-                        args=(menu_item.label,),
-                    )
+            st.markdown(
+                f'<div class="sidebar-section">{html.escape(group_title.upper())}</div>', unsafe_allow_html=True
+            )
+            for menu_item in menu_items:
+                is_current_page = menu_item.label == current_page_label
+                st.button(
+                    menu_item.label,
+                    icon=menu_item.icon,
+                    # primary = ปุ่มที่เลือกอยู่ (CSS ข้อ 4 ไฮไลท์ให้) / secondary = ปุ่มปกติ
+                    type="primary" if is_current_page else "secondary",
+                    width="stretch",
+                    key=f"menu_button_{menu_item.label}",
+                    on_click=_select_page,
+                    args=(menu_item.label,),
+                )
 
     # เพิ่งกดเลือกเมนู: พับ Sidebar บนมือถือให้เห็นเนื้อหาหน้าที่เลือกทันที (ทำครั้งเดียวต่อการกด)
     if st.session_state.pop(SESSION_KEY_CLOSE_SIDEBAR, False):

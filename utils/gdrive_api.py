@@ -44,7 +44,8 @@ def _build_drive_service() -> Any:
     missing_names = [name for name in REQUIRED_SETTING_NAMES if not get_env_text(name)]
     if missing_names:
         raise GDriveError(
-            "ยังไม่ได้ตั้งค่า Google Drive: ไม่พบ " + ", ".join(missing_names)
+            "ยังไม่ได้ตั้งค่า Google Drive: ไม่พบ "
+            + ", ".join(missing_names)
             + " ในไฟล์ .env — ดูขั้นตอนใน NEXT_STEPS.md แล้วรีสตาร์ทแอป"
         )
     key_file = Path(get_env_text("GDRIVE_SERVICE_ACCOUNT_FILE"))
@@ -55,16 +56,16 @@ def _build_drive_service() -> Any:
         from google.oauth2.service_account import Credentials
         from googleapiclient.discovery import build
     except ImportError as error:
-        raise GDriveError(
-            "ยังไม่ได้ติดตั้งไลบรารี Google Drive: รัน pip install -r requirements.txt แล้วรีสตาร์ทแอป"
-        ) from error
+        raise GDriveError("ยังไม่ได้ติดตั้งไลบรารี Google Drive: รัน pip install -r requirements.txt แล้วรีสตาร์ทแอป") from error
 
     try:
         credentials = Credentials.from_service_account_file(str(key_file), scopes=[DRIVE_SCOPE])
         return build("drive", "v3", credentials=credentials, cache_discovery=False)
     except (ValueError, OSError) as error:
         logger.error("สร้าง client Google Drive ไม่สำเร็จ: %s", type(error).__name__)
-        raise GDriveError("อ่านไฟล์ key ของ Service Account ไม่ได้: ตรวจว่าเป็นไฟล์ JSON ของ Service Account ที่ถูกต้อง") from error
+        raise GDriveError(
+            "อ่านไฟล์ key ของ Service Account ไม่ได้: ตรวจว่าเป็นไฟล์ JSON ของ Service Account ที่ถูกต้อง"
+        ) from error
 
 
 def _find_or_create_folder(service: Any, parent_id: str, folder_name: str) -> str:
@@ -73,17 +74,23 @@ def _find_or_create_folder(service: Any, parent_id: str, folder_name: str) -> st
         f"name = '{_escape_query_text(folder_name)}' and mimeType = '{FOLDER_MIME_TYPE}' "
         f"and '{parent_id}' in parents and trashed = false"
     )
-    found = service.files().list(
-        q=query, fields="files(id)", pageSize=1, supportsAllDrives=True, includeItemsFromAllDrives=True
-    ).execute()
+    found = (
+        service.files()
+        .list(q=query, fields="files(id)", pageSize=1, supportsAllDrives=True, includeItemsFromAllDrives=True)
+        .execute()
+    )
     existing = found.get("files", [])
     if existing:
         return existing[0]["id"]
-    created = service.files().create(
-        body={"name": folder_name, "mimeType": FOLDER_MIME_TYPE, "parents": [parent_id]},
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
+    created = (
+        service.files()
+        .create(
+            body={"name": folder_name, "mimeType": FOLDER_MIME_TYPE, "parents": [parent_id]},
+            fields="id",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
     return created["id"]
 
 
@@ -116,12 +123,16 @@ def upload_documents_to_gdrive(files: list[tuple[str, bytes]], folder_parts: lis
         for file_name, file_bytes in files:
             mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
             media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=False)
-            created = service.files().create(
-                body={"name": file_name, "parents": [folder_id]},
-                media_body=media,
-                fields="id,webViewLink",
-                supportsAllDrives=True,
-            ).execute()
+            created = (
+                service.files()
+                .create(
+                    body={"name": file_name, "parents": [folder_id]},
+                    media_body=media,
+                    fields="id,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
             links.append(created.get("webViewLink") or f"https://drive.google.com/file/d/{created['id']}/view")
     except (HttpError, OSError, KeyError) as error:
         logger.error("อัปโหลดขึ้น Google Drive ไม่สำเร็จ: %s", type(error).__name__, exc_info=True)

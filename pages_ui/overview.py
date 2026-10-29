@@ -2,7 +2,7 @@
 
 โครงหน้า (ตารางเป็นจุดสนใจหลัก ใช้พื้นที่กว้างที่สุด):
     หัวหน้า (ชื่อหน้า + Date Filter) อยู่ใน app.py (ตั้ง layout="wide" ที่ app.py แล้ว ครอบคลุมทุกหน้า)
-    แจ้งเตือนใบกำกับภาษีค้าง (เต็มความกว้าง)
+    แจ้งเตือนใบกำกับภาษีค้าง + ดูรายการที่ค้าง (เต็มความกว้าง แสดงเสมอ นับจากวันที่ Upload ไม่ใช่คอลัมน์ Date)
                                           [ ➕ เพิ่มข้อมูล / อัปโหลดเอกสาร ]  <- กดแล้วเด้งหน้าต่าง (st.dialog)
     ┌────────────────────────────────────────────────────────────┐
     │ การ์ดตาราง (เต็มความกว้าง)                                  │
@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,7 @@ from typing import Any, Optional
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from st_aggrid import JsCode
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 from config.constants import CATEGORY_OPTIONS
@@ -39,24 +41,32 @@ from data.database import (
     STATUS_PENDING,
     STATUS_RECEIVED,
     add_transaction,
-    delete_transaction,
+    delete_transactions,
     get_transactions,
     get_unique_vendors,
     update_transaction,
+)
+from ui_common import build_css, build_equipment_cards_html, get_equipment_quantities
+from ui_grid import (
+    ROW_FX_COLUMN,
+    ROW_FX_DELETE_MS,
+    ROW_FX_DELETING,
+    ROW_FX_HIGHLIGHT_MS,
+    ROW_FX_NEW,
+    ROW_FX_UPDATED,
+    build_grid_options,
+    show_grid,
 )
 from utils.local_storage import (
     DESKTOP_EXPORT_ENABLED,
     STATIC_URL_PREFIX,
     LocalStorageError,
     build_local_file_url,
-    export_files_to_desktop,
+    find_file_location,
 )
 from utils.storage_backend import UNKNOWN_VENDOR_FOLDER
 from utils.submit_pipeline import RecordFields, SubmitResult, submit_record
 from utils.text_extractor import ExtractedFields, extract_fields_from_file
-from st_aggrid import JsCode
-from ui_common import build_css, build_equipment_cards_html, get_equipment_quantities
-from ui_grid import build_grid_options, show_grid
 
 # บันทึกลง logs/app.log
 logger = get_logger(__name__)
@@ -74,17 +84,17 @@ OVERDUE_DAYS_LIMIT: int = 14
 # ถ้าอยากเพิ่มคอลัมน์ เช่น po_no ให้เพิ่มที่นี่ และเพิ่มการดึงค่าใน build_table_for_display
 TABLE_COLUMNS: dict[str, str] = {
     "date": "Date",
-    "vendor": "Vendor",
+    "description": "Description",  # อยู่หน้า Item
     "category": "Item",
     "total_price": "Price",
     "invoice_status": "Status",
     # --- ข้อมูลจากเอกสาร PR / Quotation (Master-List) แสดงหลังคอลัมน์หลัก เลื่อนตารางไปทางขวาเพื่อดู ---
+    "vendor": "Vendor",  # อยู่ติดกับ Tel.
     "tel": "Tel.",
     "tax_id": "Tax ID",
     "pr_run_no": "PR No.",
     "pr_request_date": "PR Date",
     "qt_no": "QT No.",
-    "description": "Description",
     "unit_price": "Net Price",
     "sharepoint_url": "File",
 }
@@ -101,9 +111,9 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "pr_run_no": "เลขที่ PR",
     "pr_request_date": "วันที่ PR",
     "qt_no": "เลขที่ Quotation",
-    "description": "รายละเอียดอุปกรณ์",
+    "description": "ชื่อไฟล์ PR ที่อัปโหลด (ตัดวันที่ / PR_Addin_ซื้อ / -signed ออกแล้ว) แก้ไขได้",
     "unit_price": "ราคาสุทธิที่รวม Discount แล้ว (บาท)",
-    "sharepoint_url": "ไฟล์ที่อัปโหลด: กดไอคอนเพื่อเปิดโฟลเดอร์ปี/เดือน/วัน/Vendor บน SharePoint (ถ้ายังไม่มีลิงก์ออนไลน์ = เปิดไฟล์ที่เก็บไว้ในระบบ)",
+    "sharepoint_url": "ไฟล์ที่อัปโหลด: กดไอคอนเพื่อเปิดโฟลเดอร์ปี/เดือน/วัน/ชื่อไฟล์ PR บน SharePoint (ถ้ายังไม่มีลิงก์ออนไลน์ = เปิดไฟล์ที่เก็บไว้ในระบบ)",
 }
 
 # ความกว้างที่ต้องการของแต่ละคอลัมน์ (พิกเซล) ตารางจะปรับคอลัมน์ให้พอดีหน้าจอเอง (fit to window) ไม่มีแถบเลื่อนแนวนอน
@@ -111,9 +121,19 @@ TABLE_COLUMN_HELP: dict[str, str] = {
 # - None = คอลัมน์ข้อความยาว (ตอนนี้คือ Description) กว้างที่สุด ย่อได้มากสุดเมื่อจอแคบ
 # - ถ้าเพิ่มคอลัมน์ใหม่ ให้เพิ่มความกว้างขั้นต่ำที่นี่ด้วย (ผลรวมมากเกินจอ ตารางจะมีแถบเลื่อนแนวนอน)
 TABLE_COLUMN_WIDTHS: dict[str, "int | str | None"] = {
-    "date": 140, "vendor": 160, "category": 125, "total_price": 150, "invoice_status": 140,
-    "tel": 155, "tax_id": 130, "pr_run_no": 110, "pr_request_date": 105, "qt_no": 74,
-    "description": None, "unit_price": 112, "sharepoint_url": 68,
+    "date": 140,
+    "vendor": 160,
+    "category": 125,
+    "total_price": 150,
+    "invoice_status": 140,
+    "tel": 155,
+    "tax_id": 130,
+    "pr_run_no": 110,
+    "pr_request_date": 105,
+    "qt_no": 74,
+    "description": None,
+    "unit_price": 112,
+    "sharepoint_url": 68,
 }
 # คอลัมน์ข้อความที่ย่อได้มากเมื่อจอแคบ (ข้อความยาวถูกตัดด้วย ... ชี้เมาส์ดูเต็มได้) ส่วนคอลัมน์อื่นพยายามไม่ย่อ
 # (Vendor ชื่อยาวที่สุด จึงให้เป็นตัวย่อหลัก Item / Tel. ไม่ย่อ จะได้อ่านครบ)
@@ -122,7 +142,11 @@ SHRINKABLE_TABLE_COLUMNS: tuple[str, ...] = ("vendor", "pr_run_no")
 # คอลัมน์ที่ "ซ่อนจากตาราง" แต่ยังอยู่ในข้อมูล (DB / ไฟล์ Export CSV-Excel ยังมีครบ)
 # เตรียมไว้สำหรับส่งเข้า Master-List ภายหลัง: อยากแสดงกลับ แค่ลบชื่อคอลัมน์ออกจากรายการนี้
 HIDDEN_TABLE_COLUMNS: tuple[str, ...] = (
-    "tax_id", "pr_run_no", "pr_request_date", "qt_no", "description", "unit_price",
+    "tax_id",
+    "pr_run_no",
+    "pr_request_date",
+    "qt_no",
+    "unit_price",
 )
 
 # ข้อความสถานะที่แสดงในตาราง (แก้ข้อความ/ไอคอนที่นี่)
@@ -190,6 +214,9 @@ FILE_LINK_HOVER_SHADOW: str = "0 2px 8px rgba(15, 23, 42, 0.22)"
 
 # คอลัมน์ลำดับแถว (ซ่อนในตาราง) ใช้จับคู่แถวที่ผู้ใช้แก้ไข/เลือก กลับไปหารายการในฐานข้อมูล
 ROW_POSITION_COLUMN: str = "_pos"
+# คอลัมน์ id รายการในฐานข้อมูล (ซ่อนในตาราง) ใช้เป็น id แถวของ AgGrid: ข้อมูลเปลี่ยนแล้วตารางเพิ่ม/ลบ/แก้เฉพาะแถวนั้น ไม่วาดใหม่ทั้งตาราง
+# และใช้จับคู่แถวที่ผู้ใช้แก้/เลือก/กด กลับหารายการในฐานข้อมูล (ลำดับแถวเปลี่ยนได้ตามการเรียง/กรอง แต่ id ไม่เปลี่ยน)
+ROW_ID_COLUMN: str = "_id"
 
 # ตัวแสดงไอคอนลิงก์ไฟล์ในเซลล์ (JavaScript ของ AgGrid) สร้างเป็น element ทีละชิ้น ไม่ต่อสตริง HTML เพื่อกัน XSS
 # รับเฉพาะลิงก์ http/https เท่านั้น (ตรวจซ้ำอีกชั้นหลัง _valid_link_or_none ฝั่ง Python); FILE_ICON ถูกแทนด้วย FILE_LINK_ICON
@@ -199,13 +226,13 @@ class FileLinkRenderer {
         this.eGui = document.createElement('span');
         if (params.value && /^(https?:\/\/|FILE_STATIC_PREFIX)/i.test(params.value)) {
             // ไฟล์ในเครื่อง (ค่าขึ้นต้น FILE_STATIC_PREFIX) = ปุ่มที่ไม่เปิดลิงก์ ตารางส่ง cellClicked ให้ฝั่ง Python
-            // โหมด Desktop (เปิดเฉพาะตอนรันบนเครื่องตัวเอง) คัดลอกไฟล์ไป Desktop แล้วเปิดโฟลเดอร์
+            // โหมด Desktop (เปิดเฉพาะตอนรันบนเครื่องตัวเอง) เปิดโฟลเดอร์ที่เก็บไฟล์ใน Explorer (โฟลเดอร์สร้างไว้ตอน Upload แล้ว)
             // นอกนั้น (เช่นบน Server) ไฟล์ในเครื่องเปิดเป็นลิงก์ในแท็บใหม่เหมือนลิงก์ออนไลน์ (http/https)
             const isLocalFile = FILE_DESKTOP_MODE && !/^https?:/i.test(params.value);
             const link = document.createElement(isLocalFile ? 'span' : 'a');
             if (isLocalFile) {
                 link.setAttribute('role', 'button');
-                link.title = 'บันทึกลง Desktop แล้วเปิดโฟลเดอร์';
+                link.title = 'เปิดโฟลเดอร์ที่เก็บไฟล์';
             } else {
                 link.href = params.value;
                 link.target = '_blank';
@@ -235,17 +262,43 @@ class FileLinkRenderer {
 STATUS_BADGE_RENDERER_JS: str = r"""
 class StatusBadgeRenderer {
     init(params) {
+        this.eGui = document.createElement('span');
+        this.badge = null;
+        this.key = '';
+        this.apply(params, true);
+    }
+    // วาดหรืออัปเดตป้าย: ถ้ามีป้ายเดิมอยู่แล้ว (refresh) หรือรู้สีเดิมของแถวนี้ (ตัวแก้ไขปิดแล้ว AgGrid สร้างป้ายใหม่)
+    // สีจะไล่จากสีเดิมไปสีใหม่แทนการสลับทันที ค่าเท่าเดิมไม่แตะ DOM เลย (กันกะพริบตอนเซิร์ฟเวอร์ส่งค่าเดิมกลับมา)
+    apply(params, isInit) {
         const colors = STATUS_COLORS;
         const raw = String(params.value || '');
         const key = raw.indexOf('Completed') >= 0 ? 'completed' : raw.indexOf('Overdue') >= 0 ? 'overdue' : raw.indexOf('Pending') >= 0 ? 'pending' : '';
-        this.eGui = document.createElement('span');
-        if (!key) { this.eGui.textContent = raw; return; }
-        const badge = document.createElement('span');
+        const store = (window.__statusBadgePrev = window.__statusBadgePrev || {});
+        const rowId = params.node && params.node.id != null ? String(params.node.id) : null;
+        const previous = isInit ? (rowId !== null ? store[rowId] : undefined) : this.key;
+        if (rowId !== null) store[rowId] = key;
+        if (!isInit && key === this.key) return;
+        this.key = key;
+        if (!key) { this.eGui.textContent = raw; this.badge = null; return; }
+        if (!this.badge) {
+            this.badge = document.createElement('span');
+            this.badge.style.cssText = 'cursor:pointer;display:inline-block;padding:2px 12px;border-radius:999px;font-weight:600;font-size:15px;line-height:26px;';
+            this.eGui.textContent = '';
+            this.eGui.appendChild(this.badge);
+        }
+        const badge = this.badge;
         badge.textContent = '● ' + key.charAt(0).toUpperCase() + key.slice(1) + '  ▾';  // ▾ บอกว่ากดเลือกสถานะได้
-        badge.style.cssText = 'cursor:pointer;display:inline-block;padding:2px 12px;border-radius:999px;font-weight:600;font-size:15px;line-height:26px;'
-            + 'background:' + colors[key][0] + ';color:' + colors[key][1] + ';';
-        this.eGui.appendChild(badge);
+        badge.style.background = colors[key][0];
+        badge.style.color = colors[key][1];
+        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (previous && previous !== key && colors[previous] && badge.animate && !reduce) {
+            badge.animate(
+                [{backgroundColor: colors[previous][0], color: colors[previous][1]}, {backgroundColor: colors[key][0], color: colors[key][1]}],
+                {duration: 280, easing: 'ease-out'}
+            );
+        }
     }
+    refresh(params) { this.apply(params, false); return true; }
     getGui() { return this.eGui; }
 }
 """
@@ -273,15 +326,10 @@ class StatusDropdownEditor {
                 {duration: 160, easing: 'cubic-bezier(.2,.8,.2,1)'}
             );
         }
-        // เลือกแล้วค่อย ๆ จางหายก่อนปิด (ถ้าไม่มี animation ปิดทันที)
+        // เลือกแล้วปิดทันที ห้ามหน่วง/จางหาย: ระหว่างนั้นเซลล์ใต้ popup ยังแสดงสถานะเดิม ผู้ใช้จะเห็นเหมือนเด้งกลับค่าเก่าก่อนขึ้นค่าใหม่
         const choose = (label) => {
             this.value = label;
-            if (animate && this.eGui.animate) {
-                this.eGui.animate([{opacity: 1}, {opacity: 0}], {duration: 100, fill: 'forwards'});
-                setTimeout(() => params.stopEditing(), 100);
-            } else {
-                params.stopEditing();
-            }
+            params.stopEditing();
         };
         options.forEach((label, index) => {
             const key = label.indexOf('Completed') >= 0 ? 'completed' : 'pending';
@@ -335,6 +383,15 @@ ALLOWED_FILE_TYPES: list[str] = ["pdf", "xlsx", "xls", "png", "jpg", "jpeg"]
 PR_FILE_NAME_PREFIX: str = "pr"
 AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx")
 
+# ตัดส่วนที่ไม่ต้องการออกจากชื่อไฟล์ก่อนแสดงในคอลัมน์ Description (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
+# ตัวอย่าง "20260319 PR_Addin_ซื้อ NB Lenovo-signed.pdf" -> "NB Lenovo"  (แก้รูปแบบที่ตัดได้ที่นี่)
+FILE_NAME_DATE_PREFIX_PATTERN: str = r"^\s*(?:\d{8}|\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})[\s_\-]*"  # วันที่นำหน้า เช่น 20260319
+FILE_NAME_PR_PREFIX_PATTERN: str = r"^\s*PR(?:[\s_\-]*Addin)?[\s_\-]*(?:ซื้อ)?[\s_\-]*"  # PR_Addin_ซื้อ / PR_ซื้อ / PR
+FILE_NAME_SUFFIX_PATTERN: str = r"[\s_\-]*signed\s*$"  # -signed ท้ายชื่อ
+UPLOAD_STAMP_FILE_NAME_PATTERN: str = (
+    r"^\d{8}_\d{6}_\d+_"  # เลขเวลาอัปโหลดที่ระบบเติม เช่น 20261028_134912_664797_ (ไม่ใช่วันที่ PR)
+)
+
 # เลขประจำตัวผู้เสียภาษีของไทยมี 13 หลัก
 TAX_ID_LENGTH: int = 13
 
@@ -370,7 +427,16 @@ MASTERLIST_TEXT_COLUMNS: dict[str, str] = {
 
 SESSION_KEY_SUCCESS_MESSAGE: str = "overview_success_message"  # ข้อความบันทึกสำเร็จ
 SESSION_KEY_STATUS_MESSAGES: str = "overview_status_messages"  # ผลการเปลี่ยนสถานะในตาราง [(ระดับ, ข้อความ)]
-SESSION_KEY_EDITOR_VERSION: str = "overview_editor_version"  # เลขเวอร์ชันของตาราง ใช้ล้างสถานะการแก้ไขหลังบันทึก
+SESSION_KEY_EDITOR_VERSION: str = (
+    "overview_editor_version"  # เลขเวอร์ชันของตาราง เพิ่มเฉพาะเมื่อต้องวาดตารางใหม่จริง ๆ (ล้างสถานะค้างในตาราง)
+)
+SESSION_KEY_ROW_EFFECTS: str = "overview_row_effects"  # animation แถวที่ยังไม่หมดเวลา {id รายการ: (ชนิด, เวลาหมดอายุ)}
+SESSION_KEY_MAX_SEEN_ID: str = "overview_max_seen_id"  # id รายการสูงสุดที่ตารางเคยเห็น: id ที่สูงกว่านี้ = เพิ่งเพิ่ม
+SESSION_KEY_DELETING_IDS: str = "overview_deleting_ids"  # id ที่กดลบแล้ว รอเล่น animation ก่อนลบจริง (รอบถัดไป)
+SESSION_KEY_LAST_SELECTED_IDS: str = "overview_last_selected_ids"  # id ที่ติ๊กเลือกไว้ในรอบล่าสุด (ปุ่มลบอ่านจากตรงนี้)
+SESSION_KEY_LAST_EDIT_SIGNATURE: str = (
+    "overview_last_edit_signature"  # ลายนิ้วมือของการแก้ไขที่บันทึกไปแล้ว กันบันทึกซ้ำจากค่าเก่าที่ตารางส่งค้าง
+)
 SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ ใช้เคลียร์ฟอร์มหลังบันทึก
 # --- หน้าต่างเพิ่มข้อมูลแบบ 2 ขั้นตอน ---
 # ขั้นที่ 1 = ถามข้อมูลเบื้องต้น, ขั้นที่ 2 = ฟอร์มหลัก/อัปโหลด (รีเซ็ตเป็น 1 ทุกครั้งที่เปิดหน้าต่างและหลังบันทึกสำเร็จ)
@@ -425,6 +491,14 @@ PAGE_CSS_RULES: str = """
 .overdue-pill b { font-size: 1.25rem; font-weight: 800; }
 .overdue-pill-count { background: #DC2626; color: #FFFFFF; box-shadow: 0 6px 14px -6px rgba(220, 38, 38, 0.7); }
 .overdue-pill-days { background: #FFFFFF; color: #B91C1C; border: 1px solid #FECACA; }
+/* แถบสถานะปกติ (ไม่มีรายการค้าง) โทนเขียวอ่อน ไม่มี animation ชีพจร */
+.overdue-alert.overdue-alert-ok {
+    border-left-color: #16A34A; background: linear-gradient(100deg, #F0FDF4 0%, #ECFDF5 100%);
+    box-shadow: 0 1px 2px rgba(22, 163, 74, 0.10), 0 12px 28px -10px rgba(22, 163, 74, 0.25);
+}
+.overdue-alert-ok .overdue-alert-icon { animation: none; }
+.overdue-alert-ok .overdue-alert-title { color: #166534; }
+.overdue-alert-ok .overdue-alert-sub { color: #15803D; }
 @keyframes overdue-alert-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 @keyframes overdue-pulse {
     0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); }
@@ -1258,31 +1332,49 @@ def _field_key(field_name: str, form_counter: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def find_overdue_transactions(
-    pending_transactions: list[dict[str, Any]], today: date
-) -> list[dict[str, Any]]:
-    """คัดรายการที่ค้างใบกำกับภาษีเกิน OVERDUE_DAYS_LIMIT วัน
+def get_upload_date(transaction: dict[str, Any]) -> Optional[date]:
+    """วันที่ Upload ของรายการ (ใช้นับวันที่ค้าง ไม่ใช่วันที่ในไฟล์ PR)
+
+    อ่านจาก created_at ("YYYY-MM-DD HH:MM:SS") ถ้าไม่มี/ผิดรูปแบบ ถอยไปใช้คอลัมน์ date
+
+    Args:
+        transaction: dict รายการจาก database.py
+
+    Returns:
+        วันที่ Upload หรือ None ถ้าอ่านวันที่ไม่ได้ทั้งสองคอลัมน์
+    """
+    for column in ("created_at", "date"):
+        try:
+            return date.fromisoformat(str(transaction[column])[:10])
+        except (KeyError, ValueError, TypeError):
+            continue
+    return None
+
+
+def find_overdue_transactions(pending_transactions: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+    """คัดรายการที่ค้างใบกำกับภาษีเกิน OVERDUE_DAYS_LIMIT วัน นับจากวันที่ Upload
 
     Args:
         pending_transactions: รายการที่สถานะ "รอใบกำกับภาษี" (dict จาก database.py)
         today: วันนี้ (ส่งเข้ามาเพื่อให้ทดสอบง่าย)
 
     Returns:
-        รายการที่ค้างเกินกำหนด แต่ละ dict จะมีคอลัมน์ "days_pending" (จำนวนวันที่ค้าง) เพิ่มมา
-        เรียงจากค้างนานที่สุดก่อน
+        รายการที่ค้างเกินกำหนด แต่ละ dict จะมีคอลัมน์ "days_pending" (จำนวนวันที่ค้าง)
+        และ "upload_date" (วันที่ Upload) เพิ่มมา เรียงจากค้างนานที่สุดก่อน
     """
     overdue_transactions: list[dict[str, Any]] = []
 
     for transaction in pending_transactions:
-        try:
-            document_date = date.fromisoformat(transaction["date"])
-        except (ValueError, TypeError):
+        upload_date = get_upload_date(transaction)
+        if upload_date is None:
             # วันที่ในฐานข้อมูลผิดรูปแบบ ข้ามรายการนี้ไป ไม่ให้ทั้งหน้าพัง
             continue
 
-        days_pending = (today - document_date).days
+        days_pending = (today - upload_date).days
         if days_pending > OVERDUE_DAYS_LIMIT:
-            overdue_transactions.append({**transaction, "days_pending": days_pending})
+            overdue_transactions.append(
+                {**transaction, "days_pending": days_pending, "upload_date": upload_date.isoformat()}
+            )
 
     overdue_transactions.sort(key=lambda item: item["days_pending"], reverse=True)
     return overdue_transactions
@@ -1292,7 +1384,7 @@ def find_overdue_transactions(
 # ถ้าเพิ่มคอลัมน์ในตารางนี้: เพิ่มชื่อใน OVERDUE_TABLE_COLUMNS แล้วกำหนดความกว้างใน OVERDUE_TABLE_COLUMN_WIDTHS
 OVERDUE_TABLE_COLUMNS: dict[str, str] = {
     "id": "รหัส",
-    "date": "วันที่",
+    "upload_date": "วันที่อัปโหลด",
     "vendor": "ผู้ขาย",
     "po_no": "เลขที่ PO",
     "total_price": "ราคารวม (บาท)",
@@ -1300,7 +1392,6 @@ OVERDUE_TABLE_COLUMNS: dict[str, str] = {
 }
 # ค้างตั้งแต่กี่วันขึ้นไปถือว่า "วิกฤต" (ป้ายวันที่ค้างเป็นสีแดงเข้ม) ที่เหลือเป็นสีส้ม แก้ตัวเลขตรงนี้ได้
 OVERDUE_CRITICAL_DAYS: int = 30
-
 
 
 def build_overdue_alert_html(overdue_count: int, longest_days: int) -> str:
@@ -1320,12 +1411,29 @@ def build_overdue_alert_html(overdue_count: int, longest_days: int) -> str:
         '<div class="overdue-alert-text">'
         f'<div class="overdue-alert-title">ใบกำกับภาษีค้างเกิน {OVERDUE_DAYS_LIMIT} วัน</div>'
         '<div class="overdue-alert-sub">กรุณาติดตามจากผู้ขายโดยเร็ว ก่อนจะค้างนานกว่านี้</div>'
-        '</div>'
+        "</div>"
         f'<div class="overdue-alert-badges">'
         f'<span class="overdue-pill overdue-pill-count"><b>{overdue_count}</b> รายการ</span>'
         f'<span class="overdue-pill overdue-pill-days">นานสุด <b>{longest_days}</b> วัน</span>'
-        '</div>'
-        '</div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def build_no_overdue_html() -> str:
+    """สร้าง HTML ของแถบสถานะปกติ เมื่อไม่มีใบกำกับภาษีค้างเกินกำหนด (ไม่มีข้อความจากผู้ใช้)
+
+    Returns:
+        สตริง HTML (สไตล์อยู่ใน PAGE_CSS_RULES คลาส overdue-alert-ok)
+    """
+    return (
+        '<div class="overdue-alert overdue-alert-ok" role="status">'
+        '<div class="overdue-alert-icon">✅</div>'
+        '<div class="overdue-alert-text">'
+        f'<div class="overdue-alert-title">ไม่มีรายการค้างเกิน {OVERDUE_DAYS_LIMIT} วัน</div>'
+        '<div class="overdue-alert-sub">นับจากวันที่ Upload / บันทึกข้อมูล</div>'
+        "</div>"
+        "</div>"
     )
 
 
@@ -1382,7 +1490,7 @@ def build_overdue_table_html(overdue_transactions: list[dict[str, Any]]) -> str:
         parts.append(
             f'<div class="od-row{" od-row-critical" if is_critical else ""}" style="--i:{min(index, 12)}">'
             f'<span class="od-id">{html.escape(str(transaction["id"]))}</span>'
-            f'<span class="od-date">{format_overdue_date(transaction["date"])}</span>'
+            f'<span class="od-date">{format_overdue_date(transaction["upload_date"])}</span>'
             f'<span class="od-vendor" title="{vendor}">{vendor}</span>'
             f'<span class="od-po" title="{po_no}">{po_no}</span>'
             f'<span class="od-price">{format_overdue_price(transaction["total_price"])}</span>'
@@ -1407,27 +1515,30 @@ def render_overdue_table(overdue_transactions: list[dict[str, Any]]) -> None:
 
 
 def render_overdue_alert() -> None:
-    """แสดงแถบแจ้งเตือนถ้ามีใบกำกับภาษีค้างเกินกำหนด พร้อมแถบกางดูรายการที่ค้าง
+    """แสดงแถบแจ้งเตือนใบกำกับภาษีค้างเกินกำหนด พร้อมแถบกางดูรายการที่ค้าง (แสดงเสมอ อยู่เหนือตาราง Master-List)
 
-    หมายเหตุ: ตรวจจากรายการค้างทุกวันที่ ไม่ขึ้นกับ Date Filter
+    หมายเหตุ: นับจากวันที่ Upload / บันทึก (created_at) ไม่ขึ้นกับคอลัมน์ Date (วันที่ไฟล์ PR) และไม่ขึ้นกับ Date Filter
     เพราะรายการเก่าที่ค้างอยู่ต้องไม่หลุดจากการแจ้งเตือนเมื่อผู้ใช้เลือกช่วงวันที่ใหม่
+    ไม่มีรายการค้าง = แสดงแถบสีเขียว "ไม่มีรายการค้าง" แทนการซ่อนแถบ
     """
     pending_transactions = get_transactions(invoice_status=STATUS_PENDING)
     overdue_transactions = find_overdue_transactions(pending_transactions, date.today())
 
-    # ไม่มีรายการค้าง (X = 0) -> ซ่อนแถบแจ้งเตือนทั้งหมด ไม่แสดงอะไรเลย
-    if not overdue_transactions:
-        return
-
-    # find_overdue_transactions เรียงจากค้างนานสุดก่อน รายการแรกจึงเป็นรายการที่นานที่สุด
-    longest_days = int(overdue_transactions[0]["days_pending"])
     with st.container(key="overdue_alert"):
-        st.markdown(build_overdue_alert_html(len(overdue_transactions), longest_days), unsafe_allow_html=True)
+        if overdue_transactions:
+            # find_overdue_transactions เรียงจากค้างนานสุดก่อน รายการแรกจึงเป็นรายการที่นานที่สุด
+            longest_days = int(overdue_transactions[0]["days_pending"])
+            st.markdown(build_overdue_alert_html(len(overdue_transactions), longest_days), unsafe_allow_html=True)
+        else:
+            st.markdown(build_no_overdue_html(), unsafe_allow_html=True)
         # on_change="rerun" + เช็ค .open: วาดตารางเมื่อกางออกแล้วเท่านั้น (ตาราง AgGrid ที่ถูกสร้างตอนพับอยู่จะกว้าง 0 แล้วแสดงไม่ได้)
         overdue_expander = st.expander("ดูรายการที่ค้าง", on_change="rerun")
         if overdue_expander.open:
             with overdue_expander:
-                render_overdue_table(overdue_transactions)
+                if overdue_transactions:
+                    render_overdue_table(overdue_transactions)
+                else:
+                    st.info("ไม่มีรายการค้าง")
 
 
 # ---------------------------------------------------------------------------
@@ -1448,17 +1559,18 @@ def _parse_iso_date_or_none(date_text: Optional[str]) -> Optional[date]:
         return None
 
 
-def get_status_label(invoice_status: str, document_date: Optional[date], today: date) -> str:
+def get_status_label(invoice_status: str, upload_date: Optional[date], today: date) -> str:
     """แปลงสถานะใบกำกับภาษีในฐานข้อมูลเป็นข้อความที่แสดงในตาราง
 
     กติกา:
       - ได้รับใบกำกับภาษีแล้ว                          -> "✅ Completed"
       - รอใบกำกับภาษี และค้างไม่เกิน OVERDUE_DAYS_LIMIT วัน -> "⏳ Pending"
       - รอใบกำกับภาษี และค้างเกิน OVERDUE_DAYS_LIMIT วัน   -> "🔴 Overdue"
+    (นับวันค้างจากวันที่ Upload ไม่ใช่วันที่ในไฟล์ PR)
 
     Args:
         invoice_status: ค่าในคอลัมน์ invoice_status (STATUS_PENDING / STATUS_RECEIVED)
-        document_date: วันที่เอกสาร (None ถ้าอ่านวันที่ไม่ได้ จะถือว่ายังไม่เกินกำหนด)
+        upload_date: วันที่ Upload (None ถ้าอ่านวันที่ไม่ได้ จะถือว่ายังไม่เกินกำหนด)
         today: วันนี้ (ส่งเข้ามาเพื่อให้ทดสอบง่าย)
 
     Returns:
@@ -1467,7 +1579,7 @@ def get_status_label(invoice_status: str, document_date: Optional[date], today: 
     if invoice_status == STATUS_RECEIVED:
         return STATUS_LABEL_COMPLETED
     if invoice_status == STATUS_PENDING:
-        is_overdue = document_date is not None and (today - document_date).days > OVERDUE_DAYS_LIMIT
+        is_overdue = upload_date is not None and (today - upload_date).days > OVERDUE_DAYS_LIMIT
         return STATUS_LABEL_OVERDUE if is_overdue else STATUS_LABEL_PENDING
     return invoice_status
 
@@ -1495,7 +1607,7 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 "vendor": transaction["vendor"],
                 "category": transaction.get("category") or "-",
                 "total_price": float(transaction.get("total_price") or 0),  # ยังเป็นตัวเลข จัดรูปแบบตอนแสดง
-                "invoice_status": get_status_label(transaction["invoice_status"], document_date, today),
+                "invoice_status": get_status_label(transaction["invoice_status"], get_upload_date(transaction), today),
                 # --- ข้อมูล Master-List: ข้อความที่ไม่มีค่าแสดงเป็น "" (ถ้าเป็น None ตารางจะแสดงคำว่า None) ---
                 "tel": transaction.get("tel") or "",
                 "tax_id": transaction.get("tax_id") or "",
@@ -1507,7 +1619,7 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 # ลิงก์ไฟล์บน SharePoint: ใส่เฉพาะที่ขึ้นต้น http(s):// (ที่เหลือเว้นว่าง ไม่แสดงไอคอน)
                 # ไม่มีลิงก์ให้ใส่ "" (ถ้าใส่ None ตารางจะแสดงคำว่า None)
                 # มีลิงก์ออนไลน์ (โฟลเดอร์ SharePoint) -> ไอคอนเปิดลิงก์นั้นในแท็บใหม่
-                # ไม่มี (ยังไม่ได้สิทธิ์) -> ไอคอนเปิดไฟล์ในระบบ (ถ้าเปิด LOCAL_DESKTOP_EXPORT = คัดลอกไป Desktop ดู handle_file_icon_click)
+                # ไม่มี (ยังไม่ได้สิทธิ์) -> ไอคอนเปิดไฟล์ในระบบ (ถ้าเปิด LOCAL_DESKTOP_EXPORT = เปิดโฟลเดอร์ที่เก็บไฟล์ ดู handle_file_icon_click)
                 "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url"))
                 or build_local_file_url(transaction.get("file_path"))
                 or "",
@@ -1519,9 +1631,7 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(display_rows, columns=list(TABLE_COLUMNS.keys())).rename(columns=TABLE_COLUMNS)
 
 
-def build_update_fields(
-    changes: dict[str, Any], original_row: pd.Series
-) -> tuple[dict[str, Any], bool]:
+def build_update_fields(changes: dict[str, Any], original_row: pd.Series) -> tuple[dict[str, Any], bool]:
     """แปลงค่าที่ผู้ใช้แก้ในตาราง (หนึ่งแถว) เป็นฟิลด์ที่จะอัปเดตลงฐานข้อมูล พร้อมตรวจความถูกต้อง
 
     Args:
@@ -1607,6 +1717,56 @@ def build_update_fields(
     return fields, status_change_ignored
 
 
+def register_row_effects(transaction_ids: list[int], effect: str) -> None:
+    """จดว่าแถวเหล่านี้ต้องเล่น animation (ROW_FX_NEW / ROW_FX_UPDATED) ตามเวลาที่กำหนด
+
+    ใช้เวลาหมดอายุแทนการใช้ครั้งเดียวแล้วทิ้ง เพราะตารางอาจรีรันซ้ำทันทีหลังอัปเดต (เช่น ส่งผลเลือกแถวกลับมา)
+    ถ้าลบ class ทันที animation ที่เพิ่งเริ่มจะถูกตัดจบกลางคัน
+
+    Args:
+        transaction_ids: id รายการที่ต้องเล่น animation
+        effect: ชนิด animation (ROW_FX_NEW หรือ ROW_FX_UPDATED)
+    """
+    if not transaction_ids:
+        return
+    effects: dict[int, tuple[str, float]] = st.session_state.setdefault(SESSION_KEY_ROW_EFFECTS, {})
+    expires_at = time.monotonic() + ROW_FX_HIGHLIGHT_MS / 1000
+    for transaction_id in transaction_ids:
+        effects[int(transaction_id)] = (effect, expires_at)
+
+
+def collect_row_effects(all_transactions: list[dict[str, Any]]) -> dict[int, str]:
+    """รวบรวม animation ของแถวที่ต้องเล่นในรอบนี้: แถวใหม่ (id สูงกว่าที่เคยเห็น) + แถวที่เพิ่งแก้ไขและยังไม่หมดเวลา
+
+    Args:
+        all_transactions: รายการทั้งหมดในช่วงวันที่ (ใช้หา id สูงสุดเพื่อรู้ว่ามีแถวใหม่ไหม)
+
+    Returns:
+        {id รายการ: ชนิด animation} (ว่างถ้าไม่มี)
+    """
+    current_max_id = max((int(t["id"]) for t in all_transactions), default=0)
+    max_seen_id: Optional[int] = st.session_state.get(SESSION_KEY_MAX_SEEN_ID)
+    if max_seen_id is not None and current_max_id > max_seen_id:
+        # id เพิ่มขึ้นเรื่อย ๆ (AUTOINCREMENT) แถวที่ id สูงกว่าที่เคยเห็น = เพิ่งถูกเพิ่ม (ครั้งแรกที่เปิดหน้าไม่ถือว่าใหม่)
+        register_row_effects([int(t["id"]) for t in all_transactions if int(t["id"]) > max_seen_id], ROW_FX_NEW)
+    st.session_state[SESSION_KEY_MAX_SEEN_ID] = max(current_max_id, max_seen_id or 0)
+
+    now = time.monotonic()
+    stored: dict[int, tuple[str, float]] = st.session_state.get(SESSION_KEY_ROW_EFFECTS, {})
+    active = {
+        transaction_id: (effect, expires_at)
+        for transaction_id, (effect, expires_at) in stored.items()
+        if expires_at > now
+    }
+    st.session_state[SESSION_KEY_ROW_EFFECTS] = active  # ทิ้งอันที่หมดเวลาแล้ว
+    return {transaction_id: effect for transaction_id, (effect, _expires_at) in active.items()}
+
+
+def request_delete_selected() -> None:
+    """callback ปุ่ม "ลบรายการที่เลือก": จำ id ที่ติ๊กไว้ รอบถัดไปจะเล่น animation ลบก่อนแล้วค่อยลบจริง"""
+    st.session_state[SESSION_KEY_DELETING_IDS] = list(st.session_state.get(SESSION_KEY_LAST_SELECTED_IDS, []))
+
+
 def apply_table_edits(
     display_table: pd.DataFrame, transaction_ids: list[int], editor_state: dict[str, Any]
 ) -> list[tuple[str, str]]:
@@ -1614,7 +1774,7 @@ def apply_table_edits(
 
     ใช้ editor_state ซึ่งมี 3 ส่วน (สร้างจากตาราง AgGrid ใน render_table_card):
       - edited_rows  : {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}}  -> อัปเดตด้วย update_transaction
-      - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบด้วย delete_transaction
+      - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบด้วย delete_transactions (ครั้งเดียวทั้งชุด)
       - added_rows   : แถวที่ผู้ใช้กดเพิ่มในตาราง           -> ไม่รับ (ให้ใช้ฟอร์ม "กรอก Form" แทน)
     "ตำแหน่งแถว" นับตามตารางเดิมที่แสดง จึงแปลงเป็น id รายการจาก transaction_ids
 
@@ -1630,21 +1790,21 @@ def apply_table_edits(
     edited_rows = editor_state.get("edited_rows", {})
     added_rows = editor_state.get("added_rows", [])
 
-    updated_count = deleted_count = delete_failed_count = update_failed_count = 0
+    updated_count = delete_failed_count = update_failed_count = 0
     ignored_status_count = 0
     error_reasons: list[str] = []
+    updated_ids: list[int] = []  # id ที่แก้สำเร็จ ใช้เล่น animation ไฮไลต์แถว
 
-    # --- ลบ (Delete) ---
+    # --- ลบ (Delete) --- ลบทุกแถวใน connection เดียว (เร็วกว่าลบทีละแถว)
+    delete_ids: list[int] = []
     for position in sorted(deleted_positions):
         try:
-            transaction_id = int(transaction_ids[position])
-            if delete_transaction(transaction_id):
-                deleted_count += 1
-            else:
-                delete_failed_count += 1  # delete_transaction แสดง error/warning ให้แล้ว
+            delete_ids.append(int(transaction_ids[position]))
         except (IndexError, ValueError, TypeError) as error:
             delete_failed_count += 1
             error_reasons.append(f"ลบแถวที่ {position + 1}: {error}")
+    deleted_count = delete_transactions(delete_ids)  # แสดง error ให้เองเมื่อล้มเหลว
+    delete_failed_count += len(delete_ids) - deleted_count
 
     # --- แก้ไข (Update) --- ข้ามแถวที่ถูกลบในรอบเดียวกัน
     for raw_position, changes in edited_rows.items():
@@ -1659,6 +1819,7 @@ def apply_table_edits(
                 continue
             if update_transaction(transaction_id, **fields):  # update_transaction แสดง error ให้เองเมื่อล้มเหลว
                 updated_count += 1
+                updated_ids.append(transaction_id)
             else:
                 update_failed_count += 1
         except ValueError as error:
@@ -1667,6 +1828,8 @@ def apply_table_edits(
         except (IndexError, TypeError, KeyError) as error:
             update_failed_count += 1
             error_reasons.append(f"แถวที่ {position + 1}: ข้อมูลไม่ถูกต้อง ({error})")
+
+    register_row_effects(updated_ids, ROW_FX_UPDATED)
 
     messages: list[tuple[str, str]] = []
     if updated_count:
@@ -1679,9 +1842,7 @@ def apply_table_edits(
         reason_text = f" ({'; '.join(error_reasons)})" if error_reasons else ""
         messages.append(("error", f"❌ ไม่สามารถอัปเดตข้อมูลได้ {update_failed_count} รายการ{reason_text}"))
     if added_rows:
-        messages.append(
-            ("info", 'ℹ️ เพิ่มรายการใหม่ไม่ได้จากตาราง กรุณาใช้ฟอร์ม "กรอก Form" ด้านขวา (แถวที่เพิ่มถูกยกเลิก)')
-        )
+        messages.append(("info", 'ℹ️ เพิ่มรายการใหม่ไม่ได้จากตาราง กรุณาใช้ฟอร์ม "กรอก Form" ด้านขวา (แถวที่เพิ่มถูกยกเลิก)'))
     if ignored_status_count:
         messages.append(
             (
@@ -1693,7 +1854,11 @@ def apply_table_edits(
     return messages
 
 
-def build_grid_table(display_table: pd.DataFrame) -> pd.DataFrame:
+def build_grid_table(
+    display_table: pd.DataFrame,
+    transaction_ids: list[int],
+    row_effects: Optional[dict[int, str]] = None,
+) -> pd.DataFrame:
     """แปลงตารางแสดงผล (หัวคอลัมน์เป็นป้ายไทย/อังกฤษ) เป็นตารางสำหรับ AgGrid (ชื่อคอลัมน์ = ชื่อใน DB)
 
     ต่างจาก display_table 3 อย่าง: ชื่อคอลัมน์เป็นชื่อใน DB, วันที่เป็นข้อความ "YYYY-MM-DD" (ไม่มี = ""),
@@ -1701,6 +1866,8 @@ def build_grid_table(display_table: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         display_table: ตารางจาก build_table_for_display
+        transaction_ids: id รายการในฐานข้อมูล เรียงเหมือนแถวของ display_table (ใส่คอลัมน์ ROW_ID_COLUMN)
+        row_effects: {id รายการ: ชนิด animation} ของแถวที่ต้องเล่น animation (ใส่คอลัมน์ ROW_FX_COLUMN)
 
     Returns:
         DataFrame พร้อมส่งให้ AgGrid
@@ -1713,6 +1880,9 @@ def build_grid_table(display_table: pd.DataFrame) -> pd.DataFrame:
         )
     grid_table["unit_price"] = pd.to_numeric(grid_table["unit_price"], errors="coerce")  # ไม่มีราคา = ช่องว่าง
     grid_table.insert(0, ROW_POSITION_COLUMN, range(len(grid_table)))
+    grid_table.insert(1, ROW_ID_COLUMN, [int(transaction_id) for transaction_id in transaction_ids])
+    effects = row_effects or {}
+    grid_table[ROW_FX_COLUMN] = [effects.get(int(transaction_id), "") for transaction_id in transaction_ids]
     return grid_table
 
 
@@ -1733,19 +1903,19 @@ def build_transaction_grid_options(grid_table: pd.DataFrame) -> dict[str, Any]:
         "invoice_status": {
             "singleClickEdit": True,
             "cellEditorPopup": True,
+            "enableCellChangeFlash": False,  # สีป้ายไล่เปลี่ยนเอง + ไฮไลต์แถวทันที ไม่ต้องแฟลชเซลล์ซ้อนอีกชั้น
             "cellRenderer": JsCode(STATUS_BADGE_RENDERER_JS.replace("STATUS_COLORS", json.dumps(STATUS_BADGE_COLORS))),
             "cellEditor": JsCode(
-                STATUS_DROPDOWN_EDITOR_JS
-                .replace("STATUS_OPTIONS", json.dumps(STATUS_EDITOR_OPTIONS))
-                .replace("STATUS_COLORS", json.dumps(STATUS_BADGE_COLORS))
+                STATUS_DROPDOWN_EDITOR_JS.replace("STATUS_OPTIONS", json.dumps(STATUS_EDITOR_OPTIONS)).replace(
+                    "STATUS_COLORS", json.dumps(STATUS_BADGE_COLORS)
+                )
             ),
         },
         "unit_price": {"cellEditor": "agNumberCellEditor", "cellEditorParams": {"min": 0}},
         # คอลัมน์ไฟล์: แสดงเป็นไอคอน กดแล้วเปิดลิงก์ SharePoint ในแท็บใหม่ (ดู FILE_LINK_RENDERER_JS)
         "sharepoint_url": {
             "cellRenderer": JsCode(
-                FILE_LINK_RENDERER_JS
-                .replace("FILE_STATIC_PREFIX", re.escape(STATIC_URL_PREFIX).replace("/", "\\/"))
+                FILE_LINK_RENDERER_JS.replace("FILE_STATIC_PREFIX", re.escape(STATIC_URL_PREFIX).replace("/", "\\/"))
                 .replace("FILE_DESKTOP_MODE", "true" if DESKTOP_EXPORT_ENABLED else "false")
                 .replace("FILE_ICON", FILE_LINK_ICON)
                 .replace("FILE_CIRCLE_PX", str(FILE_LINK_CIRCLE_PX))
@@ -1764,12 +1934,18 @@ def build_transaction_grid_options(grid_table: pd.DataFrame) -> dict[str, Any]:
         editable_columns=EDITABLE_TABLE_COLUMNS,
         money_columns=("total_price", "unit_price"),
         date_columns=GRID_DATE_COLUMNS,
-        hidden_columns=(ROW_POSITION_COLUMN, *HIDDEN_TABLE_COLUMNS),  # ซ่อนในตาราง แต่ข้อมูล/Export ยังครบ
+        hidden_columns=(
+            ROW_POSITION_COLUMN,
+            ROW_ID_COLUMN,
+            ROW_FX_COLUMN,
+            *HIDDEN_TABLE_COLUMNS,
+        ),  # ซ่อนในตาราง แต่ข้อมูล/Export ยังครบ
         selectable=True,
         paginated=True,
         filterable=True,
         extra_column_options=extra_column_options,
-        row_id_column=ROW_POSITION_COLUMN,  # ลำดับแถวไม่ซ้ำกัน ใช้เป็น id แถว
+        row_id_column=ROW_ID_COLUMN,  # id จริงในฐานข้อมูล: ข้อมูลเปลี่ยนแล้วตารางอัปเดตเฉพาะแถว + animation ทำงาน
+        row_fx_column=ROW_FX_COLUMN,
     )
 
 
@@ -1785,41 +1961,45 @@ def _normalize_cell_value(value: Any) -> Any:
 def collect_grid_changes(original_table: pd.DataFrame, grid_response: Any) -> dict[int, dict[str, Any]]:
     """เทียบตารางที่ AgGrid ส่งกลับมากับตารางเดิม เพื่อหาเซลล์ที่ผู้ใช้แก้ไข
 
+    จับคู่แถวด้วย id รายการ (ROW_ID_COLUMN) ไม่ใช่ลำดับแถว เพราะตารางไม่ถูกวาดใหม่เมื่อข้อมูลเปลี่ยน
+    ค่าที่ตารางส่งกลับจึงอาจเป็นของข้อมูลชุดก่อนหน้า: แถวที่ไม่อยู่ในตารางปัจจุบันถูกข้าม
+
     Args:
         original_table: ตารางเดิมที่ส่งให้ AgGrid (จาก build_grid_table)
         grid_response: ผลจาก show_grid (None ถ้าตารางวาดไม่สำเร็จ หรือยังไม่ส่งค่ากลับ)
 
     Returns:
-        {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}} รูปแบบ edited_rows (ส่งต่อให้ apply_table_edits ได้เลย)
+        {ตำแหน่งแถวในตารางปัจจุบัน: {หัวคอลัมน์: ค่าใหม่}} รูปแบบ edited_rows (ส่งต่อให้ apply_table_edits ได้เลย)
     """
     returned_table = getattr(grid_response, "data", None)
-    if returned_table is None or len(returned_table) == 0 or ROW_POSITION_COLUMN not in returned_table.columns:
+    if returned_table is None or len(returned_table) == 0 or ROW_ID_COLUMN not in returned_table.columns:
         return {}
 
-    returned_by_position = returned_table.drop_duplicates(ROW_POSITION_COLUMN).set_index(
-        returned_table.drop_duplicates(ROW_POSITION_COLUMN)[ROW_POSITION_COLUMN].astype(int)
-    )
+    returned_unique = returned_table.drop_duplicates(ROW_ID_COLUMN)
+    returned_by_id = returned_unique.set_index(returned_unique[ROW_ID_COLUMN].astype(int))
     changes_by_position: dict[int, dict[str, Any]] = {}
     for _, original_row in original_table.iterrows():
-        position = int(original_row[ROW_POSITION_COLUMN])
-        if position not in returned_by_position.index:
+        transaction_id = int(original_row[ROW_ID_COLUMN])
+        if transaction_id not in returned_by_id.index:
             continue
         row_changes: dict[str, Any] = {}
         for column in EDITABLE_TABLE_COLUMNS:
             original_value = _normalize_cell_value(original_row[column])
-            new_value = _normalize_cell_value(returned_by_position.at[position, column])
+            new_value = _normalize_cell_value(returned_by_id.at[transaction_id, column])
             if original_value != new_value:
                 row_changes[TABLE_COLUMNS[column]] = new_value
         if row_changes:
-            changes_by_position[position] = row_changes
+            changes_by_position[int(original_row[ROW_POSITION_COLUMN])] = row_changes
     return changes_by_position
 
 
-def get_selected_positions(grid_response: Any) -> list[int]:
+def get_selected_positions(grid_response: Any, grid_table: pd.DataFrame) -> list[int]:
     """อ่านตำแหน่งแถวที่ผู้ใช้ติ๊กเลือกในตาราง (ใช้กับปุ่มลบ)
 
     Args:
         grid_response: ผลจาก show_grid (None = ไม่มีแถวที่เลือก)
+        grid_table: ตารางปัจจุบันที่ส่งให้ AgGrid: ใช้แปลง id ที่เลือกเป็นตำแหน่งแถว และตัดแถวที่ไม่อยู่ในตารางแล้ว
+            (เช่น เพิ่งลบไป แต่ตารางยังส่งผลเลือกชุดเก่ากลับมา)
 
     Returns:
         ตำแหน่งแถวตาม ROW_POSITION_COLUMN (ว่างถ้าไม่ได้เลือก)
@@ -1829,33 +2009,44 @@ def get_selected_positions(grid_response: Any) -> list[int]:
         return []
     # selected_rows อาจเป็น DataFrame หรือ list ของ dict ตามเวอร์ชันของไลบรารี รองรับทั้งสองแบบ
     records = selected_rows.to_dict("records") if isinstance(selected_rows, pd.DataFrame) else list(selected_rows)
-    return sorted({int(record[ROW_POSITION_COLUMN]) for record in records if record.get(ROW_POSITION_COLUMN) is not None})
+    position_by_id = {
+        int(transaction_id): int(position)
+        for transaction_id, position in zip(grid_table[ROW_ID_COLUMN], grid_table[ROW_POSITION_COLUMN])
+    }
+    return sorted(
+        {
+            position_by_id[int(record[ROW_ID_COLUMN])]
+            for record in records
+            if record.get(ROW_ID_COLUMN) is not None and int(record[ROW_ID_COLUMN]) in position_by_id
+        }
+    )
 
 
-def find_clicked_file_position(grid_response: Any) -> Optional[int]:
+def find_clicked_file_position(grid_response: Any, position_by_id: dict[int, int]) -> Optional[int]:
     """อ่านว่าผู้ใช้เพิ่งกดไอคอนในคอลัมน์ File ของแถวไหน (จาก event cellClicked)
 
     Args:
         grid_response: ผลจาก show_grid (None = ไม่มีเหตุการณ์)
+        position_by_id: {id รายการ: ตำแหน่งแถวในตารางปัจจุบัน} (event ค้างอาจเป็นของแถวที่ไม่อยู่ในตารางแล้ว)
 
     Returns:
-        ตำแหน่งแถวตาม ROW_POSITION_COLUMN หรือ None ถ้าไม่ใช่การกดคอลัมน์ File
+        ตำแหน่งแถวในตารางปัจจุบัน หรือ None ถ้าไม่ใช่การกดคอลัมน์ File / แถวนั้นไม่อยู่ในตารางแล้ว
     """
     event_data = getattr(grid_response, "event_data", None)
     if not isinstance(event_data, dict) or event_data.get("type") != "cellClicked":
         return None
-    column_id = (event_data.get("colId") or (event_data.get("column") or {}).get("colId") or "")
+    column_id = event_data.get("colId") or (event_data.get("column") or {}).get("colId") or ""
     row_data = event_data.get("data") or (event_data.get("node") or {}).get("data") or {}
     # colId ในตารางจริงคือชื่อฟิลด์ (sharepoint_url) ส่วนหัวคอลัมน์ "File" เป็นแค่ข้อความแสดง
-    if column_id not in ("sharepoint_url", TABLE_COLUMNS["sharepoint_url"]) or row_data.get(ROW_POSITION_COLUMN) is None:
+    if column_id not in ("sharepoint_url", TABLE_COLUMNS["sharepoint_url"]) or row_data.get(ROW_ID_COLUMN) is None:
         return None
-    return int(row_data[ROW_POSITION_COLUMN])
+    return position_by_id.get(int(row_data[ROW_ID_COLUMN]))
 
 
 def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[str, Any]]) -> None:
-    """กดไอคอน File: คัดลอกไฟล์ของแถวนั้นไป Desktop/ปี/เดือน/วัน/Vendor แล้วเปิดโฟลเดอร์ใน Explorer
+    """กดไอคอน File: เปิดหน้าต่างโฟลเดอร์ที่เก็บไฟล์ของแถวนั้นขึ้นหน้าจอ (ไม่สร้างโฟลเดอร์ ไม่คัดลอกไฟล์ — สร้างไว้แล้วตอน Upload)
 
-    ใช้วันที่ created_at ของแถว (วันที่บันทึกรายการ = วันที่อัปโหลด) ตั้งชื่อโฟลเดอร์
+    ใช้วันที่ created_at ของแถว (วันที่บันทึกรายการ = วันที่อัปโหลด) หาโฟลเดอร์ ปี/เดือน/วัน บน Desktop
     event ค้างอยู่ทุกครั้งที่หน้ารีรัน (และไม่มีเวลากำกับ) จึงจัดการเสร็จแล้วเปลี่ยน key ของตารางแล้วรีรัน
     ตารางใหม่ไม่มี event ค้าง -> ไม่ทำซ้ำ และกดไอคอนเดิมซ้ำได้
 
@@ -1865,36 +2056,85 @@ def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[s
     """
     if not DESKTOP_EXPORT_ENABLED:
         return  # โหมดปกติ (Server): ไอคอนเป็นลิงก์เปิดไฟล์ในเบราว์เซอร์ ไม่ต้องคัดลอกอะไร
-    position = find_clicked_file_position(grid_response)
+    position = find_clicked_file_position(grid_response, {int(t["id"]): n for n, t in enumerate(visible_transactions)})
     if position is None or not 0 <= position < len(visible_transactions):
         return
 
     transaction = visible_transactions[position]
     try:
-        uploaded_at = datetime.fromisoformat(str(transaction.get("created_at") or ""))
+        pr_date = datetime.fromisoformat(f"{transaction['date']}T00:00:00")  # โฟลเดอร์ ปี/เดือน/วัน ตามวันที่ PR
     except ValueError:
-        uploaded_at = datetime.fromisoformat(f"{transaction['date']}T00:00:00")  # ไม่มี created_at: ใช้วันที่ของรายการ
+        pr_date = datetime.now()
     message: tuple[str, str]
     try:
-        folder = export_files_to_desktop(transaction.get("file_path") or "", transaction["vendor"], uploaded_at)
+        folder = find_file_location(transaction.get("file_path") or "", pr_date)
     except LocalStorageError as error:
         message = ("error", f"❌ {error}")
     else:
-        message = ("success", f"📁 เก็บไฟล์ไว้ที่ {folder}")
+        message = ("success", f"📁 เปิดโฟลเดอร์ที่เก็บไฟล์: {folder}")
         _open_folder_in_explorer(folder)
     st.session_state[SESSION_KEY_STATUS_MESSAGES] = [message]  # แสดงหลังรีรัน (ดู render ด้านบนของหน้า)
     st.session_state[SESSION_KEY_EDITOR_VERSION] = st.session_state.get(SESSION_KEY_EDITOR_VERSION, 0) + 1
     st.rerun()
 
 
+def _bring_explorer_window_to_front(folder_name: str, timeout_seconds: float = 2.0) -> None:
+    """ดึงหน้าต่าง Explorer ที่ชื่อตรงกับโฟลเดอร์ขึ้นหน้าสุด (Windows เท่านั้น)
+
+    Streamlit ไม่ใช่หน้าต่าง foreground (เบราว์เซอร์เป็น) Windows จึงมักเปิด Explorer ไว้ข้างหลัง
+    จึงรอให้หน้าต่างโผล่ แล้วส่ง Alt key เพื่อผ่านข้อจำกัด foreground-lock ก่อนสั่ง SetForegroundWindow
+
+    Args:
+        folder_name: ชื่อโฟลเดอร์ชั้นสุดท้าย (ชื่อหน้าต่าง Explorer = ชื่อโฟลเดอร์นี้)
+        timeout_seconds: เวลารอสูงสุดให้หน้าต่างโผล่
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collect_window(hwnd: int, _lparam: int) -> bool:
+        class_name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, class_name, 64)
+        if class_name.value == "CabinetWClass" and user32.IsWindowVisible(hwnd):
+            title = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(hwnd, title, 512)
+            if title.value == folder_name or title.value.startswith(
+                f"{folder_name} - "
+            ):  # Win11 ต่อท้าย " - File Explorer"
+                found.append(hwnd)
+        return True
+
+    deadline = time.monotonic() + timeout_seconds
+    while not found and time.monotonic() < deadline:
+        user32.EnumWindows(collect_window, 0)
+        if not found:
+            time.sleep(0.1)
+    if not found:
+        return
+
+    vk_menu, keyeventf_keyup, sw_restore = 0x12, 0x0002, 9
+    user32.keybd_event(vk_menu, 0, 0, 0)  # กด/ปล่อย Alt เพื่อให้ Windows อนุญาตให้ดึงหน้าต่างขึ้นหน้า
+    user32.keybd_event(vk_menu, 0, keyeventf_keyup, 0)
+    user32.ShowWindow(found[0], sw_restore)
+    user32.SetForegroundWindow(found[0])
+
+
 def _open_folder_in_explorer(folder: Path) -> None:
-    """เปิดโฟลเดอร์ใน Explorer (Windows เท่านั้น) ถ้าเปิดไม่ได้แค่บันทึก log ไม่ให้ขั้นคัดลอกล้ม"""
+    """เปิดโฟลเดอร์ใน Explorer แล้วดึงหน้าต่างขึ้นหน้าจอ (Windows เท่านั้น) ถ้าเปิดไม่ได้แค่บันทึก log ไม่ให้หน้าเว็บล้ม"""
     if sys.platform != "win32":
         return
     try:
-        os.startfile(folder)  # noqa: S606 - เปิดโฟลเดอร์ที่เราเพิ่งสร้างเอง
+        os.startfile(folder)  # noqa: S606 - เปิดโฟลเดอร์ที่มีอยู่แล้ว ไม่สร้างอะไรเพิ่ม
     except OSError:
         logger.warning("เปิดโฟลเดอร์ใน Explorer ไม่สำเร็จ", exc_info=True)
+        return
+    try:
+        _bring_explorer_window_to_front(folder.name)
+    except (OSError, AttributeError, ImportError):
+        logger.warning("ดึงหน้าต่าง Explorer ขึ้นหน้าจอไม่สำเร็จ", exc_info=True)
 
 
 def convert_table_to_csv_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
@@ -1934,9 +2174,7 @@ def convert_table_to_excel_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
         return None
 
 
-def render_table_card(
-    range_transactions: list[dict[str, Any]], start_date: date, end_date: date
-) -> None:
+def render_table_card(range_transactions: list[dict[str, Any]], start_date: date, end_date: date) -> None:
     """วาดการ์ดตาราง: ช่อง Search bar, dropdown Item / Vendor และตารางรายการ
 
     Args:
@@ -1962,9 +2200,7 @@ def render_table_card(
                 "Item", [ALL_ITEMS_LABEL, *CATEGORY_OPTIONS], label_visibility="collapsed"
             )
             vendor_options = [ALL_VENDORS_LABEL, *sorted({t["vendor"] for t in range_transactions})]
-            selected_vendor = vendor_column.selectbox(
-                "Vendor", vendor_options, label_visibility="collapsed"
-            )
+            selected_vendor = vendor_column.selectbox("Vendor", vendor_options, label_visibility="collapsed")
 
         # ถ้ามีคำค้นหาให้ query ใหม่ตามคำค้น ไม่งั้นใช้รายการทั้งช่วงวันที่ที่มีอยู่แล้ว (ไม่ query ซ้ำ)
         visible_transactions = (
@@ -1999,20 +2235,31 @@ def render_table_card(
             editor_version = st.session_state.setdefault(SESSION_KEY_EDITOR_VERSION, 0)
             transaction_ids = [t["id"] for t in visible_transactions]  # แถวที่ n ในตาราง = transaction_ids[n]
 
+            # animation ของแถว: แถวใหม่ / แถวที่เพิ่งแก้ (ยังไม่หมดเวลา) / แถวที่กดลบไว้ (รอเล่น animation ก่อนลบจริง)
+            row_effects = collect_row_effects(range_transactions)
+            visible_id_set = {int(transaction_id) for transaction_id in transaction_ids}
+            deleting_ids = [
+                int(transaction_id)
+                for transaction_id in st.session_state.pop(SESSION_KEY_DELETING_IDS, [])
+                if int(transaction_id) in visible_id_set
+            ]
+            for transaction_id in deleting_ids:
+                row_effects[transaction_id] = ROW_FX_DELETING
+
             # ปุ่มลบอยู่เหนือตาราง แต่ต้องรู้แถวที่เลือกจากตารางก่อน จึงจองที่ไว้แล้วเติมหลังวาดตาราง
             action_bar = st.container(key="table_action_bar")  # key ใช้ให้ CSS responsive (config/styles.py) จับแถบปุ่ม
 
-            grid_table = build_grid_table(display_table)
-            # key = เลขเวอร์ชัน (เปลี่ยนเมื่อบันทึกแล้ว) + ค่าแฮชของข้อมูล: ข้อมูลที่แสดงเปลี่ยน (ค้นหา / กรอง / Date Filter)
-            # ตารางจะถูกสร้างใหม่ ไม่เอาค่าที่ส่งกลับของข้อมูลชุดเก่ามาเทียบ (กันเขียนค่าผิดแถวลงฐานข้อมูล)
-            data_hash = int(pd.util.hash_pandas_object(grid_table, index=False).sum() % 10**9)
-            grid_key = f"transaction_grid_{editor_version}_{data_hash}"
+            grid_table = build_grid_table(display_table, transaction_ids, row_effects)
+            # key คงที่ (เปลี่ยนเฉพาะเมื่อต้องวาดตารางใหม่จริง ๆ ดู editor_version): ข้อมูลเปลี่ยน (ค้นหา / กรอง / Date Filter / แก้ / ลบ / เพิ่ม)
+            # ตารางเดิมรับข้อมูลใหม่แล้วอัปเดตเฉพาะแถวที่ต่าง ไม่กระพริบ และเล่น animation ได้ แถวจับคู่ด้วย id รายการ (ROW_ID_COLUMN)
             grid_response = show_grid(
                 grid_table,
                 build_transaction_grid_options(grid_table),
-                grid_key,
-                # ส่งค่ากลับเมื่อแก้ไขเซลล์ / เปลี่ยนแถวที่เลือก / กดเซลล์ (ใช้จับการกดไอคอน File)
+                f"transaction_grid_{editor_version}",
+                # ส่งค่ากลับเมื่อแก้ไขเซลล์ / เปลี่ยนแถวที่เลือก / กดเซลล์ File (ใช้จับการกดไอคอน File; กดคอลัมน์อื่นไม่รีรัน)
                 update_on=["cellValueChanged", "selectionChanged", "cellClicked"],
+                server_wins=True,  # ข้อมูลจากเซิร์ฟเวอร์ทับตารางเสมอ (ไม่งั้นหลังแก้ครั้งแรกตารางจะเมินข้อมูลใหม่)
+                click_only_column="sharepoint_url",
             )
             handle_file_icon_click(grid_response, visible_transactions)
 
@@ -2020,7 +2267,8 @@ def render_table_card(
                 "edited_rows": collect_grid_changes(grid_table, grid_response),
                 "deleted_rows": [],
             }
-            selected_positions = get_selected_positions(grid_response)
+            selected_positions = get_selected_positions(grid_response, grid_table)
+            st.session_state[SESSION_KEY_LAST_SELECTED_IDS] = [int(transaction_ids[n]) for n in selected_positions]
             with action_bar:
                 # Toolbar แบบ space-between: ซ้าย = ปุ่มลบ | กลาง = ช่องว่างดัน | ขวา = กล่องรวมปุ่ม Export
                 # ถ้าจะเพิ่มปุ่มจัดการข้อมูลให้ใส่ใน col_left ถ้าเพิ่มปุ่มส่งออกให้เพิ่มจำนวนใน st.columns ของ col_right
@@ -2029,54 +2277,86 @@ def render_table_card(
                 with col_right:
                     # กล่องห่อฝั่งขวา: แบ่งเป็น 2 กล่องย่อยเท่ากัน ระยะห่างแคบ (gap="small") สำหรับ CSV และ Excel
                     csv_column, excel_column = st.columns(2, gap="small", vertical_alignment="center")
-                is_delete_clicked = col_left.button(
+                col_left.button(
                     f"🗑️ ลบรายการที่เลือก ({len(selected_positions)})",
                     key="delete_selected_rows",
                     disabled=not selected_positions,
                     help="ติ๊กช่องหน้าแถวที่ต้องการลบ แล้วกดปุ่มนี้",
                     use_container_width=True,
+                    on_click=request_delete_selected,  # จำแถวที่เลือก -> รอบถัดไปเล่น animation ลบ แล้วค่อยลบจริง
                 )
                 # ส่งออกข้อมูลชุดเดียวกับที่แสดงในตาราง (ผ่าน Date Filter / Search / Item / Vendor แล้ว)
+                # สร้างไฟล์เมื่อกดเตรียมไฟล์เท่านั้น (เดิมสร้าง CSV + Excel ทุกครั้งที่หน้ารีรัน ซึ่งช้าที่สุดของหน้านี้)
                 export_file_stem = f"masterlist_{start_date.isoformat()}_{end_date.isoformat()}"
-                csv_bytes = convert_table_to_csv_bytes(display_table)
-                if csv_bytes is not None:
-                    csv_column.download_button(
-                        "⬇️ Export CSV",
-                        data=csv_bytes,
-                        file_name=f"{export_file_stem}.csv",
-                        mime="text/csv",
-                        key="export_csv_button",
-                        use_container_width=True,
-                    )
-                excel_bytes = convert_table_to_excel_bytes(display_table)
-                if excel_bytes is not None:
-                    excel_column.download_button(
-                        "⬇️ Export Excel",
-                        data=excel_bytes,
-                        file_name=f"{export_file_stem}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="export_excel_button",
-                        use_container_width=True,
-                    )
-            if is_delete_clicked:
-                editor_state["deleted_rows"] = selected_positions
+                render_export_buttons(display_table, export_file_stem, csv_column, excel_column)
 
-            has_changes = bool(editor_state["edited_rows"] or editor_state["deleted_rows"])
-            if has_changes:
+            if deleting_ids:
+                # แถวที่กดลบถูกส่งไปตารางพร้อม class animation แล้ว: รอให้ animation เล่นจบ ค่อยลบจริงแล้วรีรันให้แถวหายไป
+                time.sleep(ROW_FX_DELETE_MS / 1000)
+                editor_state["deleted_rows"] = [
+                    transaction_ids.index(transaction_id) for transaction_id in deleting_ids
+                ]
+
+            edited_rows = editor_state["edited_rows"]
+            edit_signature = repr(sorted(edited_rows.items())) if edited_rows else ""
+            # การแก้ไขชุดเดิมซ้ำอีกรอบ = ค่าเก่าที่ตารางส่งค้าง (เช่น สถานะที่ระบบไม่ยอมให้เปลี่ยน หรือมีคนอื่นแก้ฐานข้อมูลทับไปแล้ว)
+            # ไม่บันทึกซ้ำ (กันรีรันวนและกันเขียนทับข้อมูลใหม่) แต่ให้วาดตารางใหม่เพื่อล้างค่าค้าง
+            is_stale_edit = bool(edit_signature) and edit_signature == st.session_state.get(
+                SESSION_KEY_LAST_EDIT_SIGNATURE
+            )
+            if is_stale_edit:
+                st.session_state[SESSION_KEY_LAST_EDIT_SIGNATURE] = ""
+                st.session_state[SESSION_KEY_EDITOR_VERSION] = editor_version + 1
+                st.rerun()
+
+            if edited_rows or editor_state["deleted_rows"]:
+                if edit_signature:
+                    st.session_state[SESSION_KEY_LAST_EDIT_SIGNATURE] = edit_signature
                 try:
-                    st.session_state[SESSION_KEY_STATUS_MESSAGES] = apply_table_edits(
-                        display_table, transaction_ids, editor_state
-                    )
+                    status_messages = apply_table_edits(display_table, transaction_ids, editor_state)
                 except (ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
                     # error ของแถวเดี่ยว ๆ apply_table_edits จัดการเองแล้ว ที่หลุดมาถึงนี่คือข้อมูลตารางผิดรูปแบบทั้งก้อน
                     logger.error("บันทึกการแก้ไขตารางไม่สำเร็จ: %s", error, exc_info=True)
-                    st.session_state[SESSION_KEY_STATUS_MESSAGES] = [
-                        ("error", f"❌ บันทึกการเปลี่ยนแปลงไม่สำเร็จ: ลองรีเฟรชหน้าเว็บ รายละเอียด: {error}")
-                    ]
-                st.session_state[SESSION_KEY_EDITOR_VERSION] = editor_version + 1
-                # บันทึกลง SQLite เสร็จแล้ว -> รีรันทั้งหน้าทันที เพื่อให้แถบแจ้งเตือน Overdue (render_overdue_alert)
-                # และตัวเลขสรุปต่าง ๆ query ค่าล่าสุดจากฐานข้อมูลใหม่
+                    status_messages = [("error", f"❌ บันทึกการเปลี่ยนแปลงไม่สำเร็จ: ลองรีเฟรชหน้าเว็บ รายละเอียด: {error}")]
+                st.session_state[SESSION_KEY_STATUS_MESSAGES] = status_messages
+                if any(level != "success" for level, _text in status_messages):
+                    # มีการแก้ที่ไม่ผ่าน/ถูกปฏิเสธ: ค่าที่ผู้ใช้เห็นในตารางไม่ตรงฐานข้อมูล ต้องวาดตารางใหม่เพื่อให้กลับมาตรงกัน
+                    st.session_state[SESSION_KEY_EDITOR_VERSION] = editor_version + 1
+                # บันทึกลง SQLite เสร็จแล้ว -> รีรันทั้งหน้า เพื่อให้แถบแจ้งเตือน Overdue (render_overdue_alert)
+                # และตัวเลขสรุปต่าง ๆ query ค่าล่าสุดจากฐานข้อมูลใหม่ (ตาราง key เดิม จึงอัปเดตแถวที่เปลี่ยนโดยไม่กระพริบ)
                 st.rerun()
+
+
+def render_export_buttons(
+    display_table: pd.DataFrame, export_file_stem: str, csv_column: Any, excel_column: Any
+) -> None:
+    """วาดปุ่ม Export CSV / Excel: สร้างไฟล์ตอนผู้ใช้กดปุ่มเท่านั้น (ไม่สร้างทุกครั้งที่หน้ารีรัน)
+
+    ส่งฟังก์ชันให้ download_button แทนไบต์ของไฟล์ Streamlit จะเรียกฟังก์ชันเมื่อกดดาวน์โหลด (บน thread แยก ไม่บล็อกหน้า)
+    เดิมสร้าง CSV + Excel (openpyxl) ทุกรอบที่รีรัน ซึ่งเป็นงานที่ช้าที่สุดของหน้านี้
+
+    Args:
+        display_table: ตารางที่แสดง (ผ่านตัวกรองแล้ว) ที่จะส่งออก
+        export_file_stem: ชื่อไฟล์ (ไม่รวมนามสกุล)
+        csv_column: คอลัมน์ที่วางปุ่ม CSV
+        excel_column: คอลัมน์ที่วางปุ่ม Excel
+    """
+    csv_column.download_button(
+        "⬇️ Export CSV",
+        data=lambda: convert_table_to_csv_bytes(display_table) or b"",
+        file_name=f"{export_file_stem}.csv",
+        mime="text/csv",
+        key="export_csv_button",
+        use_container_width=True,
+    )
+    excel_column.download_button(
+        "⬇️ Export Excel",
+        data=lambda: convert_table_to_excel_bytes(display_table) or b"",
+        file_name=f"{export_file_stem}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="export_excel_button",
+        use_container_width=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2178,6 +2458,52 @@ def is_pr_document(file_name: str) -> bool:
     return lowered_name.startswith(PR_FILE_NAME_PREFIX) and lowered_name.endswith(AUTO_EXTRACT_EXTENSIONS)
 
 
+def clean_pr_file_name(file_name: str) -> str:
+    """ตัดนามสกุล วันที่นำหน้า คำนำหน้า PR_Addin_ซื้อ และ -signed ท้ายชื่อ ออกจากชื่อไฟล์ เพื่อใช้เป็น Description
+
+    ตัวอย่าง: "20260319 PR_Addin_ซื้อ NB Lenovo ThinkPad E14 G7-signed.pdf" -> "NB Lenovo ThinkPad E14 G7"
+
+    Args:
+        file_name: ชื่อไฟล์ที่อัปโหลด
+
+    Returns:
+        ชื่อที่ตัดแล้ว (ถ้าตัดแล้วว่างจะคืนชื่อเดิมที่ตัดแค่นามสกุล)
+    """
+    stem = Path((file_name or "").strip()).stem.strip()
+    cleaned = re.sub(FILE_NAME_DATE_PREFIX_PATTERN, "", stem, flags=re.IGNORECASE)
+    cleaned = re.sub(FILE_NAME_PR_PREFIX_PATTERN, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(FILE_NAME_SUFFIX_PATTERN, "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" _-") or stem
+
+
+def parse_date_from_file_name(file_name: str) -> Optional[date]:
+    """อ่านวันที่ 8 หลักนำหน้าชื่อไฟล์ (YYYYMMDD เช่น "20260319_PR_...") คืน None ถ้าไม่มี/ไม่ใช่วันที่จริง
+
+    ปี พ.ศ. (มากกว่า 2400) แปลงเป็น ค.ศ. ให้อัตโนมัติ
+    """
+    match = re.match(r"^\s*(\d{4})(\d{2})(\d{2})(?!\d)", file_name or "")
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    if year > 2400:
+        year -= 543
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def find_pr_date_in_file_names(file_names: list[str]) -> Optional[date]:
+    """หาวันที่ของไฟล์ PR จากวันที่ 8 หลักนำหน้าชื่อไฟล์ (เช่น "20260319_PR_...") คืน None ถ้าไม่มีไฟล์ไหนมี
+
+    ดูทุกไฟล์ที่วาง (ชื่อไม่จำเป็นต้องขึ้นต้นด้วย PR) โดยให้ไฟล์ที่มีคำว่า PR มาก่อน
+    ข้ามชื่อที่ขึ้นต้นด้วยเลขเวลาอัปโหลดที่ระบบเติม (เช่น "20261028_134912_664797_") เพราะไม่ใช่วันที่ของ PR
+    """
+    candidates = [name for name in file_names if not re.match(UPLOAD_STAMP_FILE_NAME_PATTERN, name or "")]
+    candidates.sort(key=lambda name: "pr" not in name.lower())  # sort เสถียร: ไฟล์ PR ก่อน ลำดับเดิมคงไว้
+    return next((parsed for parsed in map(parse_date_from_file_name, candidates) if parsed), None)
+
+
 def build_record_from_documents(
     documents: list[UploadedFile], category: str, invoice_choice: str
 ) -> tuple[RecordFields, str]:
@@ -2205,8 +2531,13 @@ def build_record_from_documents(
     if extracted.has_tax_invoice:
         invoice_choice = INVOICE_CHOICE_HAS
     pr_request_date = _parse_iso_date_or_none(extracted.pr_request_date)
+    # คอลัมน์ Date = วันที่ของไฟล์ PR: วันที่นำหน้าชื่อไฟล์ (ทุกไฟล์ที่วาง) -> วันที่ในเนื้อไฟล์ -> (ไม่พบเลย) วันที่อัปโหลด
+    # วันที่ Upload จริงเก็บแยกใน created_at อัตโนมัติ (ใช้นับวันค้างของแถบแจ้งเตือน)
+    pr_file_date = (
+        find_pr_date_in_file_names([document.name for document in documents]) or pr_request_date or date.today()
+    )
     record = RecordFields(
-        date=date.today().isoformat(),  # เอกสารไม่มีฟิลด์วันที่ให้ดึง ใช้วันที่อัปโหลด
+        date=pr_file_date.isoformat(),
         vendor=extracted.vendor or UNKNOWN_VENDOR_FOLDER,
         total_price=float(extracted.total_amount) if extracted.total_amount else 0.0,
         tax_id=extracted.tax_id or None,
@@ -2216,7 +2547,10 @@ def build_record_from_documents(
         tel=extracted.tel or None,
         pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
         qt_no=extracted.qt_no or None,
-        description=extracted.description or None,
+        # Description = ชื่อไฟล์ PR ที่ตัดส่วนเกินแล้ว (ไม่มีไฟล์ PR ใช้ไฟล์แรกที่แนบ / ไม่มีไฟล์เลยใช้ค่าที่อ่านจากเอกสาร)
+        description=clean_pr_file_name((readable or documents)[0].name)
+        if documents
+        else (extracted.description or None),
         unit_price=float(extracted.unit_price) if extracted.unit_price else None,
     )
     return record, warning
@@ -2225,6 +2559,10 @@ def build_record_from_documents(
 def build_submit_summary(result: SubmitResult, extra_warning: str = "") -> str:
     """สรุปผลการส่งเป็นข้อความ (markdown) ต่อปลายทาง: เว็บ / ไฟล์ออนไลน์ / Master-List"""
     lines = [f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {result.transaction_id}) · แสดงบนเว็บแล้ว"]
+    if result.desktop_folder:
+        lines.append(f"📁 สร้างโฟลเดอร์บน Desktop แล้ว: {result.desktop_folder}")
+    elif result.desktop_message:
+        lines.append(f"⚠️ {result.desktop_message}")
     if result.storage_status == "ok":
         lines.append(f"☁️ ส่งไฟล์ไปที่เก็บไฟล์ออนไลน์แล้ว {len(result.storage_links)} ไฟล์")
     elif result.storage_status in ("skipped", "error"):
@@ -2291,6 +2629,7 @@ def render_upload_mode(form_counter: int) -> None:
         st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
         return
     finish_submission(build_submit_summary(result, extract_warning), form_counter)
+
 
 # ---------------------------------------------------------------------------
 # ส่วนที่ 1: การ์ดกรอกข้อมูล (ฟอร์ม)
@@ -2419,9 +2758,7 @@ def _vendor_autocomplete_input(form_counter: int) -> str:
     return str(selected_vendor or "").strip()
 
 
-def render_entry_form(
-    form_counter: int, show_po_uploader: bool = True, title: str = "กรอกข้อมูล"
-) -> None:
+def render_entry_form(form_counter: int, show_po_uploader: bool = True, title: str = "กรอกข้อมูล") -> None:
     """วาดการ์ด "กรอกข้อมูล" และจัดการเมื่อกดปุ่ม Upload (บันทึก)
 
     ถ้าจะเพิ่มฟิลด์ใหม่ ต้องแก้ 3 จุด:
@@ -2520,9 +2857,7 @@ def render_entry_form(
         back_column.form_submit_button(
             "⬅️ ย้อนกลับ", on_click=go_back_to_questions_step, type="secondary", use_container_width=True
         )
-        is_submitted = save_column.form_submit_button(
-            "💾 บันทึกข้อมูล", type="primary", use_container_width=True
-        )
+        is_submitted = save_column.form_submit_button("💾 บันทึกข้อมูล", type="primary", use_container_width=True)
 
     if not is_submitted:
         return
@@ -2547,7 +2882,11 @@ def render_entry_form(
     # ถ้าส่งไม่สำเร็จจะไม่ล้างฟอร์ม ผู้ใช้กดบันทึกซ้ำได้โดยไม่ต้องกรอกใหม่
     result = submit_record(
         RecordFields(
-            date=document_date.isoformat(),  # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD
+            # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD: มีไฟล์แนบที่ชื่อขึ้นต้นด้วยวันที่ PR ใช้วันที่นั้น ไม่งั้นใช้ค่าในช่อง Date
+            date=(
+                find_pr_date_in_file_names([document.name for document in (uploaded_po_documents or [])])
+                or document_date
+            ).isoformat(),
             vendor=vendor_name,
             total_price=total_price,
             tax_id=tax_id or None,
@@ -2615,9 +2954,7 @@ def _build_step_header_html(step_number: int, description: str) -> str:
     Returns:
         สตริง HTML สำหรับ st.markdown(unsafe_allow_html=True)
     """
-    segments: str = "".join(
-        f'<span class="{"on" if index <= step_number else ""}"></span>' for index in (1, 2)
-    )
+    segments: str = "".join(f'<span class="{"on" if index <= step_number else ""}"></span>' for index in (1, 2))
     return (
         f'<div class="step-progress">{segments}</div>'
         f'<p class="step-subtitle">ขั้นตอนที่ {step_number} / 2 — {description}</p>'

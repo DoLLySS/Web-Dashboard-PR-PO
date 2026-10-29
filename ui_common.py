@@ -14,8 +14,8 @@ import pandas as pd
 import streamlit as st
 
 from config.constants import EQUIPMENT_CATEGORIES
-from data.database import get_category_counts
 from config.styles import PALETTE, RADIUS_PX, SHADOW
+from data.database import get_category_counts
 from ui_grid import render_readonly_grid
 
 # ---------------------------------------------------------------------------
@@ -114,8 +114,7 @@ def get_equipment_quantities(start_date: date, end_date: date) -> list[tuple[str
         รายการ (ชื่อหมวด, จำนวน) เรียงตาม EQUIPMENT_CATEGORIES
     """
     quantity_by_category = {
-        row["category"]: row["quantity"]
-        for row in get_category_counts(start_date.isoformat(), end_date.isoformat())
+        row["category"]: row["quantity"] for row in get_category_counts(start_date.isoformat(), end_date.isoformat())
     }
     return [(name, int(quantity_by_category.get(name, 0))) for name in EQUIPMENT_CATEGORIES]
 

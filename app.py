@@ -10,11 +10,11 @@ from datetime import date, timedelta
 
 import streamlit as st
 
+from config.logging_setup import get_logger
+from config.styles import inject_global_styles
 from data.database import init_db
 from pages_ui import dashboard, overview
 from sidebar_ui import MenuItem, render_sidebar
-from config.logging_setup import get_logger
-from config.styles import inject_global_styles
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่
@@ -26,7 +26,9 @@ from config.styles import inject_global_styles
 # หน้าตา/สี/โลโก้ของ Sidebar แก้ที่ sidebar_ui.py
 MENU_GROUPS: dict[str, list[MenuItem]] = {
     "Dashboard": [
-        MenuItem("Overview", ":material/description:", overview.render, "ภาพรวมรายการ PR/PO และใบกำกับภาษี"),  # ไอคอนรูปเอกสาร
+        MenuItem(
+            "Overview", ":material/description:", overview.render, "ภาพรวมรายการ PR/PO และใบกำกับภาษี"
+        ),  # ไอคอนรูปเอกสาร
         MenuItem("Dashboard", ":material/bar_chart:", dashboard.render, "สรุปยอดซื้อและแนวโน้ม"),  # ไอคอนรูปกราฟ
     ],
 }
@@ -60,7 +62,9 @@ def render_date_filter() -> tuple[date, date]:
         key="filter_start_date",
         label_visibility="collapsed",
     )
-    to_column.markdown("<div style='text-align:center'><span class='date-to-chip'>To</span></div>", unsafe_allow_html=True)
+    to_column.markdown(
+        "<div style='text-align:center'><span class='date-to-chip'>To</span></div>", unsafe_allow_html=True
+    )
     end_date = end_column.date_input(
         "วันที่สิ้นสุด",
         value=today,
@@ -90,9 +94,11 @@ def render_page_header(menu_item: MenuItem) -> tuple[date, date]:
         # ซ้าย = ชื่อหน้า / กลาง = ที่ว่างดัน Date Filter ไปชิดขวา / ขวา = Date Filter (Start To End แนวนอน)
         title_column, spacer_column, filter_column = st.columns([3, 1, 6], vertical_alignment="center")
         with title_column:
-            st.header(menu_item.label)
-            if menu_item.subtitle:
-                st.caption(menu_item.subtitle)
+            # key ตามชื่อหน้า: ตอนสลับหน้า กล่องนี้ถูกสร้างใหม่ ทำให้ animation ของชื่อหน้าเล่นอีกครั้งอย่างนุ่มนวล
+            with st.container(key=f"page_title_{menu_item.label}"):
+                st.header(menu_item.label)
+                if menu_item.subtitle:
+                    st.caption(menu_item.subtitle)
         with spacer_column:
             # ตัวหมายสำหรับ CSS: บนจอแคบจะซ่อนคอลัมน์ว่างนี้ ไม่ให้เปลืองบรรทัด
             st.markdown('<span class="header-spacer"></span>', unsafe_allow_html=True)
@@ -122,7 +128,9 @@ def main() -> None:
     start_date, end_date = render_page_header(selected_menu_item)
 
     try:
-        selected_menu_item.render(start_date, end_date)
+        # key ตามชื่อหน้า: เนื้อหาหน้าใหม่เป็น DOM ใหม่ CSS (config/styles.py) จึงเล่น fade-in เฉพาะตอนสลับหน้า
+        with st.container(key=f"page_view_{selected_menu_item.label}"):
+            selected_menu_item.render(start_date, end_date)
     except Exception as error:  # noqa: BLE001 - จุดดักสุดท้ายของทั้งแอป (ตั้งใจให้กว้าง) กันหน้าจอขาวทั้งหน้า
         # บันทึก traceback เต็มลง logs/app.log ให้ทีม IT ย้อนดูได้ (เดิมแสดงบนหน้าจออย่างเดียว)
         logger.exception("แสดงหน้า '%s' ไม่สำเร็จ", selected_menu_item.label)

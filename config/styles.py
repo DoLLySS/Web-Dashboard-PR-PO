@@ -14,6 +14,8 @@
 - ถ้าอัปเกรด Streamlit แล้วสไตล์ตรงไหนหลุด ให้เปิด DevTools (F12) ดู data-testid ของ element นั้นแล้วแก้ที่นี่
 """
 
+from functools import lru_cache
+
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -82,7 +84,7 @@ CONTENT_MAX_PX: int = 1200  # ความกว้างสูงสุดข�
 MENU_GUTTER_MIN_PX: int = 1280  # จอตั้งแต่ค่านี้ขึ้นไปมีช่องว่างข้างเนื้อหาพอวางปุ่ม ☰ (ตอนเมนูพับ) ไว้นอกกรอบเนื้อหา
 MENU_BUTTON_PX: int = 44  # ขนาดปุ่ม ☰ (ต้องตรงกับ width/height ในข้อ 10)
 MENU_BUTTON_GAP_PX: int = 12  # ระยะเว้นระหว่างปุ่ม ☰ กับเนื้อหา
-LARGE_CONTENT_MAX_PX: int = 2200 # ความกว้างสูงสุดของเนื้อหาบน Large Desktop (1440px ขึ้นไป ขยายตามจอจนถึงค่านี้)
+LARGE_CONTENT_MAX_PX: int = 2200  # ความกว้างสูงสุดของเนื้อหาบน Large Desktop (1440px ขึ้นไป ขยายตามจอจนถึงค่านี้)
 
 # ตัวแปรที่เปลี่ยนค่าตามช่วงจอ
 #   ค่าของ "desktop" คือค่าเริ่มต้นของทุกช่วง (ใช้ clamp ให้ไหลต่อเนื่องจาก 320px ถึง 1200px จึงไม่กระโดดที่ขอบช่วง)
@@ -434,6 +436,15 @@ footer, [data-testid="stFooter"] {
     color: #475569 !important;
     letter-spacing: 0.01em;
 }
+/* ===== 11.1.0) สลับหน้า (Overview <-> Dashboard) ให้นุ่ม =====
+   เนื้อหาหน้าอยู่ใน container key=page_view_<ชื่อหน้า> (app.py) เปลี่ยนหน้า = DOM ใหม่ จึงเล่น fade-in + เลื่อนขึ้นเล็กน้อยครั้งเดียว
+   (rerun ปกติเช่นกดปุ่มช่วงเวลา ใช้ DOM เดิม ไม่เล่นซ้ำ) ใช้ opacity/translate เท่านั้น ไม่แตะ transform ของ popover */
+[class*="st-key-page_view_"] { animation: page-view-in 0.38s cubic-bezier(.2,.8,.2,1) backwards; }
+[class*="st-key-page_view_"] > [data-testid="stVerticalBlock"] { gap: var(--app-block-gap); }
+@keyframes page-view-in { from { opacity: 0; translate: 0 12px; } to { opacity: 1; translate: 0 0; } }
+/* ตอน rerun Streamlit หรี่ element เก่าลง (stale) ให้ค่อย ๆ หรี่/คืน ไม่วูบ */
+[data-testid="stMainBlockContainer"] [data-testid="stElementContainer"],
+[data-testid="stMainBlockContainer"] [data-testid="stLayoutWrapper"] { transition: opacity 0.25s ease; }
 @keyframes page-title-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes page-title-bar { from { width: 0; } to { width: 48px; } }
 
@@ -553,6 +564,11 @@ footer, [data-testid="stFooter"] {
     [data-testid="stDateInputCalendar"], [data-testid="stDateInputCalendar"] td > [role="button"] { animation: none; transition: none; }
 }
 @media (prefers-reduced-motion: reduce) {
+    [class*="st-key-page_view_"] { animation: none; }
+    [data-testid="stMainBlockContainer"] [data-testid="stElementContainer"],
+    [data-testid="stMainBlockContainer"] [data-testid="stLayoutWrapper"] { transition: none; }
+}
+@media (prefers-reduced-motion: reduce) {
     .st-key-page_header h2,.st-key-page_header h2::after, .st-key-page_header [data-testid="stCaptionContainer"] { animation: none; }
     .st-key-page_header [data-testid="stDateInputField"], .st-key-page_header [data-testid="stDateInput"] svg { transition: none; transform: none !important; }
 }
@@ -586,9 +602,7 @@ def build_responsive_css() -> str:
 
     def variables_block(breakpoint_name: str) -> str:
         """แปลง dict ค่าของช่วงจอเป็นข้อความตัวแปร CSS เช่น --app-card-padding: 10px;"""
-        return "\n".join(
-            f"    --app-{name}: {value};" for name, value in RESPONSIVE_VARIABLES[breakpoint_name].items()
-        )
+        return "\n".join(f"    --app-{name}: {value};" for name, value in RESPONSIVE_VARIABLES[breakpoint_name].items())
 
     return f"""
 /* ===== 12) Responsive: Mobile (กว้างไม่เกิน {MOBILE_MAX_PX}px) ===== */
@@ -826,8 +840,9 @@ def build_responsive_css() -> str:
 """
 
 
+@lru_cache(maxsize=1)
 def build_global_css() -> str:
-    """ประกอบ CSS ทั้งแอป: นำเข้าฟอนต์ + ตัวแปรสี (:root) + กฎ CSS
+    """ประกอบ CSS ทั้งแอป: นำเข้าฟอนต์ + ตัวแปรสี (:root) + กฎ CSS (ประกอบครั้งเดียวต่อโปรเซส เพราะผลเหมือนเดิมทุกรอบ)
 
     Returns:
         ข้อความ <style>...</style> พร้อมส่งให้ st.markdown(unsafe_allow_html=True)

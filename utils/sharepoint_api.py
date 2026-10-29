@@ -54,7 +54,8 @@ def load_sharepoint_settings() -> dict[str, str]:
     if missing_names:
         logger.warning("ตั้งค่า SharePoint ไม่ครบ ขาด: %s", ", ".join(missing_names))
         raise SharePointError(
-            "ยังไม่ได้ตั้งค่า SharePoint: ไม่พบ " + ", ".join(missing_names)
+            "ยังไม่ได้ตั้งค่า SharePoint: ไม่พบ "
+            + ", ".join(missing_names)
             + " ในไฟล์ .env — คัดลอก .env.example เป็น .env แล้วกรอกค่าจริง จากนั้นรีสตาร์ทแอป"
         )
 
@@ -194,7 +195,9 @@ def upload_document_to_sharepoint(file_bytes: bytes, file_name: str, sub_folders
         if sub_folders:
             # สร้างโฟลเดอร์ซ้อนชั้นให้ถ้ายังไม่มี (ต้องใช้ path แบบเต็มจาก root ของ Site)
             site_path = urlparse(settings["site_url"]).path.rstrip("/")
-            target_folder = client_context.web.ensure_folder_path(f"{site_path}/{settings['folder_path']}").execute_query()
+            target_folder = client_context.web.ensure_folder_path(
+                f"{site_path}/{settings['folder_path']}"
+            ).execute_query()
         else:
             target_folder = client_context.web.get_folder_by_server_relative_path(settings["folder_path"])
         target_folder.upload_file(stored_file_name, file_bytes).execute_query()

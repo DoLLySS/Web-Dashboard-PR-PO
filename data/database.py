@@ -9,6 +9,7 @@
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -31,7 +32,9 @@ DB_PATH: Path = Path(get_env_text("DB_FILE_PATH") or Path(__file__).parent / "ma
 # โหมดบันทึกของ SQLite ที่อนุญาต (กันค่าแปลกจาก .env ไปต่อใน PRAGMA)
 ALLOWED_JOURNAL_MODES: frozenset[str] = frozenset({"DELETE", "WAL"})
 _requested_journal_mode = get_env_text("DB_JOURNAL_MODE", DEFAULT_DB_JOURNAL_MODE).upper()
-DB_JOURNAL_MODE: str = _requested_journal_mode if _requested_journal_mode in ALLOWED_JOURNAL_MODES else DEFAULT_DB_JOURNAL_MODE
+DB_JOURNAL_MODE: str = (
+    _requested_journal_mode if _requested_journal_mode in ALLOWED_JOURNAL_MODES else DEFAULT_DB_JOURNAL_MODE
+)
 
 # รอสูงสุดกี่วินาทีถ้าฐานข้อมูลถูกคนอื่นล็อกอยู่ ก่อนจะถือว่า Error
 # ปรับได้ผ่าน DB_TIMEOUT_SECONDS ใน .env (ไม่ใส่ = ค่าเริ่มต้นใน config/settings.py)
@@ -87,6 +90,14 @@ ADDED_COLUMNS: dict[str, str] = {
 # (Streamlit รันสคริปต์ใหม่ทุกครั้งที่ผู้ใช้กดอะไรสักอย่าง ถ้าไม่จำไว้ init_db จะเขียนฐานข้อมูลซ้ำทุกครั้ง
 # ซึ่งแย่งล็อกกับผู้ใช้คนอื่นจนเกิด "database is locked")
 _initialized_db_paths: set[Path] = set()
+
+# ตัวนับ "เวอร์ชันข้อมูล": เพิ่มทุกครั้งที่มีการเขียนสำเร็จ ใช้เป็นส่วนหนึ่งของ key ของ cache ฝั่งอ่าน
+# เขียนแล้ว key เปลี่ยน -> อ่านรอบต่อไปได้ข้อมูลใหม่ทันที (ไม่มีข้อมูลค้างเก่า) ใช้ร่วมกันทุก session ในโปรเซสเดียวกัน
+_data_version: int = 0
+_data_version_lock = threading.Lock()
+
+# cache ฝั่งอ่านมีอายุสูงสุดเท่านี้ (วินาที) เผื่อมีโปรเซสอื่นเขียนฐานข้อมูลเดียวกัน (ตัวนับด้านบนไม่รู้)
+READ_CACHE_TTL_SECONDS: int = 60
 
 CREATE_TABLE_SQL: str = f"""
 CREATE TABLE IF NOT EXISTS transactions (
@@ -216,6 +227,18 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+def get_data_version() -> int:
+    """คืนเลขเวอร์ชันข้อมูลปัจจุบัน (เปลี่ยนทุกครั้งที่มีการเพิ่ม/แก้/ลบสำเร็จ) ใช้เป็น key ของ cache ฝั่งหน้าจอได้"""
+    return _data_version
+
+
+def _bump_data_version() -> None:
+    """เพิ่มเลขเวอร์ชันข้อมูล เรียกหลังเขียนฐานข้อมูลสำเร็จ เพื่อให้ cache ฝั่งอ่านหมดอายุทันที"""
+    global _data_version
+    with _data_version_lock:
+        _data_version += 1
+
+
 # ---------------------------------------------------------------------------
 # สร้างตาราง
 # ---------------------------------------------------------------------------
@@ -283,9 +306,9 @@ def init_db() -> bool:
             logger.debug("ตรวจ/เพิ่มคอลัมน์ที่ขาดในตาราง transactions เรียบร้อย")
             # index ช่วยให้กรองตามวันที่/สถานะเร็วขึ้นเมื่อข้อมูลเยอะ
             conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(invoice_status)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(invoice_status)")
+            # ทุกคำสั่งอ่านกรอง is_deleted = 0 แล้วเรียง/กรองตามวันที่ -> index รวมช่วยให้ไม่ต้องสแกนทั้งตาราง
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_active_date ON transactions(is_deleted, date)")
         _initialized_db_paths.add(DB_PATH)
         logger.info("เตรียมฐานข้อมูลเรียบร้อย: %s", DB_PATH)
         return True
@@ -317,6 +340,7 @@ def add_transaction(
     qt_no: Optional[str] = None,
     description: Optional[str] = None,
     unit_price: Optional[float] = None,
+    created_at: Optional[str] = None,
 ) -> Optional[int]:
     """เพิ่มรายการใหม่ 1 แถวลงตาราง transactions
 
@@ -338,6 +362,7 @@ def add_transaction(
         qt_no: เลขที่ Quotation (ไม่บังคับ)
         description: รายละเอียดอุปกรณ์ (ไม่บังคับ)
         unit_price: ราคาสุทธิที่รวม Discount แล้ว เป็นบาท (ไม่บังคับ)
+        created_at: วันเวลาที่ Upload รูปแบบ "YYYY-MM-DD HH:MM:SS" ใช้นับวันที่ค้าง (ไม่ระบุ = เวลาปัจจุบันของเครื่อง)
 
     Returns:
         id ของแถวที่เพิ่ม, หรือ None ถ้าบันทึกไม่สำเร็จ
@@ -354,8 +379,9 @@ def add_transaction(
                 INSERT INTO transactions
                     (date, vendor, tax_id, po_no, pr_run_no, category,
                      total_price, file_path, invoice_status, tel, email, contact_name,
-                     sharepoint_url, pr_request_date, qt_no, description, unit_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sharepoint_url, pr_request_date, qt_no, description, unit_price, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        COALESCE(?, datetime('now', 'localtime')))
                 """,
                 (
                     date,
@@ -375,6 +401,7 @@ def add_transaction(
                     qt_no,
                     description,
                     unit_price,
+                    created_at,
                 ),
             )
             new_transaction_id = cursor.lastrowid
@@ -399,6 +426,7 @@ def add_transaction(
                 "unit_price": unit_price,
             }
             _write_audit_log(conn, AUDIT_ACTION_INSERT, new_transaction_id, inserted_values)
+        _bump_data_version()
         logger.info("เพิ่มรายการใหม่ id=%s (ผู้ขาย: %s)", new_transaction_id, vendor.strip())
         return new_transaction_id
     except (sqlite3.Error, OSError, AttributeError) as error:
@@ -431,6 +459,61 @@ def get_transaction(transaction_id: int) -> Optional[dict[str, Any]]:
         return None
 
 
+def _fetch_transactions(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    invoice_status: Optional[str],
+    keyword: Optional[str],
+) -> list[dict[str, Any]]:
+    """อ่านรายการจากฐานข้อมูลตามตัวกรอง (ไม่จับ Error ให้ผู้เรียกจัดการ เพื่อไม่ให้ cache เก็บผลที่พลาด)"""
+    # สร้างเงื่อนไขทีละข้อ ค่าทั้งหมดส่งผ่าน ? เพื่อกัน SQL Injection
+    # Soft Delete: ไม่แสดงรายการที่ถูกลบ (is_deleted = 1) ในทุกกรณี
+    conditions: list[str] = ["is_deleted = 0"]
+    params: list[Any] = []
+
+    if start_date:
+        conditions.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        params.append(end_date)
+    if invoice_status:
+        conditions.append("invoice_status = ?")
+        params.append(invoice_status)
+    if keyword:
+        # ค้นเฉพาะชื่อผู้ขายและเบอร์โทร; เบอร์โทรเทียบแบบไม่สนขีด/ช่องว่าง (081-234 ตรงกับ 081234)
+        phone_keyword = keyword.replace("-", "").replace(" ", "")
+        phone_condition = "REPLACE(REPLACE(COALESCE(tel, ''), '-', ''), ' ', '') LIKE ?"
+        if phone_keyword:
+            conditions.append(f"(vendor LIKE ? OR tel LIKE ? OR {phone_condition})")
+            params.extend([f"%{keyword}%", f"%{keyword}%", f"%{phone_keyword}%"])
+        else:
+            conditions.append("vendor LIKE ?")
+            params.append(f"%{keyword}%")
+
+    where_clause = f"WHERE {' AND '.join(conditions)}"
+    sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC"
+
+    with _get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+@st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
+def _fetch_transactions_cached(
+    data_version: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    invoice_status: Optional[str],
+    keyword: Optional[str],
+) -> list[dict[str, Any]]:
+    """อ่านรายการแบบจำ (cache) ตาม data_version + ตัวกรอง; เขียนข้อมูลเมื่อไรเลขเวอร์ชันเปลี่ยนและอ่านใหม่ทันที
+
+    Streamlit คืนสำเนาให้ทุกครั้ง ผู้เรียกแก้ list/dict ที่ได้รับได้โดยไม่กระทบ cache
+    """
+    return _fetch_transactions(start_date, end_date, invoice_status, keyword)
+
+
 def get_transactions(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -438,6 +521,9 @@ def get_transactions(
     keyword: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """ดึงรายการทั้งหมด พร้อมตัวกรองที่เลือกใช้ได้ (เรียงใหม่สุดก่อน)
+
+    ผลถูกจำไว้ตามเวอร์ชันข้อมูล (get_data_version) จึงเรียกซ้ำใน rerun ถัดไปได้โดยไม่ query ใหม่
+    จนกว่าจะมีการเพิ่ม/แก้/ลบ
 
     Args:
         start_date: วันที่เริ่ม "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
@@ -449,37 +535,7 @@ def get_transactions(
         list ของ dict (ว่างถ้าไม่พบหรือเกิด Error) ใช้ pd.DataFrame(result) ได้ทันที
     """
     try:
-        # สร้างเงื่อนไขทีละข้อ ค่าทั้งหมดส่งผ่าน ? เพื่อกัน SQL Injection
-        # Soft Delete: ไม่แสดงรายการที่ถูกลบ (is_deleted = 1) ในทุกกรณี
-        conditions: list[str] = ["is_deleted = 0"]
-        params: list[Any] = []
-
-        if start_date:
-            conditions.append("date >= ?")
-            params.append(start_date)
-        if end_date:
-            conditions.append("date <= ?")
-            params.append(end_date)
-        if invoice_status:
-            conditions.append("invoice_status = ?")
-            params.append(invoice_status)
-        if keyword:
-            # ค้นเฉพาะชื่อผู้ขายและเบอร์โทร; เบอร์โทรเทียบแบบไม่สนขีด/ช่องว่าง (081-234 ตรงกับ 081234)
-            phone_keyword = keyword.replace("-", "").replace(" ", "")
-            phone_condition = "REPLACE(REPLACE(COALESCE(tel, ''), '-', ''), ' ', '') LIKE ?"
-            if phone_keyword:
-                conditions.append(f"(vendor LIKE ? OR tel LIKE ? OR {phone_condition})")
-                params.extend([f"%{keyword}%", f"%{keyword}%", f"%{phone_keyword}%"])
-            else:
-                conditions.append("vendor LIKE ?")
-                params.append(f"%{keyword}%")
-
-        where_clause = f"WHERE {' AND '.join(conditions)}"
-        sql = f"SELECT * FROM transactions {where_clause} ORDER BY date DESC, id DESC"
-
-        with _get_connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return _fetch_transactions_cached(get_data_version(), start_date, end_date, invoice_status, keyword)
     except (sqlite3.Error, OSError) as error:
         _show_db_error("ดึงรายการข้อมูล", error)
         return []
@@ -493,12 +549,30 @@ def count_transactions() -> int:
     """
     try:
         with _get_connection() as conn:
-            return int(
-                conn.execute("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0").fetchone()[0]
-            )
+            return int(conn.execute("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0").fetchone()[0])
     except (sqlite3.Error, OSError) as error:
         _show_db_error("นับจำนวนรายการ", error)
         return 0
+
+
+def _fetch_unique_vendors() -> list[str]:
+    """อ่านรายชื่อผู้ขายไม่ซ้ำจากฐานข้อมูล (ไม่จับ Error ให้ผู้เรียกจัดการ)"""
+    with _get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT TRIM(vendor) AS vendor
+            FROM transactions
+            WHERE vendor IS NOT NULL AND TRIM(vendor) <> '' AND is_deleted = 0
+            ORDER BY vendor COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row["vendor"] for row in rows]
+
+
+@st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
+def _fetch_unique_vendors_cached(data_version: int) -> list[str]:
+    """รายชื่อผู้ขายแบบจำ (cache) ตาม data_version"""
+    return _fetch_unique_vendors()
 
 
 def get_unique_vendors() -> list[str]:
@@ -508,19 +582,33 @@ def get_unique_vendors() -> list[str]:
         list ของชื่อผู้ขาย (ว่างถ้ายังไม่มีข้อมูลเลย หรือเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
     """
     try:
-        with _get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT DISTINCT TRIM(vendor) AS vendor
-                FROM transactions
-                WHERE vendor IS NOT NULL AND TRIM(vendor) <> '' AND is_deleted = 0
-                ORDER BY vendor COLLATE NOCASE
-                """
-            ).fetchall()
-        return [row["vendor"] for row in rows]
+        return _fetch_unique_vendors_cached(get_data_version())
     except (sqlite3.Error, OSError) as error:
         _show_db_error("ดึงรายชื่อผู้ขาย", error)
         return []
+
+
+def _fetch_category_counts(start_date: str, end_date: str) -> list[dict[str, Any]]:
+    """อ่านสรุปตามหมวดหมู่จากฐานข้อมูล (ไม่จับ Error ให้ผู้เรียกจัดการ)"""
+    with _get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(category, 'ไม่ระบุ') AS category,
+                   COUNT(*) AS quantity,
+                   COALESCE(SUM(total_price), 0) AS total_price
+            FROM transactions
+            WHERE date >= ? AND date <= ? AND is_deleted = 0
+            GROUP BY COALESCE(category, 'ไม่ระบุ')
+            """,
+            (start_date, end_date),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+@st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
+def _fetch_category_counts_cached(data_version: int, start_date: str, end_date: str) -> list[dict[str, Any]]:
+    """สรุปตามหมวดหมู่แบบจำ (cache) ตาม data_version + ช่วงวันที่"""
+    return _fetch_category_counts(start_date, end_date)
 
 
 def get_category_counts(start_date: str, end_date: str) -> list[dict[str, Any]]:
@@ -535,19 +623,7 @@ def get_category_counts(start_date: str, end_date: str) -> list[dict[str, Any]]:
         (ว่างถ้าไม่พบหรือเกิด Error)
     """
     try:
-        with _get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT COALESCE(category, 'ไม่ระบุ') AS category,
-                       COUNT(*) AS quantity,
-                       COALESCE(SUM(total_price), 0) AS total_price
-                FROM transactions
-                WHERE date >= ? AND date <= ? AND is_deleted = 0
-                GROUP BY COALESCE(category, 'ไม่ระบุ')
-                """,
-                (start_date, end_date),
-            ).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return _fetch_category_counts_cached(get_data_version(), start_date, end_date)
     except (sqlite3.Error, OSError) as error:
         _show_db_error("สรุปจำนวนตามหมวดหมู่", error)
         return []
@@ -577,10 +653,7 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
         invalid = set(fields) - UPDATABLE_COLUMNS
         if invalid:
             logger.error("แก้ไขรายการ id=%s ถูกปฏิเสธ: ไม่รู้จักคอลัมน์ %s", transaction_id, sorted(invalid))
-            st.error(
-                f"❌ แก้ไขข้อมูลไม่สำเร็จ: ไม่รู้จักคอลัมน์ {', '.join(sorted(invalid))} "
-                "(แจ้งทีมพัฒนาให้ตรวจชื่อคอลัมน์ที่ส่งเข้ามา)"
-            )
+            st.error(f"❌ แก้ไขข้อมูลไม่สำเร็จ: ไม่รู้จักคอลัมน์ {', '.join(sorted(invalid))} (แจ้งทีมพัฒนาให้ตรวจชื่อคอลัมน์ที่ส่งเข้ามา)")
             return False
 
         set_clause = ", ".join(f"{column} = ?" for column in fields)
@@ -592,9 +665,7 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
                 "SELECT * FROM transactions WHERE id = ? AND is_deleted = 0", (transaction_id,)
             ).fetchone()
             # แก้ไขได้เฉพาะรายการที่ยังไม่ถูกลบ
-            cursor = conn.execute(
-                f"UPDATE transactions SET {set_clause} WHERE id = ? AND is_deleted = 0", params
-            )
+            cursor = conn.execute(f"UPDATE transactions SET {set_clause} WHERE id = ? AND is_deleted = 0", params)
             updated = cursor.rowcount > 0
 
             if updated and old_row is not None:
@@ -611,6 +682,7 @@ def update_transaction(transaction_id: int, **fields: Any) -> bool:
             logger.warning("แก้ไขไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
             st.warning(f"⚠️ ไม่พบรายการ id = {transaction_id}")
         else:
+            _bump_data_version()
             logger.info("แก้ไขรายการ id=%s คอลัมน์: %s", transaction_id, ", ".join(sorted(fields)))
         return updated
     except (sqlite3.Error, OSError) as error:
@@ -659,8 +731,40 @@ def delete_transaction(transaction_id: int) -> bool:
             logger.warning("ลบไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
             st.warning(f"⚠️ ไม่พบรายการ id = {transaction_id}")
         else:
+            _bump_data_version()
             logger.info("ลบรายการ id=%s", transaction_id)
         return deleted
     except (sqlite3.Error, OSError) as error:
         _show_db_error("ลบข้อมูล", error)
         return False
+
+
+def delete_transactions(transaction_ids: list[int]) -> int:
+    """ลบหลายรายการแบบ Soft Delete ใน connection/transaction เดียว (เร็วกว่าเรียก delete_transaction ทีละแถว)
+
+    Args:
+        transaction_ids: id ของรายการที่ต้องการลบ
+
+    Returns:
+        จำนวนรายการที่ลบสำเร็จ (ไม่พบ/ถูกลบไปแล้วไม่นับ; 0 ถ้าเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
+    """
+    if not transaction_ids:
+        return 0
+    try:
+        deleted_count = 0
+        with _get_connection() as conn:
+            for transaction_id in transaction_ids:
+                cursor = conn.execute(
+                    "UPDATE transactions SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
+                    (transaction_id,),
+                )
+                if cursor.rowcount > 0:
+                    deleted_count += 1
+                    _write_audit_log(conn, AUDIT_ACTION_SOFT_DELETE, transaction_id, {"is_deleted": 1})
+        if deleted_count:
+            _bump_data_version()
+            logger.info("ลบรายการ %s รายการ (batch)", deleted_count)
+        return deleted_count
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("ลบข้อมูล", error)
+        return 0

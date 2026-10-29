@@ -7,16 +7,18 @@
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
 from config.settings import get_env_flag
-from utils.storage_backend import build_storage_folder_parts
+from utils.storage_backend import build_folder_name_from_files, build_storage_folder_parts
 
-# เปิดเมื่อรันบนเครื่องของผู้ใช้เองเท่านั้น (LOCAL_DESKTOP_EXPORT=1 ใน .env): กดไอคอน File แล้วคัดลอกไฟล์ไป Desktop + เปิด Explorer
-# บน Server ต้องปิด เพราะโค้ดทำงานที่เครื่อง Server ผู้ใช้จะไม่เห็นไฟล์ (ปิด = ไอคอนเปิดไฟล์ผ่านลิงก์ในเบราว์เซอร์แทน)
+# เปิดเมื่อรันบนเครื่องของผู้ใช้เองเท่านั้น (LOCAL_DESKTOP_EXPORT=1 ใน .env): ตอน Upload สร้างโฟลเดอร์บน Desktop + คัดลอกไฟล์ให้อัตโนมัติ
+# ส่วนไอคอน File แค่เปิดโฟลเดอร์นั้นใน Explorer; บน Server ต้องปิด เพราะโค้ดทำงานที่เครื่อง Server ผู้ใช้จะไม่เห็นไฟล์
+# (ปิด = ไอคอนเปิดไฟล์ผ่านลิงก์ในเบราว์เซอร์แทน)
 DESKTOP_EXPORT_ENABLED: bool = get_env_flag("LOCAL_DESKTOP_EXPORT", False)
 
 # โฟลเดอร์เก็บไฟล์ static/local_uploads/ (ข้างไฟล์ app.py — ถ้าไม่มีจะถูกสร้างให้อัตโนมัติตอนบันทึกไฟล์แรก)
@@ -79,10 +81,15 @@ def save_document_locally(file_bytes: bytes, file_name: str, sub_folders: Option
     return "/".join(relative_parts)
 
 
+# จำลิงก์ไฟล์ที่เจอแล้ว {file_path: (ลิงก์, เวลาหมดอายุ)} กันเช็คไฟล์บนดิสก์ซ้ำทุกแถวทุกครั้งที่หน้ารีรัน
+FILE_URL_CACHE_SECONDS: float = 30.0
+_file_url_cache: dict[str, tuple[str, float]] = {}
+
+
 def build_local_file_url(file_path: Optional[str]) -> Optional[str]:
     """สร้างลิงก์เปิดไฟล์ในเครื่องจากค่า file_path ในฐานข้อมูล (ใช้ไฟล์แรกถ้าแนบหลายไฟล์)
 
-    path ที่อยู่ใต้ local_uploads/ (รวมโฟลเดอร์ย่อย ปี/เดือน/วัน/Vendor) ใช้ตามนั้น
+    path ที่อยู่ใต้ local_uploads/ (รวมโฟลเดอร์ย่อย ปี/เดือน/วัน/ชื่อไฟล์ PR) ใช้ตามนั้น
     path แบบเก่า (ไฟล์แบนใน static/ หรือ data/) ใช้เฉพาะชื่อไฟล์ ถ้าไฟล์ยังอยู่ที่เก็บรุ่นเก่า
     จะคัดลอกมาไว้ใน static/local_uploads/ ให้ก่อน (ไม่แก้ไฟล์ต้นทางหรือฐานข้อมูล)
 
@@ -94,8 +101,16 @@ def build_local_file_url(file_path: Optional[str]) -> Optional[str]:
     """
     if not file_path:
         return None
+    now = time.monotonic()
+    cached = _file_url_cache.get(file_path)
+    if cached is not None and cached[1] > now:
+        return cached[0]
     relative_parts = _resolve_relative_parts(file_path.split(FILE_PATH_SEPARATOR)[0])
-    return STATIC_URL_PREFIX + "/".join(quote(part) for part in relative_parts) if relative_parts else None
+    url = STATIC_URL_PREFIX + "/".join(quote(part) for part in relative_parts) if relative_parts else None
+    if url is not None:
+        # จำเฉพาะกรณีเจอไฟล์ (ไม่เจอให้ลองใหม่ทุกรอบ เผื่อไฟล์เพิ่งมา): ตารางรีรันบ่อย ไม่ต้องเช็คดิสก์ (OneDrive ช้า) ซ้ำทุกแถวทุกรอบ
+        _file_url_cache[file_path] = (url, now + FILE_URL_CACHE_SECONDS)
+    return url
 
 
 def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
@@ -152,19 +167,11 @@ def get_desktop_directory() -> Path:
     return Path.home() / "Desktop"
 
 
-def export_files_to_desktop(file_paths: str, vendor: str, when: datetime) -> Path:
-    """คัดลอกไฟล์ของรายการหนึ่งไปไว้ Desktop/ปี/เดือน/วัน/Vendor/ (ใช้โฟลเดอร์ที่มีอยู่แล้วซ้ำ ไม่สร้างซ้ำ)
-
-    Args:
-        file_paths: ค่าคอลัมน์ file_path (หลายไฟล์คั่นด้วย FILE_PATH_SEPARATOR)
-        vendor: ชื่อ Vendor ของรายการ
-        when: วันที่อัปโหลด (ใช้ตั้งชื่อโฟลเดอร์ ปี/เดือน/วัน)
-
-    Returns:
-        โฟลเดอร์ Vendor บน Desktop ที่ไฟล์ถูกเก็บไว้
+def _resolve_source_files(file_paths: str) -> list[Path]:
+    """แปลงค่าคอลัมน์ file_path (หลายไฟล์คั่นด้วย FILE_PATH_SEPARATOR) เป็นไฟล์ในเครื่องที่มีอยู่จริง
 
     Raises:
-        LocalStorageError: ไม่พบไฟล์ต้นทางเลย / สร้างโฟลเดอร์หรือคัดลอกไฟล์ไม่ได้
+        LocalStorageError: ไม่พบไฟล์เลย
     """
     sources: list[Path] = []
     for stored_path in file_paths.split(FILE_PATH_SEPARATOR):
@@ -173,8 +180,52 @@ def export_files_to_desktop(file_paths: str, vendor: str, when: datetime) -> Pat
             sources.append(UPLOAD_DIRECTORY.joinpath(*relative_parts))
     if not sources:
         raise LocalStorageError("ไม่พบไฟล์ของรายการนี้ในเครื่อง (ไฟล์อาจถูกย้ายหรือลบไป)")
+    return sources
 
-    target_directory = get_desktop_directory().joinpath(*build_storage_folder_parts(when, vendor))
+
+def _build_desktop_target_directory(sources: list[Path], when: datetime) -> Path:
+    """โฟลเดอร์ปลายทางบน Desktop: ปี/เดือน/วัน/ชื่อไฟล์ PR (ยังไม่สร้างโฟลเดอร์)"""
+    # ชื่อไฟล์ที่เก็บในเครื่องถูกแทนช่องว่างด้วย _ จึงใช้ชื่อโฟลเดอร์ที่ไฟล์อยู่จริง (ตรงกับตอนอัปโหลด) ไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อยใช้ชื่อไฟล์แทน
+    first_parent = sources[0].parent
+    if first_parent in (UPLOAD_DIRECTORY, LEGACY_UPLOAD_DIRECTORY):
+        folder_name = build_folder_name_from_files([source.name for source in sources])
+    else:
+        folder_name = first_parent.name
+    return get_desktop_directory().joinpath(*build_storage_folder_parts(when, folder_name))
+
+
+def find_file_location(file_paths: str, when: datetime) -> Path:
+    """หาโฟลเดอร์ที่เก็บไฟล์ของรายการหนึ่ง เพื่อเปิดใน Explorer (ไม่สร้างโฟลเดอร์ ไม่คัดลอกไฟล์)
+
+    ใช้โฟลเดอร์บน Desktop ที่สร้างตอนอัปโหลด ถ้าไม่มี (รายการเก่าก่อนมีฟีเจอร์นี้) ใช้โฟลเดอร์เก็บไฟล์ในเครื่องแทน
+
+    Args:
+        file_paths: ค่าคอลัมน์ file_path (หลายไฟล์คั่นด้วย FILE_PATH_SEPARATOR)
+        when: วันที่อัปโหลด (ใช้หาโฟลเดอร์ ปี/เดือน/วัน บน Desktop)
+
+    Raises:
+        LocalStorageError: ไม่พบไฟล์ของรายการนี้ในเครื่อง
+    """
+    sources = _resolve_source_files(file_paths)
+    desktop_directory = _build_desktop_target_directory(sources, when)
+    return desktop_directory if desktop_directory.is_dir() else sources[0].parent
+
+
+def export_files_to_desktop(file_paths: str, when: datetime) -> Path:
+    """คัดลอกไฟล์ของรายการหนึ่งไปไว้ Desktop/ปี/เดือน/วัน/ชื่อไฟล์ PR/ (ใช้โฟลเดอร์ที่มีอยู่แล้วซ้ำ ไม่สร้างซ้ำ)
+
+    Args:
+        file_paths: ค่าคอลัมน์ file_path (หลายไฟล์คั่นด้วย FILE_PATH_SEPARATOR)
+        when: วันที่อัปโหลด (ใช้ตั้งชื่อโฟลเดอร์ ปี/เดือน/วัน)
+
+    Returns:
+        โฟลเดอร์ปลายทางบน Desktop ที่ไฟล์ถูกเก็บไว้ (ชื่อโฟลเดอร์ตั้งจากชื่อไฟล์ PR เหมือนตอนอัปโหลด)
+
+    Raises:
+        LocalStorageError: ไม่พบไฟล์ต้นทางเลย / สร้างโฟลเดอร์หรือคัดลอกไฟล์ไม่ได้
+    """
+    sources = _resolve_source_files(file_paths)
+    target_directory = _build_desktop_target_directory(sources, when)
     try:
         target_directory.mkdir(parents=True, exist_ok=True)
         for source in sources:

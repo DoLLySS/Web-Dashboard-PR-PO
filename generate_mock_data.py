@@ -102,9 +102,7 @@ def make_valid_tax_id(first_twelve_digits: str) -> str:
     Returns:
         เลข 13 หลักล้วน
     """
-    weighted_sum = sum(
-        int(digit) * weight for digit, weight in zip(first_twelve_digits, range(13, 1, -1))
-    )
+    weighted_sum = sum(int(digit) * weight for digit, weight in zip(first_twelve_digits, range(13, 1, -1)))
     check_digit = (11 - weighted_sum % 11) % 10
     return f"{first_twelve_digits}{check_digit}"
 
@@ -131,9 +129,7 @@ def generate_test_data(today: Optional[date] = None) -> int:
     inserted_count = 0
     random_generator = random.Random(MOCK_RANDOM_SEED)
 
-    for row_number, (days_ago, vendor, category, price, is_completed, has_link) in enumerate(
-        MOCK_ROWS, start=1
-    ):
+    for row_number, (days_ago, vendor, category, price, is_completed, has_link) in enumerate(MOCK_ROWS, start=1):
         document_date = today - timedelta(days=days_ago)
         po_sequence = 1000 + row_number  # เลขลำดับ PO เช่น 1001
         po_number = f"PO-{document_date.year}-{po_sequence}"
@@ -163,6 +159,7 @@ def generate_test_data(today: Optional[date] = None) -> int:
             qt_no=f"QT-{document_date.year}-{200 + row_number:04d}",
             description=random_generator.choice(MOCK_DESCRIPTIONS[category]),
             unit_price=round(price * (1 - discount_rate), 2),
+            created_at=f"{document_date.isoformat()} 09:00:00",  # วันที่ Upload จำลอง = วันที่เอกสารจำลอง (ใช้นับวันค้าง)
         )
         if new_id is not None:
             inserted_count += 1

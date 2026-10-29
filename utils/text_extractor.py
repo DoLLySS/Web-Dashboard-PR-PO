@@ -109,9 +109,7 @@ SUGGEST_SOURCE_COMPANY_LABEL_PATTERN: str = r"บริษัท\s*\(\s*Company\
 SUGGEST_SOURCE_SECTION_LINE_LIMIT: int = 8
 
 # คำที่บ่งบอกว่าบรรทัดนั้นคือชื่อบริษัท (ใช้เป็นแผนสำรองเมื่อไม่มีคำนำหน้า)
-COMPANY_KEYWORD_PATTERN: str = (
-    r"บริษัท|บจก\.?|หจก\.?|ห้างหุ้นส่วน|ร้าน|Co\.\s*,?\s*Ltd|Company|Limited|Ltd\.?|Inc\.?|Corp"
-)
+COMPANY_KEYWORD_PATTERN: str = r"บริษัท|บจก\.?|หจก\.?|ห้างหุ้นส่วน|ร้าน|Co\.\s*,?\s*Ltd|Company|Limited|Ltd\.?|Inc\.?|Corp"
 
 # แผนสำรองหาชื่อบริษัทเฉพาะ N บรรทัดแรก (หัวกระดาษมักมีชื่อบริษัทอยู่ด้านบน)
 COMPANY_SEARCH_LINE_LIMIT: int = 15
@@ -239,10 +237,7 @@ class ExtractedFields:
         missing_labels = self.missing_field_labels
         if not missing_labels:
             return ""
-        return (
-            f"ระบบดึงข้อมูลไม่ได้: {', '.join(missing_labels)} "
-            "กรุณาตรวจสอบเอกสารและกรอกข้อมูลส่วนนี้เอง"
-        )
+        return f"ระบบดึงข้อมูลไม่ได้: {', '.join(missing_labels)} กรุณาตรวจสอบเอกสารและกรอกข้อมูลส่วนนี้เอง"
 
 
 # ---------------------------------------------------------------------------
@@ -373,16 +368,12 @@ def find_tax_id(text: str) -> str:
         # ขั้นที่ 1: กำลังค้นหาเลข 13 หลักที่ตามหลังคำนำหน้า Tax ID
         # [^\d\n]{0,30} = ยอมให้มีตัวอักษร/เครื่องหมาย (เช่น ":" หรือ "No.") คั่นได้ไม่เกิน 30 ตัว ในบรรทัดเดียวกัน
         for label_pattern in TAX_ID_LABELS:
-            labeled_match = re.search(
-                rf"{label_pattern}[^\d\n]{{0,30}}({THIRTEEN_DIGIT_PATTERN})", text, re.IGNORECASE
-            )
+            labeled_match = re.search(rf"{label_pattern}[^\d\n]{{0,30}}({THIRTEEN_DIGIT_PATTERN})", text, re.IGNORECASE)
             if labeled_match:
                 return re.sub(r"\D", "", labeled_match.group(1))
 
         # ขั้นที่ 2-3: กำลังค้นหาเลข 13 หลักที่ไหนก็ได้ แล้วเอาตัวเลขล้วนมาเทียบ
-        all_candidates = [
-            re.sub(r"\D", "", found) for found in re.findall(THIRTEEN_DIGIT_PATTERN, text)
-        ]
+        all_candidates = [re.sub(r"\D", "", found) for found in re.findall(THIRTEEN_DIGIT_PATTERN, text)]
         for candidate in all_candidates:
             if is_valid_thai_tax_id(candidate):
                 return candidate
@@ -481,9 +472,7 @@ def find_vendor(text: str) -> str:
         # ขั้นที่ 1: กำลังค้นหาข้อความหลังคำนำหน้าผู้ขาย
         # [ \t]*[:：]?[ \t]* = ยอมให้มี ":" หรือเว้นวรรคคั่น แล้ว (.+) = เอาที่เหลือของบรรทัดนั้น
         for label_pattern in VENDOR_LABELS:
-            labeled_match = re.search(
-                rf"{label_pattern}[ \t]*[:：]?[ \t]*(.+)", text, re.IGNORECASE
-            )
+            labeled_match = re.search(rf"{label_pattern}[ \t]*[:：]?[ \t]*(.+)", text, re.IGNORECASE)
             if labeled_match:
                 vendor_name = _clean_vendor_name(labeled_match.group(1))
                 if vendor_name:
@@ -543,9 +532,7 @@ def _find_pattern_after_label(text: str, label_patterns: list[str], value_patter
     for label_pattern in label_patterns:
         label_prefix = rf"\b{label_pattern}" if label_pattern.isascii() else label_pattern
         # [^\w\n+]{0,15} = ยอมให้มี ":" หรือเว้นวรรคคั่นสั้น ๆ ในบรรทัดเดียวกัน
-        labeled_match = re.search(
-            rf"{label_prefix}[^\w\n+]{{0,15}}({value_pattern})", text, re.IGNORECASE
-        )
+        labeled_match = re.search(rf"{label_prefix}[^\w\n+]{{0,15}}({value_pattern})", text, re.IGNORECASE)
         if labeled_match:
             return labeled_match.group(1).strip()
     return ""
@@ -680,9 +667,7 @@ def find_unit_price(text: str) -> str:
     try:
         for label_pattern in UNIT_PRICE_LABELS:
             label_prefix = rf"\b{label_pattern}" if label_pattern.isascii() else label_pattern
-            matches = re.findall(
-                rf"{label_prefix}[^\d\n]{{0,25}}({MONEY_PATTERN})", text, re.IGNORECASE
-            )
+            matches = re.findall(rf"{label_prefix}[^\d\n]{{0,25}}({MONEY_PATTERN})", text, re.IGNORECASE)
             if matches:
                 return f"{float(matches[-1].replace(',', '')):.2f}"
         return ""
@@ -700,7 +685,19 @@ def find_unit_price(text: str) -> str:
 TAX_INVOICE_PATTERN: str = r"ใบกำกับภาษี|tax\s*invoice"
 # คำที่อยู่ก่อนหน้าแล้วแปลว่าเป็นแค่การ "กล่าวถึง" ในเงื่อนไข/หมายเหตุ ไม่ใช่ตัวเอกสาร (เช่น "กรุณาออกใบกำกับภาษี")
 TAX_INVOICE_MENTION_PREFIXES: tuple[str, ...] = (
-    "ขอ", "ออก", "รอ", "ส่ง", "แนบ", "พร้อม", "กรุณา", "ต้องการ", "request", "issue", "send", "attach", "for",
+    "ขอ",
+    "ออก",
+    "รอ",
+    "ส่ง",
+    "แนบ",
+    "พร้อม",
+    "กรุณา",
+    "ต้องการ",
+    "request",
+    "issue",
+    "send",
+    "attach",
+    "for",
 )
 
 
@@ -718,7 +715,7 @@ def detect_tax_invoice(text: str) -> bool:
     """
     try:
         for match in re.finditer(TAX_INVOICE_PATTERN, text or "", flags=re.IGNORECASE):
-            text_before = text[max(0, match.start() - 12): match.start()].rstrip().lower()
+            text_before = text[max(0, match.start() - 12) : match.start()].rstrip().lower()
             if not text_before.endswith(TAX_INVOICE_MENTION_PREFIXES):
                 return True
         return False

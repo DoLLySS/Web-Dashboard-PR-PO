@@ -90,9 +90,7 @@ def get_env_int(variable_name: str, default_value: int) -> int:
     try:
         parsed_value = int(raw_value)
     except ValueError:
-        _logger.warning(
-            "ค่า %s ใน .env ('%s') ไม่ใช่ตัวเลข จึงใช้ค่าเริ่มต้น %s แทน", variable_name, raw_value, default_value
-        )
+        _logger.warning("ค่า %s ใน .env ('%s') ไม่ใช่ตัวเลข จึงใช้ค่าเริ่มต้น %s แทน", variable_name, raw_value, default_value)
         return default_value
     if parsed_value <= 0:
         _logger.warning("ค่า %s ใน .env ต้องมากกว่า 0 จึงใช้ค่าเริ่มต้น %s แทน", variable_name, default_value)
