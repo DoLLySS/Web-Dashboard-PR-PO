@@ -19,7 +19,6 @@
 """
 
 import html
-import io
 import json
 import os
 import re
@@ -57,6 +56,7 @@ from ui_grid import (
     build_grid_options,
     show_grid,
 )
+from utils.excel_export import build_excel_bytes
 from utils.local_storage import (
     DESKTOP_EXPORT_ENABLED,
     STATIC_URL_PREFIX,
@@ -2155,7 +2155,7 @@ def convert_table_to_csv_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
 
 
 def convert_table_to_excel_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
-    """แปลงตารางเป็นไฟล์ .xlsx ในหน่วยความจำ (io.BytesIO + pd.ExcelWriter ต้องใช้ openpyxl)
+    """แปลงตารางเป็นไฟล์ .xlsx ในหน่วยความจำ (ต้องใช้ openpyxl) จัดรูปแบบตาม utils/excel_export.py
 
     Args:
         export_table: ตารางที่กรองแล้ว (หัวคอลัมน์ตาม TABLE_COLUMNS)
@@ -2164,10 +2164,7 @@ def convert_table_to_excel_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
         ไบต์ของไฟล์ Excel หรือ None ถ้าแปลงไม่สำเร็จ
     """
     try:
-        excel_buffer = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as excel_writer:
-            export_table.to_excel(excel_writer, index=False, sheet_name="MasterList")
-        return excel_buffer.getvalue()
+        return build_excel_bytes(export_table)
     except (ValueError, TypeError, OSError, ImportError) as error:
         logger.error("แปลงตารางเป็น Excel ไม่สำเร็จ: %s", error, exc_info=True)
         st.error(f"❌ สร้างไฟล์ Excel ไม่สำเร็จ: {error}")
