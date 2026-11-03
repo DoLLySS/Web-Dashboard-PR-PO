@@ -71,6 +71,8 @@ PR_TOKEN_PATTERN: re.Pattern[str] = re.compile(r"(?<![A-Za-z0-9])PR(?![A-Za-z0-9
 EDGE_SEPARATORS: str = "-_ ."
 # คำนำหน้าเวลาอัปโหลดที่ระบบเติมให้บางไฟล์ เช่น "20261028_134912_664797_" (ไม่ใช่ส่วนหนึ่งของชื่อไฟล์ PR)
 UPLOAD_STAMP_PATTERN: re.Pattern[str] = re.compile(r"^\d{8}_\d{6}_\d+_")
+# วันที่ 8 หลักที่ติดมานำหน้าชื่อโฟลเดอร์จากชื่อไฟล์ เช่น "20260319_Addin_ซื้อ_NB"
+LEADING_DATE_PATTERN: re.Pattern[str] = re.compile(r"^\d{8}(?!\d)[-_ ]*")
 
 
 def _strip_pr_file_name(file_name: str) -> str:
@@ -106,6 +108,18 @@ def build_folder_name_from_files(file_names: list[str]) -> str:
     return sanitize_folder_name(stripped)
 
 
+def build_dated_folder_name(when: datetime, file_names: list[str]) -> str:
+    """ชื่อโฟลเดอร์แบบมีวันที่นำหน้า เช่น "20260319_Addin_ซื้อ_NB" (วันที่จาก when ไม่ใช้วันที่ที่ติดมาจากชื่อไฟล์)
+
+    Args:
+        when: วันที่ของไฟล์ PR
+        file_names: ชื่อไฟล์ที่ใช้ตั้งชื่อโฟลเดอร์ (ดู build_folder_name_from_files)
+    """
+    date_prefix = f"{when.year:04d}{when.month:02d}{when.day:02d}"
+    name = LEADING_DATE_PATTERN.sub("", build_folder_name_from_files(file_names))
+    return sanitize_folder_name(f"{date_prefix}_{name}" if name else date_prefix)
+
+
 def build_storage_folder_parts(when: datetime, folder_name: str) -> list[str]:
     """โครงโฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR เช่น ["2026", "Oct", "28", "20260319_Addin_ซื้อ_NB"] (ใช้วันที่อัปโหลดจริง)"""
     return [
@@ -116,7 +130,7 @@ def build_storage_folder_parts(when: datetime, folder_name: str) -> list[str]:
     ]
 
 
-def get_storage_folder_url(folder_name: str, when: datetime) -> Optional[str]:
+def get_storage_folder_url(folder_parts: list[str]) -> Optional[str]:
     """ลิงก์โฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR บน SharePoint (ปลายทางอื่นหรือยังไม่ตั้งค่า = None)
 
     Raises:
@@ -125,28 +139,26 @@ def get_storage_folder_url(folder_name: str, when: datetime) -> Optional[str]:
     if get_active_backend() != BACKEND_SHAREPOINT or not is_sharepoint_configured():
         return None
     try:
-        return get_folder_url_for(build_storage_folder_parts(when, folder_name))
+        return get_folder_url_for(folder_parts)
     except SharePointError as error:
         raise StorageError(str(error)) from error
 
 
-def upload_files_to_storage(files: list[tuple[str, bytes]], folder_name: str, when: datetime) -> list[str]:
+def upload_files_to_storage(files: list[tuple[str, bytes]], folder_parts: list[str]) -> list[str]:
     """ส่งไฟล์ไปที่ <root>/ปี/เดือน/วัน/ชื่อไฟล์ PR/ ของปลายทางที่เลือก แล้วคืนลิงก์ของแต่ละไฟล์
 
     Args:
         files: รายการ (ชื่อไฟล์, เนื้อไฟล์)
-        folder_name: ชื่อโฟลเดอร์ชั้นสุดท้าย (ได้จาก build_folder_name_from_files)
-        when: เวลาอัปโหลด
+        folder_parts: โครงโฟลเดอร์ (ได้จาก build_storage_folder_parts หรือโฟลเดอร์ของรายการเดิม)
 
     Raises:
         StorageError: ส่งไม่สำเร็จ
     """
     if not files:
         return []
-    parts = build_storage_folder_parts(when, folder_name)
     try:
         if get_active_backend() == BACKEND_SHAREPOINT:
-            return [upload_document_to_sharepoint(data, name, sub_folders=parts) for name, data in files]
-        return upload_documents_to_gdrive(files, parts)
+            return [upload_document_to_sharepoint(data, name, sub_folders=folder_parts) for name, data in files]
+        return upload_documents_to_gdrive(files, folder_parts)
     except (GDriveError, SharePointError) as error:
         raise StorageError(str(error)) from error

@@ -69,8 +69,12 @@ def save_document_locally(file_bytes: bytes, file_name: str, sub_folders: Option
 
     try:
         target_directory.mkdir(parents=True, exist_ok=True)  # สร้างโฟลเดอร์ให้เองถ้ายังไม่มี
-        stored_file_name = _pick_free_file_name(target_directory, cleaned_name)
-        (target_directory / stored_file_name).write_bytes(file_bytes)
+        same_name_file = target_directory / cleaned_name
+        if same_name_file.is_file() and same_name_file.read_bytes() == file_bytes:
+            stored_file_name = cleaned_name  # ไฟล์เดิมเนื้อเหมือนกันทุกไบต์ ใช้ไฟล์เดิม ไม่สร้าง _1
+        else:
+            stored_file_name = _pick_free_file_name(target_directory, cleaned_name)
+            (target_directory / stored_file_name).write_bytes(file_bytes)
     except OSError as error:
         raise LocalStorageError(
             "บันทึกไฟล์ไม่สำเร็จ: ตรวจว่าดิสก์ไม่เต็ม และโฟลเดอร์ local_uploads/ ไม่ถูกล็อกหรือเป็นแบบอ่านอย่างเดียว"
@@ -146,6 +150,30 @@ def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
     return relative_parts
 
 
+def get_folder_parts_from_file_paths(file_paths: Optional[str]) -> Optional[list[str]]:
+    """อ่านโครงโฟลเดอร์จริงจากค่าคอลัมน์ file_path เช่น ["2026", "Oct", "28", "ABC"]
+
+    Args:
+        file_paths: ค่าคอลัมน์ file_path (หลายไฟล์คั่นด้วย FILE_PATH_SEPARATOR)
+
+    Returns:
+        ส่วนของโฟลเดอร์ใต้ local_uploads/ หรือ None ถ้าไม่พบไฟล์ หรือเป็นไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อย
+    """
+    for stored_path in (file_paths or "").split(FILE_PATH_SEPARATOR):
+        relative_parts = _resolve_relative_parts(stored_path) if stored_path.strip() else None
+        if relative_parts and len(relative_parts) > 1:
+            return relative_parts[:-1]
+    return None
+
+
+def list_stored_files(file_paths: Optional[str]) -> list[Path]:
+    """ไฟล์ในเครื่องที่มีอยู่จริงจากค่าคอลัมน์ file_path (ไม่พบเลย = รายการว่าง ไม่โยน Error)"""
+    try:
+        return _resolve_source_files(file_paths or "")
+    except LocalStorageError:
+        return []
+
+
 def get_desktop_directory() -> Path:
     """หาโฟลเดอร์ Desktop จริงของผู้ใช้ (รองรับ Desktop ที่ OneDrive ย้ายไปไว้) สำรองด้วย ~/Desktop"""
     if sys.platform == "win32":
@@ -185,13 +213,12 @@ def _resolve_source_files(file_paths: str) -> list[Path]:
 
 def _build_desktop_target_directory(sources: list[Path], when: datetime) -> Path:
     """โฟลเดอร์ปลายทางบน Desktop: ปี/เดือน/วัน/ชื่อไฟล์ PR (ยังไม่สร้างโฟลเดอร์)"""
-    # ชื่อไฟล์ที่เก็บในเครื่องถูกแทนช่องว่างด้วย _ จึงใช้ชื่อโฟลเดอร์ที่ไฟล์อยู่จริง (ตรงกับตอนอัปโหลด) ไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อยใช้ชื่อไฟล์แทน
+    # ใช้โครงโฟลเดอร์ที่ไฟล์อยู่จริง (ตรงกับตอนอัปโหลด แม้เป็นไฟล์ที่เพิ่มเข้าโฟลเดอร์เดิมทีหลัง) ไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อยตั้งจากชื่อไฟล์และ when
     first_parent = sources[0].parent
     if first_parent in (UPLOAD_DIRECTORY, LEGACY_UPLOAD_DIRECTORY):
         folder_name = build_folder_name_from_files([source.name for source in sources])
-    else:
-        folder_name = first_parent.name
-    return get_desktop_directory().joinpath(*build_storage_folder_parts(when, folder_name))
+        return get_desktop_directory().joinpath(*build_storage_folder_parts(when, folder_name))
+    return get_desktop_directory().joinpath(*first_parent.relative_to(UPLOAD_DIRECTORY).parts)
 
 
 def find_file_location(file_paths: str, when: datetime) -> Path:

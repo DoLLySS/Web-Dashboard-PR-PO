@@ -459,6 +459,65 @@ def get_transaction(transaction_id: int) -> Optional[dict[str, Any]]:
         return None
 
 
+def find_transactions_for_folder(description: Optional[str], tax_id: Optional[str]) -> list[dict[str, Any]]:
+    """หารายการเดิมที่มีไฟล์แนบแล้ว เพื่อเก็บไฟล์ใหม่ลงโฟลเดอร์เดียวกัน (ไม่ผ่าน cache เพราะต้องเห็นรายการล่าสุดเสมอ)
+
+    เทียบ Description ก่อน (ไม่สนตัวพิมพ์/ช่องว่างหัวท้าย) ถ้าไม่เจอจึงเทียบ Tax ID
+
+    Args:
+        description: Description ของไฟล์ PR (ว่าง = ไม่เทียบ)
+        tax_id: Tax ID ที่อ่านจากไฟล์อื่น (ว่าง = ไม่เทียบ)
+
+    Returns:
+        รายการที่ตรง เรียงจากล่าสุดไปเก่าสุด (ไม่เจอหรือเกิด Error = รายการว่าง)
+    """
+    # ชื่อคอลัมน์มาจากโค้ดนี้เท่านั้น ส่วนค่าที่ค้นส่งผ่าน ? เสมอ
+    searches = (
+        ("LOWER(TRIM(description)) = LOWER(TRIM(?))", (description or "").strip()),
+        ("tax_id = ?", (tax_id or "").strip()),
+    )
+    try:
+        with _get_connection() as conn:
+            for condition, value in searches:
+                if not value:
+                    continue
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM transactions
+                    WHERE {condition} AND is_deleted = 0 AND file_path IS NOT NULL AND TRIM(file_path) <> ''
+                    ORDER BY id DESC
+                    """,
+                    (value,),
+                ).fetchall()
+                if rows:
+                    return [_row_to_dict(row) for row in rows]
+        return []
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("ค้นหารายการเดิม", error)
+        return []
+
+
+def get_transactions_with_files() -> list[dict[str, Any]]:
+    """อ่านรายการที่ยังไม่ลบและมีไฟล์แนบ เรียงจากล่าสุดไปเก่าสุด (ไม่ผ่าน cache เพราะต้องเห็นรายการล่าสุดเสมอ)
+
+    Returns:
+        รายการที่พบ (ไม่เจอหรือเกิด Error = รายการว่าง)
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM transactions
+                WHERE is_deleted = 0 AND file_path IS NOT NULL AND TRIM(file_path) <> ''
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("อ่านรายการที่มีไฟล์แนบ", error)
+        return []
+
+
 def _fetch_transactions(
     start_date: Optional[str],
     end_date: Optional[str],
@@ -481,14 +540,14 @@ def _fetch_transactions(
         conditions.append("invoice_status = ?")
         params.append(invoice_status)
     if keyword:
-        # ค้นเฉพาะชื่อผู้ขายและเบอร์โทร; เบอร์โทรเทียบแบบไม่สนขีด/ช่องว่าง (081-234 ตรงกับ 081234)
+        # ค้นเฉพาะรายละเอียด (Description) และเบอร์โทร; เบอร์โทรเทียบแบบไม่สนขีด/ช่องว่าง (081-234 ตรงกับ 081234)
         phone_keyword = keyword.replace("-", "").replace(" ", "")
         phone_condition = "REPLACE(REPLACE(COALESCE(tel, ''), '-', ''), ' ', '') LIKE ?"
         if phone_keyword:
-            conditions.append(f"(vendor LIKE ? OR tel LIKE ? OR {phone_condition})")
+            conditions.append(f"(description LIKE ? OR tel LIKE ? OR {phone_condition})")
             params.extend([f"%{keyword}%", f"%{keyword}%", f"%{phone_keyword}%"])
         else:
-            conditions.append("vendor LIKE ?")
+            conditions.append("description LIKE ?")
             params.append(f"%{keyword}%")
 
     where_clause = f"WHERE {' AND '.join(conditions)}"
@@ -529,7 +588,7 @@ def get_transactions(
         start_date: วันที่เริ่ม "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         end_date: วันที่สิ้นสุด "YYYY-MM-DD" (รวมวันนี้) ถ้า None คือไม่จำกัด
         invoice_status: กรองตามสถานะใบกำกับภาษี ถ้า None คือทุกสถานะ
-        keyword: ค้นหาเฉพาะชื่อผู้ขาย (Vendor) และเบอร์โทร (Tel.)
+        keyword: ค้นหาเฉพาะรายละเอียด (Description) และเบอร์โทร (Tel.)
 
     Returns:
         list ของ dict (ว่างถ้าไม่พบหรือเกิด Error) ใช้ pd.DataFrame(result) ได้ทันที

@@ -19,6 +19,7 @@
 """
 
 import html
+import io
 import json
 import os
 import re
@@ -64,9 +65,20 @@ from utils.local_storage import (
     build_local_file_url,
     find_file_location,
 )
-from utils.storage_backend import UNKNOWN_VENDOR_FOLDER
-from utils.submit_pipeline import RecordFields, SubmitResult, submit_record
-from utils.text_extractor import ExtractedFields, extract_fields_from_file
+from utils.storage_backend import PR_TOKEN_PATTERN, UNKNOWN_VENDOR_FOLDER
+from utils.submit_pipeline import (
+    FolderMatch,
+    FolderProfileCache,
+    RecordFields,
+    SubmitResult,
+    attach_files_to_record,
+    find_existing_folder,
+    find_pr_folder_by_description,
+    find_pr_folder_candidates,
+    match_document_to_pr,
+    submit_record,
+)
+from utils.text_extractor import ExtractedFields, extract_fields_from_file, extract_text_from_file
 
 # บันทึกลง logs/app.log
 logger = get_logger(__name__)
@@ -378,9 +390,8 @@ ALL_VENDORS_LABEL: str = "Vendor"
 # (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
 ALLOWED_FILE_TYPES: list[str] = ["pdf", "xlsx", "xls", "png", "jpg", "jpeg"]
 
-# ระบบอ่านข้อมูลอัตโนมัติเฉพาะไฟล์ PR: ชื่อไฟล์ขึ้นต้นด้วย PR (ไม่สนตัวพิมพ์เล็ก/ใหญ่) และนามสกุลต้องเป็นตัวพิมพ์เล็กตามนี้
-# ไฟล์อื่น (PO, ใบกำกับภาษี ฯลฯ) ยังแนบและเก็บตามปกติ แต่ไม่ถูกอ่านข้อมูล
-PR_FILE_NAME_PREFIX: str = "pr"
+# ระบบดึงข้อมูลลงแถวเฉพาะไฟล์ PR: ชื่อไฟล์มีคำว่า PR แยกเป็นคำ (PR_TOKEN_PATTERN) และนามสกุลต้องเป็นตัวพิมพ์เล็กตามนี้
+# ไฟล์อื่น (ใบเสนอราคา, ใบกำกับภาษี, คู่เทียบ ฯลฯ) ไม่สร้างแถว แต่เข้าโฟลเดอร์ของ PR ที่ตรงกัน
 AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx")
 
 # ตัดส่วนที่ไม่ต้องการออกจากชื่อไฟล์ก่อนแสดงในคอลัมน์ Description (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
@@ -2186,10 +2197,10 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
         with st.container(key="table_filters"):
             search_column, item_column, vendor_column = st.columns([3, 1.3, 1.7])
 
-            # ช่องค้นหา: ค้นเฉพาะชื่อ Vendor และ Tel. (ดู database.get_transactions)
+            # ช่องค้นหา: ค้นเฉพาะ Description และ Tel. (ดู database.get_transactions)
             search_keyword = search_column.text_input(
                 "Search bar",
-                placeholder="🔍 ค้นหา ชื่อ Vendor, Tel.",
+                placeholder="🔍 ค้นหา Description, Tel.",
                 label_visibility="collapsed",
             ).strip()
 
@@ -2450,9 +2461,9 @@ def _merge_extracted_fields(extracted_list: list[ExtractedFields]) -> ExtractedF
 
 
 def is_pr_document(file_name: str) -> bool:
-    """ไฟล์นี้เป็นไฟล์ PR ที่ระบบอ่านข้อมูลได้หรือไม่: ชื่อขึ้นต้นด้วย PR และนามสกุลเป็น .pdf / .xlsx"""
-    lowered_name = (file_name or "").strip().lower()
-    return lowered_name.startswith(PR_FILE_NAME_PREFIX) and lowered_name.endswith(AUTO_EXTRACT_EXTENSIONS)
+    """ไฟล์นี้เป็นไฟล์ PR ที่ระบบอ่านข้อมูลได้หรือไม่: ชื่อมีคำว่า PR แยกเป็นคำ และนามสกุลเป็น .pdf / .xlsx"""
+    cleaned_name = (file_name or "").strip()
+    return bool(PR_TOKEN_PATTERN.search(cleaned_name)) and cleaned_name.lower().endswith(AUTO_EXTRACT_EXTENSIONS)
 
 
 def clean_pr_file_name(file_name: str) -> str:
@@ -2504,7 +2515,7 @@ def find_pr_date_in_file_names(file_names: list[str]) -> Optional[date]:
 def build_record_from_documents(
     documents: list[UploadedFile], category: str, invoice_choice: str
 ) -> tuple[RecordFields, str]:
-    """Extract ข้อมูลจากไฟล์ PR ที่วาง (ชื่อขึ้นต้น PR นามสกุล .pdf/.xlsx) แล้วประกอบเป็นรายการพร้อมบันทึก
+    """Extract ข้อมูลจากไฟล์ PR ที่วาง (ชื่อมีคำว่า PR นามสกุล .pdf/.xlsx) แล้วประกอบเป็นรายการพร้อมบันทึก
 
     ไฟล์อื่นที่วางมาด้วยไม่ถูกอ่านข้อมูล แต่ยังถูกแนบและเก็บไว้ในโฟลเดอร์เดียวกัน (ดู submit_record)
 
@@ -2518,20 +2529,20 @@ def build_record_from_documents(
     """
     readable = [document for document in documents if is_pr_document(document.name)]
     extracted = _merge_extracted_fields([extract_fields_from_file(document, document.name) for document in readable])
-    warning = (
-        extracted.warning_message
-        if readable
-        else "ไม่พบไฟล์ PR (ชื่อขึ้นต้นด้วย PR นามสกุล .pdf หรือ .xlsx) จึงไม่ได้อ่านข้อมูล เก็บไฟล์ไว้ในโฟลเดอร์ Unknown"
-    )
+    warning = extracted.warning_message if readable else "ไฟล์ PR ไม่ใช่ .pdf หรือ .xlsx จึงไม่ได้อ่านข้อมูล กรุณากรอกข้อมูลในตาราง"
 
     # พบใบกำกับภาษีในไฟล์ -> ตั้งสถานะเป็น Completed ให้เอง
     if extracted.has_tax_invoice:
         invoice_choice = INVOICE_CHOICE_HAS
     pr_request_date = _parse_iso_date_or_none(extracted.pr_request_date)
-    # คอลัมน์ Date = วันที่ของไฟล์ PR: วันที่นำหน้าชื่อไฟล์ (ทุกไฟล์ที่วาง) -> วันที่ในเนื้อไฟล์ -> (ไม่พบเลย) วันที่อัปโหลด
+    # คอลัมน์ Date = วันที่ของ PR: บรรทัด "Date:" ในเอกสาร -> วันที่นำหน้าชื่อไฟล์ (ทุกไฟล์ที่วาง)
+    # -> PR Request Date ในเอกสาร -> (ไม่พบเลย) วันที่อัปโหลด
     # วันที่ Upload จริงเก็บแยกใน created_at อัตโนมัติ (ใช้นับวันค้างของแถบแจ้งเตือน)
     pr_file_date = (
-        find_pr_date_in_file_names([document.name for document in documents]) or pr_request_date or date.today()
+        _parse_iso_date_or_none(extracted.pr_document_date)
+        or find_pr_date_in_file_names([document.name for document in documents])
+        or pr_request_date
+        or date.today()
     )
     record = RecordFields(
         date=pr_file_date.isoformat(),
@@ -2553,9 +2564,56 @@ def build_record_from_documents(
     return record, warning
 
 
+def attach_documents_without_pr(documents: list[UploadedFile]) -> tuple[list[SubmitResult], list[str]]:
+    """เพิ่มไฟล์ที่ไม่ใช่ PR เข้าโฟลเดอร์ของ PR ที่ตรงกันทีละไฟล์ โดยไม่สร้างแถวใหม่ ไฟล์ที่ไม่ตรงจะไม่ถูกบันทึก
+
+    Args:
+        documents: ไฟล์ที่วาง (ไม่มีไฟล์ PR อยู่ในชุด)
+
+    Returns:
+        (ผลการเพิ่มไฟล์ของแต่ละแถว, ชื่อไฟล์ที่จับคู่ไม่ได้)
+    """
+    candidates = find_pr_folder_candidates()
+    profiles = FolderProfileCache()  # อ่านไฟล์ในโฟลเดอร์ของแต่ละ PR ครั้งเดียวต่อการ Upload
+    files_by_transaction: dict[int, tuple[FolderMatch, list[tuple[str, bytes]]]] = {}
+    unmatched_names: list[str] = []
+    for document in documents:
+        file_bytes = document.getvalue()
+        # อ่านจากสำเนาในหน่วยความจำ และรวมชื่อไฟล์ด้วย เพราะไฟล์สแกนอาจมีคำจาก Description เฉพาะในชื่อไฟล์
+        text = f"{document.name}\n{extract_text_from_file(io.BytesIO(file_bytes), document.name)}"
+        match = match_document_to_pr(text, candidates, profiles)
+        if match:
+            transaction_id = int(match.transaction["id"])
+            files_by_transaction.setdefault(transaction_id, (match, []))[1].append((document.name, file_bytes))
+        else:
+            unmatched_names.append(document.name)
+    results = [attach_files_to_record(match, files) for match, files in files_by_transaction.values()]
+    return results, unmatched_names
+
+
+def _build_folder_match_warning(match: FolderMatch) -> str:
+    """ข้อความเตือนเมื่อตรงหลายรายการ (Tax ID ซ้ำได้ถ้าผู้ขายรายเดียวมีหลาย PR) คืนค่าว่างถ้าตรงรายการเดียว"""
+    if match.match_count <= 1:
+        return ""
+    return (
+        f"พบ {match.match_count} รายการที่ตรงกัน จึงใช้รายการล่าสุด (รหัสรายการ {match.transaction['id']}) "
+        "กรุณาตรวจว่าเป็น PR ที่ถูกต้อง"
+    )
+
+
 def build_submit_summary(result: SubmitResult, extra_warning: str = "") -> str:
     """สรุปผลการส่งเป็นข้อความ (markdown) ต่อปลายทาง: เว็บ / ไฟล์ออนไลน์ / Master-List"""
-    lines = [f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {result.transaction_id}) · แสดงบนเว็บแล้ว"]
+    if result.attached_to_existing:
+        lines = [
+            f"📎 เพิ่มไฟล์ใหม่ {len(result.attached_file_names)} ไฟล์เข้ารายการเดิม (รหัสรายการ {result.transaction_id})"
+            f" · โฟลเดอร์: {result.existing_folder} · ไฟล์: {', '.join(result.attached_file_names)}"
+            if result.attached_file_names
+            else f"📎 ไฟล์ทั้งหมดมีอยู่แล้วในรายการเดิม (รหัสรายการ {result.transaction_id}) · โฟลเดอร์: {result.existing_folder}"
+        ]
+    else:
+        lines = [f"✅ บันทึกรายการเรียบร้อย (รหัสรายการ {result.transaction_id}) · แสดงบนเว็บแล้ว"]
+        if result.existing_folder:
+            lines.append(f"📁 เก็บไฟล์ในโฟลเดอร์เดิม: {result.existing_folder}")
     if result.desktop_folder:
         lines.append(f"📁 สร้างโฟลเดอร์บน Desktop แล้ว: {result.desktop_folder}")
     elif result.desktop_message:
@@ -2564,9 +2622,10 @@ def build_submit_summary(result: SubmitResult, extra_warning: str = "") -> str:
         lines.append(f"☁️ ส่งไฟล์ไปที่เก็บไฟล์ออนไลน์แล้ว {len(result.storage_links)} ไฟล์")
     elif result.storage_status in ("skipped", "error"):
         lines.append(f"⚠️ {result.storage_message}")
-    lines.append(
-        "📤 ส่งเข้า Master-List แล้ว" if result.masterlist_sent else f"⏳ Master-List: {result.masterlist_message}"
-    )
+    if not result.attached_to_existing:  # เพิ่มไฟล์เข้ารายการเดิมไม่ส่ง Master-List ซ้ำ
+        lines.append(
+            "📤 ส่งเข้า Master-List แล้ว" if result.masterlist_sent else f"⏳ Master-List: {result.masterlist_message}"
+        )
     if extra_warning:
         lines.append(f"⚠️ {extra_warning}")
     return "\n\n".join(lines)
@@ -2592,7 +2651,10 @@ def render_upload_mode(form_counter: int) -> None:
     _inject_drag_feedback_script()
     with st.container(key="upload_box_extract"):
         _render_upload_card_heading(
-            "📄", "Upload P/O", "วางได้หลายไฟล์ ระบบอ่านข้อมูลเฉพาะไฟล์ PR (.pdf / .xlsx)", "เว็บไซต์ + Drive + Master-List"
+            "📄",
+            "Upload P/O",
+            "วางได้หลายไฟล์ ไฟล์ PR (.pdf / .xlsx) สร้างแถวใหม่ ไฟล์อื่นเข้าโฟลเดอร์ของ PR ที่ตรงกัน",
+            "เว็บไซต์ + Drive + Master-List",
         )
         documents: list[UploadedFile] = st.file_uploader(
             "Upload P/O",
@@ -2615,13 +2677,45 @@ def render_upload_mode(form_counter: int) -> None:
     if not is_clicked or not documents:
         return
 
-    with st.spinner("กำลังอ่านข้อมูลและส่งออก..."):
-        record, extract_warning = build_record_from_documents(
-            documents,
-            st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0]),
-            st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET),
+    pr_documents = [document for document in documents if PR_TOKEN_PATTERN.search(document.name)]
+    if not pr_documents:
+        # ไม่มีไฟล์ PR ในชุด -> ไม่สร้างแถวใหม่ไม่ว่ากรณีใด
+        with st.spinner("กำลังอ่านข้อมูลและจับคู่กับ PR..."):
+            results, unmatched_names = attach_documents_without_pr(documents)
+        unmatched_message = (
+            f"ไม่ได้บันทึก {len(unmatched_names)} ไฟล์ เพราะจับคู่กับ PR ไม่ได้หรือตรงหลายรายการ: {', '.join(unmatched_names)}"
+            if unmatched_names
+            else ""
         )
-        result = submit_record(record, [(document.name, document.getvalue()) for document in documents])
+        failed_results = [result for result in results if result.transaction_id is None]
+        if failed_results or not results:
+            for result in failed_results:
+                st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
+            if unmatched_message:
+                st.error(f"❌ {unmatched_message} กรุณา Upload ไฟล์ PR ก่อน")
+            return
+        summaries = [build_submit_summary(result) for result in results]
+        if unmatched_message:
+            summaries.append(f"⚠️ {unmatched_message}")
+        finish_submission("\n\n".join(summaries), form_counter)
+        return
+
+    files = [(document.name, document.getvalue()) for document in documents]
+    with st.spinner("กำลังอ่านข้อมูลและส่งออก..."):
+        # ไฟล์ PR ตรงกับแถว PR เดิม -> เพิ่มทุกไฟล์เข้าแถวและโฟลเดอร์เดิม ไม่ตรง -> สร้างรายการใหม่
+        folder_match = find_pr_folder_by_description(
+            clean_pr_file_name(pr_documents[0].name), find_pr_folder_candidates()
+        )
+        if folder_match:
+            extract_warning = _build_folder_match_warning(folder_match)
+            result = attach_files_to_record(folder_match, files)
+        else:
+            record, extract_warning = build_record_from_documents(
+                documents,
+                st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0]),
+                st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET),
+            )
+            result = submit_record(record, files)
     if result.transaction_id is None:
         st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
         return
@@ -2877,6 +2971,8 @@ def render_entry_form(form_counter: int, show_po_uploader: bool = True, title: s
 
     # ไฟล์แนบจากช่อง Upload ใต้ฟอร์ม ส่งออกแบบเดียวกับหน้า Upload (เก็บในเครื่อง + ที่เก็บไฟล์ออนไลน์ + DB + Master-List)
     # ถ้าส่งไม่สำเร็จจะไม่ล้างฟอร์ม ผู้ใช้กดบันทึกซ้ำได้โดยไม่ต้องกรอกใหม่
+    # ผู้ใช้กรอกข้อมูลมาเอง จึงสร้างแถวใหม่เสมอ แต่ถ้า Description/Tax ID ตรงกับรายการเดิม ไฟล์แนบจะเข้าโฟลเดอร์เดิม
+    folder_match = find_existing_folder(description, tax_id) if uploaded_po_documents else None
     result = submit_record(
         RecordFields(
             # เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD: มีไฟล์แนบที่ชื่อขึ้นต้นด้วยวันที่ PR ใช้วันที่นั้น ไม่งั้นใช้ค่าในช่อง Date
@@ -2901,11 +2997,14 @@ def render_entry_form(form_counter: int, show_po_uploader: bool = True, title: s
             unit_price=unit_price or None,  # 0 = ไม่ได้กรอก เก็บเป็น NULL
         ),
         [(document.name, document.getvalue()) for document in (uploaded_po_documents or [])],
+        existing_folder_parts=folder_match.folder_parts if folder_match else None,
     )
     if result.transaction_id is None:
         st.error(f"❌ {result.error}")
         return
-    finish_submission(build_submit_summary(result), form_counter)
+    finish_submission(
+        build_submit_summary(result, _build_folder_match_warning(folder_match) if folder_match else ""), form_counter
+    )
 
 
 # ---------------------------------------------------------------------------

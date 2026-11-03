@@ -62,6 +62,9 @@ TAX_ID_LABELS: list[str] = [
 # (?<!\d) และ (?!\d) = ห้ามติดกับตัวเลขอื่น กันไปหยิบเลขยาว ๆ มาตัดเอา 13 หลัก
 THIRTEEN_DIGIT_PATTERN: str = r"(?<!\d)(?:\d[\s-]?){12}\d(?!\d)"
 
+# Tax ID ของบริษัทเราเอง (ผู้ซื้อ) มีอยู่ในใบเสนอราคาทุกผู้ขาย จึงใช้ระบุ PR ไม่ได้
+OWN_COMPANY_TAX_ID: str = "0105537062398"
+
 # คำนำหน้ายอดรวม เรียงจาก "เจาะจงที่สุด" ไป "กว้างที่สุด" ระบบจะลองตามลำดับนี้
 # และใช้ผลของคำแรกที่เจอ (กัน "ยอดรวม" ของสินค้าแต่ละบรรทัดมาแทนที่ยอดสุทธิ)
 TOTAL_AMOUNT_LABELS: list[str] = [
@@ -163,6 +166,27 @@ DATE_PATTERN: str = r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{4}"
 BUDDHIST_YEAR_THRESHOLD: int = 2400
 BUDDHIST_YEAR_OFFSET: int = 543
 
+# วันที่ในเอกสาร PR: อยู่ในบรรทัดลายเซ็นที่ขึ้นต้นด้วย "Date:" เช่น "Date: 19-Mar-26 Date: 19-Mar-2026"
+# ยึดต้นบรรทัดเพื่อไม่ให้อ่านช่อง "(Needed Date):" ซึ่งเป็นวันที่ต้องการสินค้า
+PR_DOCUMENT_DATE_LINE_PATTERN: str = r"(?im)^\s*Date\s*:(.*)$"
+# วัน / เดือน (ตัวเลขหรือชื่อเดือนภาษาอังกฤษ) / ปี (2 หรือ 4 หลัก) เช่น 19/03/2026, 19-Mar-26
+PR_DOCUMENT_DATE_VALUE_PATTERN: str = r"\b(\d{1,2})[/\-. ]([A-Za-z]{3,9}|\d{1,2})[/\-. ](\d{4}|\d{2})\b"
+MONTH_NAME_TO_NUMBER: dict[str, int] = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+TWO_DIGIT_YEAR_PREFIX: str = "20"  # ปี 2 หลักในเอกสาร ถือเป็น ค.ศ. 20xx
+
 # เลขที่ Quotation
 QT_NO_LABELS: list[str] = [
     r"เลขที่ใบเสนอราคา",
@@ -207,6 +231,7 @@ class ExtractedFields:
         tel: เบอร์โทรศัพท์ (ตามที่เขียนในเอกสาร เช่น "02-123-4567")
         pr_run_no: เลขที่ PR
         pr_request_date: วันที่ PR รูปแบบ "YYYY-MM-DD" (ค.ศ.)
+        pr_document_date: วันที่ในบรรทัด "Date:" ของเอกสาร PR รูปแบบ "YYYY-MM-DD" (ค.ศ.)
         qt_no: เลขที่ Quotation
         description: รายละเอียดอุปกรณ์
         unit_price: ราคาสุทธิที่รวม Discount แล้ว ทศนิยม 2 ตำแหน่ง เช่น "1500.50"
@@ -223,6 +248,8 @@ class ExtractedFields:
     qt_no: str = ""
     description: str = ""
     unit_price: str = ""
+    # ใช้กำหนดคอลัมน์ Date เท่านั้น ไม่นับเป็นฟิลด์ที่ "ขาด" ใน warning_message
+    pr_document_date: str = ""
     # ตรวจพบว่าไฟล์เป็น/มีใบกำกับภาษีหรือไม่ (ใช้ตั้งสถานะ Completed อัตโนมัติ) ไม่นับเป็นฟิลด์ที่ "ขาด" ใน warning_message
     has_tax_invoice: bool = False
 
@@ -381,6 +408,18 @@ def find_tax_id(text: str) -> str:
     except FIND_ERRORS as error:
         logger.warning("หา Tax ID ไม่สำเร็จ: %s", error)
         return ""
+
+
+def find_all_tax_ids(text: str) -> list[str]:
+    """หาเลข 13 หลักทั้งหมดในเอกสาร (ไฟล์หนึ่งมีได้หลายเลข เช่น ของผู้ขายและของผู้ซื้อ)
+
+    Args:
+        text: ข้อความทั้งเอกสาร
+
+    Returns:
+        เลข 13 หลักล้วนตามลำดับที่พบ ไม่ซ้ำกัน (ไม่เจอ = รายการว่าง)
+    """
+    return list(dict.fromkeys(re.sub(r"\D", "", found) for found in re.findall(THIRTEEN_DIGIT_PATTERN, text)))
 
 
 def find_total_amount(text: str) -> str:
@@ -619,6 +658,36 @@ def find_pr_request_date(text: str) -> str:
         return ""
 
 
+def find_pr_document_date(text: str) -> str:
+    """หาวันที่จากบรรทัดลายเซ็น "Date:" ของเอกสาร PR แล้วแปลงเป็น "YYYY-MM-DD" (ค.ศ.)
+
+    ใช้วันที่แรกที่อ่านได้ (ช่องแรกของบรรทัดคือผู้ร้องขอ) ช่องว่างหรือวันที่ที่ไม่มีจริงจะข้ามไปค่าถัดไป
+
+    Args:
+        text: ข้อความทั้งเอกสาร
+
+    Returns:
+        วันที่รูปแบบ ISO หรือ "" ถ้าหาไม่เจอ
+    """
+    try:
+        for date_line in re.findall(PR_DOCUMENT_DATE_LINE_PATTERN, text):
+            for day_text, month_text, year_text in re.findall(PR_DOCUMENT_DATE_VALUE_PATTERN, date_line):
+                if not month_text.isdigit():
+                    month_number = MONTH_NAME_TO_NUMBER.get(month_text[:3].lower())
+                    if month_number is None:
+                        continue
+                    month_text = str(month_number)
+                if len(year_text) == 2:
+                    year_text = f"{TWO_DIGIT_YEAR_PREFIX}{year_text}"
+                iso_date = _normalize_date_to_iso(day_text, month_text, year_text)
+                if iso_date:
+                    return iso_date
+        return ""
+    except FIND_ERRORS as error:
+        logger.warning("หาวันที่ในเอกสาร PR ไม่สำเร็จ: %s", error)
+        return ""
+
+
 def find_qt_no(text: str) -> str:
     """หาเลขที่ Quotation เช่น "QT-2026-0345"
 
@@ -740,6 +809,7 @@ def extract_fields_from_text(text: str) -> ExtractedFields:
         tel=find_tel(text),
         pr_run_no=find_pr_run_no(text),
         pr_request_date=find_pr_request_date(text),
+        pr_document_date=find_pr_document_date(text),
         qt_no=find_qt_no(text),
         description=find_description(text),
         unit_price=find_unit_price(text),
@@ -780,6 +850,24 @@ def extract_fields_from_excel(excel_source: Optional[Union[str, BinaryIO]]) -> E
     if excel_source is None:
         return ExtractedFields()
     return extract_fields_from_text(extract_text_from_excel(excel_source))
+
+
+def extract_text_from_file(file_source: Any, file_name: str) -> str:
+    """อ่านข้อความทั้งไฟล์ตามนามสกุล (ฟังก์ชันนี้ไม่โยน Error)
+
+    Args:
+        file_source: path หรือ file object ของไฟล์
+        file_name: ชื่อไฟล์ (ใช้ดูนามสกุล)
+
+    Returns:
+        ข้อความในไฟล์ (นามสกุลที่ไม่รองรับ เช่นรูปภาพ หรือไฟล์ที่อ่านไม่ได้ = "")
+    """
+    file_extension = Path(file_name or "").suffix.lower()
+    if file_extension == ".pdf":
+        return extract_text_from_pdf(file_source)
+    if file_extension in EXCEL_EXTENSIONS:
+        return extract_text_from_excel(file_source)
+    return ""
 
 
 def extract_fields_from_file(file_source: Any, file_name: str) -> ExtractedFields:
