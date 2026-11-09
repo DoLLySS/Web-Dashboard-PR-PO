@@ -35,9 +35,8 @@ from utils.storage_backend import (
     build_dated_folder_name,
     build_storage_folder_parts,
     sanitize_folder_name,
-    get_storage_folder_url,
     is_storage_configured,
-    upload_files_to_storage,
+    upload_files_and_folder_url,
 )
 from utils.pr_reader import read_item_names
 from utils.text_extractor import OWN_COMPANY_TAX_ID, extract_text_from_file, find_all_tax_ids
@@ -371,8 +370,7 @@ def _store_files(
         result.storage_message = "ยังไม่ได้ตั้งค่าที่เก็บไฟล์ออนไลน์ (ดู NEXT_STEPS.md) ไฟล์เก็บในเครื่องแล้ว"
     elif new_files:
         try:
-            result.storage_links = upload_files_to_storage(new_files, folder_parts)
-            folder_url = get_storage_folder_url(folder_parts)  # SharePoint: ลิงก์ไปโฟลเดอร์ของไฟล์ PR
+            result.storage_links, folder_url = upload_files_and_folder_url(new_files, folder_parts)  # ลิงก์โฟลเดอร์ของไฟล์ PR (ถ้ามี)
             if folder_url:
                 result.storage_links.insert(0, folder_url)
             result.storage_status = "ok"

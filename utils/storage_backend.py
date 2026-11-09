@@ -1,6 +1,6 @@
 """ตัวกลางส่งไฟล์ไปที่เก็บไฟล์ออนไลน์ (Google Drive / SharePoint) ตามโครงโฟลเดอร์ /ปี/เดือน/วัน/ชื่อไฟล์ PR/
 
-เลือกปลายทางด้วย STORAGE_BACKEND ใน .env: "gdrive" (ค่าเริ่มต้น ใช้ทดสอบ) หรือ "sharepoint"
+เลือกปลายทางด้วย STORAGE_BACKEND ใน .env: "gdrive" (ค่าเริ่มต้น ใช้ทดสอบ), "powerautomate" หรือ "sharepoint" (แบบเดิม ใช้ไม่ได้แล้ว)
 ไฟล์นี้ไม่เรียก Streamlit: ถ้าผิดพลาดจะ raise StorageError พร้อมข้อความภาษาไทย
 """
 
@@ -10,6 +10,7 @@ from typing import Optional
 
 from config.settings import get_env_text
 from utils.gdrive_api import GDriveError, is_gdrive_configured, upload_documents_to_gdrive
+from utils.power_automate_api import PowerAutomateError, is_power_automate_configured, upload_file_to_flow
 from utils.sharepoint_api import (
     SharePointError,
     get_folder_url_for,
@@ -18,7 +19,8 @@ from utils.sharepoint_api import (
 )
 
 BACKEND_GDRIVE: str = "gdrive"
-BACKEND_SHAREPOINT: str = "sharepoint"
+BACKEND_SHAREPOINT: str = "sharepoint"  # แบบเดิม (Azure ACS) ใช้ไม่ได้แล้ว ดู NEXT_STEPS.md
+BACKEND_POWER_AUTOMATE: str = "powerautomate"  # ส่งผ่าน Power Automate ไปที่ SharePoint
 UNKNOWN_VENDOR_FOLDER: str = "Unknown"  # ใช้เมื่อไม่รู้ชื่อ Vendor
 MAX_FOLDER_NAME_LENGTH: int = 80
 
@@ -28,15 +30,20 @@ class StorageError(Exception):
 
 
 def get_active_backend() -> str:
-    """ปลายทางที่ใช้อยู่ตาม STORAGE_BACKEND (ค่าที่ไม่รู้จักใช้ gdrive)"""
-    backend = get_env_text("STORAGE_BACKEND", BACKEND_GDRIVE).lower()
-    return BACKEND_SHAREPOINT if backend == BACKEND_SHAREPOINT else BACKEND_GDRIVE
+    """ปลายทางที่ใช้อยู่ตาม STORAGE_BACKEND (ไม่สนตัวพิมพ์ และ - _ ช่องว่าง เช่น "Power-Automate"; ค่าที่ไม่รู้จักใช้ gdrive)"""
+    backend = re.sub(r"[-_\s]", "", get_env_text("STORAGE_BACKEND", BACKEND_GDRIVE).lower())
+    if backend in (BACKEND_SHAREPOINT, BACKEND_POWER_AUTOMATE):
+        return backend
+    return BACKEND_GDRIVE
 
 
 def is_storage_configured() -> bool:
     """ตั้งค่าปลายทางที่ใช้อยู่ครบหรือยัง (ยังไม่ครบ = ข้ามการส่งไฟล์ออนไลน์ ไม่ถือเป็น error)"""
-    if get_active_backend() == BACKEND_SHAREPOINT:
+    backend = get_active_backend()
+    if backend == BACKEND_SHAREPOINT:
         return is_sharepoint_configured()
+    if backend == BACKEND_POWER_AUTOMATE:
+        return is_power_automate_configured()
     return is_gdrive_configured()
 
 
@@ -131,7 +138,9 @@ def build_storage_folder_parts(when: datetime, folder_name: str) -> list[str]:
 
 
 def get_storage_folder_url(folder_parts: list[str]) -> Optional[str]:
-    """ลิงก์โฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR บน SharePoint (ปลายทางอื่นหรือยังไม่ตั้งค่า = None)
+    """ลิงก์โฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR บน SharePoint แบบเดิม (ปลายทางอื่นหรือยังไม่ตั้งค่า = None)
+
+    Power Automate ไม่ใช้ฟังก์ชันนี้ ลิงก์โฟลเดอร์มากับคำตอบของ Flow (ดู upload_files_and_folder_url)
 
     Raises:
         StorageError: ประกอบลิงก์ไม่ได้
@@ -142,6 +151,34 @@ def get_storage_folder_url(folder_parts: list[str]) -> Optional[str]:
         return get_folder_url_for(folder_parts)
     except SharePointError as error:
         raise StorageError(str(error)) from error
+
+
+def _upload_to_power_automate(files: list[tuple[str, bytes]], folder_parts: list[str]) -> tuple[list[str], Optional[str]]:
+    """ส่งทีละไฟล์ตามลำดับ หยุดที่ไฟล์แรกที่ล้มเหลว (ข้อความบอกชื่อไฟล์) คืน (ลิงก์ไฟล์, ลิงก์โฟลเดอร์ที่ Flow ตอบ)"""
+    links: list[str] = []
+    folder_url: Optional[str] = None
+    for name, data in files:
+        try:
+            uploaded = upload_file_to_flow(name, data, folder_parts)
+        except PowerAutomateError as error:
+            sent = f" (ส่งสำเร็จแล้ว {len(links)} ไฟล์ก่อนหน้า)" if links else ""
+            raise StorageError(f"ส่งไฟล์ '{name}' ไม่สำเร็จ{sent}: {error}") from error
+        links.append(uploaded.file_url)
+        folder_url = folder_url or uploaded.folder_url
+    return links, folder_url
+
+
+def upload_files_and_folder_url(
+    files: list[tuple[str, bytes]], folder_parts: list[str]
+) -> tuple[list[str], Optional[str]]:
+    """ส่งไฟล์ไปที่เก็บออนไลน์ แล้วคืน (ลิงก์ของแต่ละไฟล์, ลิงก์โฟลเดอร์ หรือ None ถ้าปลายทางไม่มี)
+
+    Raises:
+        StorageError: ส่งไม่สำเร็จ
+    """
+    if files and get_active_backend() == BACKEND_POWER_AUTOMATE:
+        return _upload_to_power_automate(files, folder_parts)
+    return upload_files_to_storage(files, folder_parts), get_storage_folder_url(folder_parts)
 
 
 def upload_files_to_storage(files: list[tuple[str, bytes]], folder_parts: list[str]) -> list[str]:
@@ -156,6 +193,8 @@ def upload_files_to_storage(files: list[tuple[str, bytes]], folder_parts: list[s
     """
     if not files:
         return []
+    if get_active_backend() == BACKEND_POWER_AUTOMATE:
+        return _upload_to_power_automate(files, folder_parts)[0]
     try:
         if get_active_backend() == BACKEND_SHAREPOINT:
             return [upload_document_to_sharepoint(data, name, sub_folders=folder_parts) for name, data in files]

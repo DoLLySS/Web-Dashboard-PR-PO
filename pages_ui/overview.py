@@ -70,7 +70,7 @@ from utils.local_storage import (
 )
 from utils.masterlist_client import is_masterlist_configured
 from utils.row_cleanup import delete_rows_and_files
-from utils.storage_backend import BACKEND_SHAREPOINT, get_active_backend, is_storage_configured
+from utils.storage_backend import BACKEND_POWER_AUTOMATE, BACKEND_SHAREPOINT, get_active_backend, is_storage_configured
 from utils.submit_pipeline import (
     FolderMatch,
     RecordFields,
@@ -2533,7 +2533,7 @@ def _inject_drag_feedback_script() -> None:
 
 def _storage_destination_label() -> str:
     """ชื่อที่เก็บไฟล์ออนไลน์ที่ใช้อยู่ตาม STORAGE_BACKEND (ใช้บนการ์ดอัปโหลด)"""
-    return "SharePoint" if get_active_backend() == BACKEND_SHAREPOINT else "Drive"
+    return "SharePoint" if get_active_backend() in (BACKEND_SHAREPOINT, BACKEND_POWER_AUTOMATE) else "Drive"
 
 
 def _render_upload_card_heading(icon: str, title: str, hint: str, badge: str) -> None:

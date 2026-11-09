@@ -27,13 +27,13 @@
 - คำตอบ: `{fileUrl, folderUrl}` หรือ `{error}`
 - URL ของ Flow มีลายเซ็นลับในตัว ถือเป็นรหัสผ่าน เก็บใน `.env` (`POWER_AUTOMATE_UPLOAD_URL`) ห้ามลง log หรือ Git และเพิ่ม header `X-Api-Key` (`POWER_AUTOMATE_API_KEY`) ให้ Flow ตรวจซ้ำ
 
-**S2 — เขียนโค้ด:** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` แล้วค่อยส่ง Master-List ผ่าน `utils/masterlist_client.py`
+**S2 — เขียนโค้ด: เสร็จ** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` (ส่งทีละไฟล์, ลิงก์โฟลเดอร์มาจากคำตอบของ Flow, ไม่เปิดเผย URL/คีย์, ไม่ตาม redirect, retry เฉพาะ 429/502/503/504, ไม่ retry เมื่อ timeout) ยังไม่ได้ทำ: ส่ง Master-List ผ่าน `utils/masterlist_client.py` (S2b)
 
-**S3 — เทสต์กับเซิร์ฟเวอร์ปลอม:** สำเร็จ, 4xx/5xx, timeout, JSON เพี้ยน, URL ไม่ใช่ https, ชื่อภาษาไทย, ความลับไม่โผล่ใน log, ส่งไม่สำเร็จแล้วแถวและไฟล์ในเครื่องยังอยู่
+**S3 — เทสต์กับเซิร์ฟเวอร์ปลอม: เสร็จ** `tests/test_power_automate.py` ครอบคลุมสำเร็จ, 4xx/5xx, retry, timeout, JSON เพี้ยน, redirect, URL ไม่ปลอดภัย, ความลับไม่โผล่ใน log, ส่งไม่สำเร็จแล้วแถวและไฟล์ในเครื่องยังอยู่
 
 **S4 — สร้าง Flow:** trigger พร้อม schema, ตรวจ `X-Api-Key`, สร้างโฟลเดอร์ซ้อนชั้น (ต้องลองจริงว่าสร้างซ้ำแล้ว error หรือไม่), สร้างไฟล์, ตอบลิงก์ และเปิดการแจ้งเตือนเมื่อ Flow ล้มเหลว
 
-**S5 — ทดสอบกับไลบรารีว่าง:** ส่งไฟล์ทดสอบเล็ก ๆ ก่อน แล้วทดสอบทั้งแอปบนสำเนาข้อมูล ทั้งชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ และกรณี Flow ปิดหรือล้มเหลว
+**S5 — ทดสอบกับไลบรารีว่าง:** รัน `venv/bin/python scripts/check_flow.py` (ส่งไฟล์ทดสอบเล็ก ๆ ไปโฟลเดอร์ `_connection_test`) ก่อน แล้วทดสอบทั้งแอปบนสำเนาข้อมูล ทั้งชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ และกรณี Flow ปิดหรือล้มเหลว
 
 **S6 — เปิดใช้งาน:** ตั้งค่าใน `.env` ตัดสินใจเรื่องการย้ายไฟล์เดิมขึ้น SharePoint และนโยบายการลบไฟล์ออนไลน์ จากนั้นพิจารณาลบ `utils/sharepoint_api.py` พร้อม `Office365-REST-Python-Client`
 

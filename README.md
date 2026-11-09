@@ -31,7 +31,7 @@
 | เก็บไฟล์เอกสารในเครื่อง (`static/local_uploads/`) | ✅ ใช้งานได้ |
 | สำรองข้อมูล (`scripts/backup.py`) และล้างข้อมูลเก่า (`scripts/purge_deleted.py`) | ✅ ทดสอบบนสำเนาแล้ว วิธีใช้อยู่ใน `DEPLOY.md` |
 | ส่งไฟล์ขึ้น Google Drive | 🟡 ใช้ทดสอบ ดู `NEXT_STEPS.md` |
-| เชื่อม SharePoint | ❌ ยังไม่ได้เชื่อม วางแผนใช้ Power Automate ดู `NEXT_STEPS.md` |
+| ส่งไฟล์ขึ้น SharePoint ผ่าน Power Automate | 🟡 โค้ดฝั่งแอปเสร็จและทดสอบกับ Flow ปลอมแล้ว **ยังไม่เคยใช้กับ Flow จริง** รอ Flow จากทีม IT ดู `NEXT_STEPS.md` |
 | ส่งข้อมูลเข้า Master-List | ❌ ยังไม่ส่งจริง รอ API |
 | OCR สำหรับ PDF สแกน / รูปภาพ | ❌ ยังไม่ได้ทำ ไฟล์สแกนจับคู่ได้จากชื่อไฟล์เท่านั้น |
 | Excel หนึ่งไฟล์หลายแถว | ❌ ยังไม่รองรับ Excel หนึ่งไฟล์นับเป็น PR 1 ใบ |
@@ -95,6 +95,8 @@ Web-Dashboard-PR-PO/
 │   ├── local_storage.py   # เก็บไฟล์ลง static/local_uploads/
 │   ├── storage_backend.py # เลือกที่เก็บไฟล์ออนไลน์
 │   ├── gdrive_api.py      # Google Drive
+│   ├── power_automate_api.py # ส่งไฟล์ผ่าน Power Automate ไปที่ SharePoint
+│   ├── file_removal.py    # ตรรกะลบไฟล์ใต้ local_uploads (ใช้ร่วมกับ scripts/)
 │   ├── sharepoint_api.py  # SharePoint แบบเดิม (ใช้ไม่ได้แล้ว ดู NEXT_STEPS.md)
 │   ├── masterlist_client.py # Master-List (ยังไม่ส่งจริง)
 │   └── excel_export.py    # Export Excel
@@ -103,8 +105,9 @@ Web-Dashboard-PR-PO/
 │   └── masterlist.db      # (สร้างอัตโนมัติ ไม่ขึ้น Git) ฐานข้อมูล
 ├── static/local_uploads/  # (สร้างอัตโนมัติ ไม่ขึ้น Git) ไฟล์เอกสาร ปี/เดือน/วัน/ชื่อ
 ├── scripts/
-│   ├── backup.py          # สำรองฐานข้อมูลและไฟล์เอกสาร
-│   └── purge_deleted.py   # ล้างแถวที่ซ่อนและรายละเอียดใน Audit Log
+│   ├── backup.py          # สำรองฐานข้อมูล ไฟล์เอกสาร และโค้ด (รันเดี่ยวได้)
+│   ├── purge_deleted.py   # ล้างแถวที่ซ่อนและรายละเอียดใน Audit Log (รันเดี่ยวได้)
+│   └── check_flow.py      # ให้ IT ตรวจ Flow ของ Power Automate
 ├── tests/                 # เทสต์ pytest
 ├── logs/                  # ไฟล์ Log (ไม่ขึ้น Git)
 ├── assets/                # รูปโลโก้
