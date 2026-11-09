@@ -26,7 +26,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from config.constants import EQUIPMENT_CATEGORIES
+from config.constants import EQUIPMENT_CATEGORIES, FILTER_END_DATE_KEY, FILTER_START_DATE_KEY
 from config.logging_setup import get_logger
 from config.styles import FONT_FAMILY, PALETTE
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
@@ -73,8 +73,8 @@ PRICE_PERIOD_OPTIONS: dict[str, tuple[str, int]] = {
 }
 
 # key ของช่อง Date Filter ที่ app.py สร้างไว้ (ต้องตรงกับ render_date_filter ใน app.py) ปุ่มช่วงเวลาจะเขียนค่าลง key เหล่านี้
-FILTER_START_KEY: str = "filter_start_date"
-FILTER_END_KEY: str = "filter_end_date"
+FILTER_START_KEY: str = FILTER_START_DATE_KEY
+FILTER_END_KEY: str = FILTER_END_DATE_KEY
 
 # เส้นรวมทุกหมวด (ใช้ตอนปิด Detail Graph) ชื่อที่แสดงใน Legend/Tooltip และสีเส้น
 TOTAL_LINE_LABEL: str = "รวมทุกหมวด"

@@ -272,8 +272,27 @@ class ExtractedFields:
 # ---------------------------------------------------------------------------
 
 
+def extract_page_texts_from_pdf(pdf_source: Union[str, BinaryIO]) -> list[str]:
+    """อ่านข้อความของ PDF แยกเป็นรายหน้าด้วย pdfplumber
+
+    Args:
+        pdf_source: path ของไฟล์ หรือ file object (เช่น UploadedFile จาก st.file_uploader)
+
+    Returns:
+        ข้อความของแต่ละหน้าตามลำดับ (หน้าที่ไม่มีข้อความ เช่นหน้าสแกน = "")
+        คืน list ว่างถ้าไฟล์เสีย / อ่านไม่ได้
+    """
+    try:
+        with pdfplumber.open(pdf_source) as pdf_document:
+            # extract_text คืน None ถ้าหน้านั้นไม่มีข้อความ (เช่นหน้าสแกน)
+            return [page.extract_text() or "" for page in pdf_document.pages]
+    except PDF_READ_ERRORS as error:
+        logger.warning("อ่านไฟล์ PDF ไม่สำเร็จ: %s", error, exc_info=True)
+        return []
+
+
 def extract_text_from_pdf(pdf_source: Union[str, BinaryIO]) -> str:
-    """อ่านข้อความทุกหน้าของ PDF ด้วย pdfplumber
+    """อ่านข้อความทุกหน้าของ PDF รวมกัน
 
     Args:
         pdf_source: path ของไฟล์ หรือ file object (เช่น UploadedFile จาก st.file_uploader)
@@ -282,16 +301,7 @@ def extract_text_from_pdf(pdf_source: Union[str, BinaryIO]) -> str:
         ข้อความรวมทุกหน้า คั่นหน้าด้วยขึ้นบรรทัดใหม่
         คืน "" ถ้าไฟล์เสีย / เป็น PDF สแกนที่ไม่มีข้อความ / อ่านไม่ได้
     """
-    try:
-        page_texts: list[str] = []
-        with pdfplumber.open(pdf_source) as pdf_document:
-            for page in pdf_document.pages:
-                # extract_text คืน None ถ้าหน้านั้นไม่มีข้อความ (เช่นหน้าสแกน)
-                page_texts.append(page.extract_text() or "")
-        return "\n".join(page_texts)
-    except PDF_READ_ERRORS as error:
-        logger.warning("อ่านไฟล์ PDF ไม่สำเร็จ: %s", error, exc_info=True)
-        return ""
+    return "\n".join(extract_page_texts_from_pdf(pdf_source))
 
 
 # ---------------------------------------------------------------------------

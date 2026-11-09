@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
+from config.constants import FILTER_END_DATE_KEY, FILTER_START_DATE_KEY
 from config.logging_setup import get_logger
 from config.styles import inject_global_styles
 from data.database import init_db
@@ -53,13 +54,15 @@ def render_date_filter() -> tuple[date, date]:
         (วันที่เริ่ม, วันที่สิ้นสุด) ถ้าผู้ใช้เลือกวันเริ่มหลังวันสิ้นสุด จะแจ้งเตือนและสลับให้เอง
     """
     today = date.today()
+    # ตั้งค่าเริ่มต้นผ่าน session จุดเดียว (ไม่ส่ง value) เพราะหน้าอื่นปรับช่วงวันที่ผ่าน key เดียวกันได้
+    st.session_state.setdefault(FILTER_START_DATE_KEY, today - timedelta(days=DEFAULT_RANGE_DAYS))
+    st.session_state.setdefault(FILTER_END_DATE_KEY, today)
     start_column, to_column, end_column = st.columns([5, 1, 5], vertical_alignment="center")
 
     start_date = start_column.date_input(
         "วันที่เริ่ม",
-        value=today - timedelta(days=DEFAULT_RANGE_DAYS),
         format="DD/MM/YYYY",
-        key="filter_start_date",
+        key=FILTER_START_DATE_KEY,
         label_visibility="collapsed",
     )
     to_column.markdown(
@@ -67,9 +70,8 @@ def render_date_filter() -> tuple[date, date]:
     )
     end_date = end_column.date_input(
         "วันที่สิ้นสุด",
-        value=today,
         format="DD/MM/YYYY",
-        key="filter_end_date",
+        key=FILTER_END_DATE_KEY,
         label_visibility="collapsed",
     )
 

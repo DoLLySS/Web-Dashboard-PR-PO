@@ -19,7 +19,6 @@
 """
 
 import html
-import io
 import json
 import os
 import re
@@ -28,6 +27,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -35,7 +35,7 @@ import streamlit.components.v1 as components
 from st_aggrid import JsCode
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
-from config.constants import CATEGORY_OPTIONS
+from config.constants import CATEGORY_OPTIONS, FILTER_END_DATE_KEY, FILTER_START_DATE_KEY, OVERDUE_RULE
 from config.logging_setup import get_logger
 from data.database import (
     STATUS_PENDING,
@@ -65,20 +65,30 @@ from utils.local_storage import (
     build_local_file_url,
     find_file_location,
 )
-from utils.storage_backend import PR_TOKEN_PATTERN, UNKNOWN_VENDOR_FOLDER
+from utils.storage_backend import UNKNOWN_VENDOR_FOLDER
 from utils.submit_pipeline import (
     FolderMatch,
-    FolderProfileCache,
     RecordFields,
     SubmitResult,
-    attach_files_to_record,
     find_existing_folder,
-    find_pr_folder_by_description,
-    find_pr_folder_candidates,
-    match_document_to_pr,
     submit_record,
 )
-from utils.text_extractor import ExtractedFields, extract_fields_from_file, extract_text_from_file
+from utils.text_extractor import extract_fields_from_text
+from utils.upload_planner import (
+    ACTION_SKIP,
+    PAGE_NOT_PR,
+    FileAnalysis,
+    ReviewItem,
+    UploadPlan,
+    build_item_options,
+    build_review_items,
+    build_upload_plan,
+    describe_item,
+    execute_upload_plan,
+    find_review_problems,
+    get_default_page_choice,
+    page_choice_key,
+)
 
 # บันทึกลง logs/app.log
 logger = get_logger(__name__)
@@ -86,11 +96,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # ค่าคงที่ (Configuration)
 # ---------------------------------------------------------------------------
-
-# จำนวนวันที่ใบกำกับภาษีค้าง (สถานะ "รอใบกำกับภาษี") ได้ก่อนจะขึ้นแจ้งเตือน
-# (แก้ตัวเลขตรงนี้หากต้องการเปลี่ยนจำนวนวันแจ้งเตือน)
-# นับจาก "วันที่เอกสาร" (คอลัมน์ date) จนถึงวันนี้ และแจ้งเตือนเมื่อ "เกิน" ค่านี้
-OVERDUE_DAYS_LIMIT: int = 14
 
 # คอลัมน์ในตาราง (ตามดีไซน์) ลำดับในนี้คือลำดับที่แสดง: {ชื่อคอลัมน์ใน DB: หัวคอลัมน์}
 # ถ้าอยากเพิ่มคอลัมน์ เช่น po_no ให้เพิ่มที่นี่ และเพิ่มการดึงค่าใน build_table_for_display
@@ -117,7 +122,7 @@ TABLE_COLUMN_HELP: dict[str, str] = {
     "vendor": "ผู้จัดจำหน่าย",
     "category": "ประเภทสินค้า (Hardware / Software / Network / Service)",
     "total_price": "ราคา (บาท)",
-    "invoice_status": "สถานะใบกำกับภาษี: Completed / Pending / Overdue (ค้างเกิน OVERDUE_DAYS_LIMIT วัน)",
+    "invoice_status": "สถานะใบกำกับภาษี: Completed / Pending / Overdue (ค้างเกิน OVERDUE_RULE.days_limit วัน)",
     "tel": "เบอร์โทรศัพท์",
     "tax_id": "เลขประจำตัวผู้เสียภาษี 13 หลัก",
     "pr_run_no": "เลขที่ PR",
@@ -164,7 +169,7 @@ HIDDEN_TABLE_COLUMNS: tuple[str, ...] = (
 # ข้อความสถานะที่แสดงในตาราง (แก้ข้อความ/ไอคอนที่นี่)
 STATUS_LABEL_COMPLETED: str = "✅ Completed"  # ได้รับใบกำกับภาษีแล้ว
 STATUS_LABEL_PENDING: str = "⏳ Pending"  # รอใบกำกับภาษี และยังไม่เกินกำหนด
-STATUS_LABEL_OVERDUE: str = "🔴 Overdue"  # รอใบกำกับภาษี และค้างเกิน OVERDUE_DAYS_LIMIT วัน
+STATUS_LABEL_OVERDUE: str = "🔴 Overdue"  # รอใบกำกับภาษี และค้างเกิน OVERDUE_RULE.days_limit วัน
 
 # คอลัมน์ที่ผู้ใช้แก้ไขได้โดยตรงในตาราง (ดับเบิลคลิกที่ช่อง) คอลัมน์อื่นล็อกไว้ (ลบแถวทำได้เสมอ)
 # ถ้าอยากเปิดให้แก้ date / vendor / category / total_price ด้วย แค่เพิ่มชื่อคอลัมน์ในรายการนี้
@@ -390,9 +395,6 @@ ALL_VENDORS_LABEL: str = "Vendor"
 # (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
 ALLOWED_FILE_TYPES: list[str] = ["pdf", "xlsx", "xls", "png", "jpg", "jpeg"]
 
-# ระบบดึงข้อมูลลงแถวเฉพาะไฟล์ PR: ชื่อไฟล์มีคำว่า PR แยกเป็นคำ (PR_TOKEN_PATTERN) และนามสกุลต้องเป็นตัวพิมพ์เล็กตามนี้
-# ไฟล์อื่น (ใบเสนอราคา, ใบกำกับภาษี, คู่เทียบ ฯลฯ) ไม่สร้างแถว แต่เข้าโฟลเดอร์ของ PR ที่ตรงกัน
-AUTO_EXTRACT_EXTENSIONS: tuple[str, ...] = (".pdf", ".xlsx")
 
 # ตัดส่วนที่ไม่ต้องการออกจากชื่อไฟล์ก่อนแสดงในคอลัมน์ Description (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
 # ตัวอย่าง "20260319 PR_Addin_ซื้อ NB Lenovo-signed.pdf" -> "NB Lenovo"  (แก้รูปแบบที่ตัดได้ที่นี่)
@@ -453,6 +455,10 @@ SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ �
 # ขั้นที่ 1 = ถามข้อมูลเบื้องต้น, ขั้นที่ 2 = ฟอร์มหลัก/อัปโหลด (รีเซ็ตเป็น 1 ทุกครั้งที่เปิดหน้าต่างและหลังบันทึกสำเร็จ)
 FORM_STEP_QUESTIONS: int = 1
 FORM_STEP_MAIN_FORM: int = 2
+SESSION_KEY_UPLOAD_PLAN: str = "overview_upload_plan"  # ข้อเสนอที่รอผู้ใช้ยืนยัน (มีเนื้อไฟล์อยู่ด้วย)
+SESSION_KEY_UPLOAD_ERRORS: str = "overview_upload_errors"  # รายการที่บันทึกไม่สำเร็จในรอบล่าสุด
+SESSION_KEY_SAVED_ROWS: str = "overview_saved_rows"  # (รหัสแถว, วันที่) ที่เพิ่งบันทึก ใช้แจ้งเตือนเมื่ออยู่นอกช่วงวันที่
+PAGE_PREVIEW_LENGTH: int = 60  # จำนวนตัวอักษรของข้อความตัวอย่างในตารางแบ่งหน้า
 SESSION_KEY_FORM_STEP: str = "form_step"  # ขั้นตอนปัจจุบันของหน้าต่าง
 SESSION_KEY_ENTRY_ITEM: str = "overview_entry_item"  # ประเภท (Item) ที่เลือกในขั้นที่ 1
 SESSION_KEY_ENTRY_HAS_INVOICE: str = "overview_entry_has_invoice"  # สถานะใบกำกับภาษีที่เลือกในขั้นที่ 1
@@ -1343,18 +1349,16 @@ def _field_key(field_name: str, form_counter: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_upload_date(transaction: dict[str, Any]) -> Optional[date]:
-    """วันที่ Upload ของรายการ (ใช้นับวันที่ค้าง ไม่ใช่วันที่ในไฟล์ PR)
-
-    อ่านจาก created_at ("YYYY-MM-DD HH:MM:SS") ถ้าไม่มี/ผิดรูปแบบ ถอยไปใช้คอลัมน์ date
+def get_overdue_reference_date(transaction: dict[str, Any]) -> Optional[date]:
+    """วันที่ที่ใช้เริ่มนับวันค้างของรายการ ตามคอลัมน์ใน OVERDUE_RULE (ใช้คอลัมน์ถัดไปเมื่อไม่มีหรือผิดรูปแบบ)
 
     Args:
         transaction: dict รายการจาก database.py
 
     Returns:
-        วันที่ Upload หรือ None ถ้าอ่านวันที่ไม่ได้ทั้งสองคอลัมน์
+        วันที่อ้างอิง หรือ None ถ้าอ่านวันที่ไม่ได้จากทุกคอลัมน์
     """
-    for column in ("created_at", "date"):
+    for column in OVERDUE_RULE.reference_date_columns:
         try:
             return date.fromisoformat(str(transaction[column])[:10])
         except (KeyError, ValueError, TypeError):
@@ -1363,7 +1367,7 @@ def get_upload_date(transaction: dict[str, Any]) -> Optional[date]:
 
 
 def find_overdue_transactions(pending_transactions: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
-    """คัดรายการที่ค้างใบกำกับภาษีเกิน OVERDUE_DAYS_LIMIT วัน นับจากวันที่ Upload
+    """คัดรายการที่ค้างใบกำกับภาษีเกินเกณฑ์ใน OVERDUE_RULE
 
     Args:
         pending_transactions: รายการที่สถานะ "รอใบกำกับภาษี" (dict จาก database.py)
@@ -1376,13 +1380,13 @@ def find_overdue_transactions(pending_transactions: list[dict[str, Any]], today:
     overdue_transactions: list[dict[str, Any]] = []
 
     for transaction in pending_transactions:
-        upload_date = get_upload_date(transaction)
+        upload_date = get_overdue_reference_date(transaction)
         if upload_date is None:
             # วันที่ในฐานข้อมูลผิดรูปแบบ ข้ามรายการนี้ไป ไม่ให้ทั้งหน้าพัง
             continue
 
         days_pending = (today - upload_date).days
-        if days_pending > OVERDUE_DAYS_LIMIT:
+        if days_pending > OVERDUE_RULE.days_limit:
             overdue_transactions.append(
                 {**transaction, "days_pending": days_pending, "upload_date": upload_date.isoformat()}
             )
@@ -1395,7 +1399,7 @@ def find_overdue_transactions(pending_transactions: list[dict[str, Any]], today:
 # ถ้าเพิ่มคอลัมน์ในตารางนี้: เพิ่มชื่อใน OVERDUE_TABLE_COLUMNS แล้วกำหนดความกว้างใน OVERDUE_TABLE_COLUMN_WIDTHS
 OVERDUE_TABLE_COLUMNS: dict[str, str] = {
     "id": "รหัส",
-    "upload_date": "วันที่อัปโหลด",
+    "upload_date": OVERDUE_RULE.reference_date_column_title,
     "vendor": "ผู้ขาย",
     "po_no": "เลขที่ PO",
     "total_price": "ราคารวม (บาท)",
@@ -1420,7 +1424,7 @@ def build_overdue_alert_html(overdue_count: int, longest_days: int) -> str:
         '<div class="overdue-alert" role="alert">'
         '<div class="overdue-alert-icon">⚠️</div>'
         '<div class="overdue-alert-text">'
-        f'<div class="overdue-alert-title">ใบกำกับภาษีค้างเกิน {OVERDUE_DAYS_LIMIT} วัน</div>'
+        f'<div class="overdue-alert-title">ใบกำกับภาษีค้างเกิน {OVERDUE_RULE.days_limit} วัน</div>'
         '<div class="overdue-alert-sub">กรุณาติดตามจากผู้ขายโดยเร็ว ก่อนจะค้างนานกว่านี้</div>'
         "</div>"
         f'<div class="overdue-alert-badges">'
@@ -1441,8 +1445,8 @@ def build_no_overdue_html() -> str:
         '<div class="overdue-alert overdue-alert-ok" role="status">'
         '<div class="overdue-alert-icon">✅</div>'
         '<div class="overdue-alert-text">'
-        f'<div class="overdue-alert-title">ไม่มีรายการค้างเกิน {OVERDUE_DAYS_LIMIT} วัน</div>'
-        '<div class="overdue-alert-sub">นับจากวันที่ Upload / บันทึกข้อมูล</div>'
+        f'<div class="overdue-alert-title">ไม่มีรายการค้างเกิน {OVERDUE_RULE.days_limit} วัน</div>'
+        f'<div class="overdue-alert-sub">นับจาก{OVERDUE_RULE.reference_date_label}</div>'
         "</div>"
         "</div>"
     )
@@ -1575,8 +1579,8 @@ def get_status_label(invoice_status: str, upload_date: Optional[date], today: da
 
     กติกา:
       - ได้รับใบกำกับภาษีแล้ว                          -> "✅ Completed"
-      - รอใบกำกับภาษี และค้างไม่เกิน OVERDUE_DAYS_LIMIT วัน -> "⏳ Pending"
-      - รอใบกำกับภาษี และค้างเกิน OVERDUE_DAYS_LIMIT วัน   -> "🔴 Overdue"
+      - รอใบกำกับภาษี และค้างไม่เกิน OVERDUE_RULE.days_limit วัน -> "⏳ Pending"
+      - รอใบกำกับภาษี และค้างเกิน OVERDUE_RULE.days_limit วัน   -> "🔴 Overdue"
     (นับวันค้างจากวันที่ Upload ไม่ใช่วันที่ในไฟล์ PR)
 
     Args:
@@ -1590,7 +1594,7 @@ def get_status_label(invoice_status: str, upload_date: Optional[date], today: da
     if invoice_status == STATUS_RECEIVED:
         return STATUS_LABEL_COMPLETED
     if invoice_status == STATUS_PENDING:
-        is_overdue = upload_date is not None and (today - upload_date).days > OVERDUE_DAYS_LIMIT
+        is_overdue = upload_date is not None and (today - upload_date).days > OVERDUE_RULE.days_limit
         return STATUS_LABEL_OVERDUE if is_overdue else STATUS_LABEL_PENDING
     return invoice_status
 
@@ -1618,7 +1622,7 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 "vendor": transaction["vendor"],
                 "category": transaction.get("category") or "-",
                 "total_price": float(transaction.get("total_price") or 0),  # ยังเป็นตัวเลข จัดรูปแบบตอนแสดง
-                "invoice_status": get_status_label(transaction["invoice_status"], get_upload_date(transaction), today),
+                "invoice_status": get_status_label(transaction["invoice_status"], get_overdue_reference_date(transaction), today),
                 # --- ข้อมูล Master-List: ข้อความที่ไม่มีค่าแสดงเป็น "" (ถ้าเป็น None ตารางจะแสดงคำว่า None) ---
                 "tel": transaction.get("tel") or "",
                 "tax_id": transaction.get("tax_id") or "",
@@ -1858,7 +1862,7 @@ def apply_table_edits(
         messages.append(
             (
                 "info",
-                f"ℹ️ สถานะ Pending / Overdue ระบบกำหนดให้อัตโนมัติ (ค้างเกิน {OVERDUE_DAYS_LIMIT} วัน = Overdue) "
+                f"ℹ️ สถานะ Pending / Overdue ระบบกำหนดให้อัตโนมัติ (ค้างเกิน {OVERDUE_RULE.days_limit} วัน = Overdue) "
                 "เปลี่ยนเองไม่ได้ เลือกได้เฉพาะ Completed เมื่อได้รับใบกำกับภาษีแล้ว",
             )
         )
@@ -2450,22 +2454,6 @@ def _render_upload_card_heading(icon: str, title: str, hint: str, badge: str) ->
     )
 
 
-def _merge_extracted_fields(extracted_list: list[ExtractedFields]) -> ExtractedFields:
-    """รวมผลดึงข้อมูลจากหลายไฟล์: แต่ละฟิลด์ใช้ค่าแรกที่ไม่ว่างจากไฟล์ที่เรียงมา (ไฟล์ก่อนหน้าสำคัญกว่า)"""
-    merged = ExtractedFields()
-    for extracted in extracted_list:
-        for field_name in merged.__dataclass_fields__:
-            if not getattr(merged, field_name):
-                setattr(merged, field_name, getattr(extracted, field_name))
-    return merged
-
-
-def is_pr_document(file_name: str) -> bool:
-    """ไฟล์นี้เป็นไฟล์ PR ที่ระบบอ่านข้อมูลได้หรือไม่: ชื่อมีคำว่า PR แยกเป็นคำ และนามสกุลเป็น .pdf / .xlsx"""
-    cleaned_name = (file_name or "").strip()
-    return bool(PR_TOKEN_PATTERN.search(cleaned_name)) and cleaned_name.lower().endswith(AUTO_EXTRACT_EXTENSIONS)
-
-
 def clean_pr_file_name(file_name: str) -> str:
     """ตัดนามสกุล วันที่นำหน้า คำนำหน้า PR_Addin_ซื้อ และ -signed ท้ายชื่อ ออกจากชื่อไฟล์ เพื่อใช้เป็น Description
 
@@ -2512,83 +2500,45 @@ def find_pr_date_in_file_names(file_names: list[str]) -> Optional[date]:
     return next((parsed for parsed in map(parse_date_from_file_name, candidates) if parsed), None)
 
 
-def build_record_from_documents(
-    documents: list[UploadedFile], category: str, invoice_choice: str
-) -> tuple[RecordFields, str]:
-    """Extract ข้อมูลจากไฟล์ PR ที่วาง (ชื่อมีคำว่า PR นามสกุล .pdf/.xlsx) แล้วประกอบเป็นรายการพร้อมบันทึก
-
-    ไฟล์อื่นที่วางมาด้วยไม่ถูกอ่านข้อมูล แต่ยังถูกแนบและเก็บไว้ในโฟลเดอร์เดียวกัน (ดู submit_record)
+def build_fields_from_item(item: ReviewItem, category: str, invoice_choice: str) -> RecordFields:
+    """Extract ข้อมูลจากรายการที่ผู้ใช้เลือกสร้างแถวใหม่ แล้วประกอบเป็นฟิลด์พร้อมบันทึก
 
     Args:
-        documents: ไฟล์ที่วาง (ไฟล์ที่ไม่ใช่ PR ถูกแนบอย่างเดียว)
+        item: ไฟล์ หรือ 1 PR ในไฟล์ที่มีหลาย PR (ใช้ข้อความเฉพาะหน้าของ PR นั้น)
         category: หมวดหมู่จากขั้นที่ 1
         invoice_choice: สถานะใบกำกับภาษีจากขั้นที่ 1
 
     Returns:
-        (รายการ, ข้อความเตือนถ้ามีฟิลด์ที่ดึงไม่ได้ — ว่างถ้าได้ครบ)
+        ฟิลด์ของแถวใหม่
     """
-    readable = [document for document in documents if is_pr_document(document.name)]
-    extracted = _merge_extracted_fields([extract_fields_from_file(document, document.name) for document in readable])
-    warning = extracted.warning_message if readable else "ไฟล์ PR ไม่ใช่ .pdf หรือ .xlsx จึงไม่ได้อ่านข้อมูล กรุณากรอกข้อมูลในตาราง"
-
+    extracted = extract_fields_from_text(item.text)
     # พบใบกำกับภาษีในไฟล์ -> ตั้งสถานะเป็น Completed ให้เอง
     if extracted.has_tax_invoice:
         invoice_choice = INVOICE_CHOICE_HAS
     pr_request_date = _parse_iso_date_or_none(extracted.pr_request_date)
-    # คอลัมน์ Date = วันที่ของ PR: บรรทัด "Date:" ในเอกสาร -> วันที่นำหน้าชื่อไฟล์ (ทุกไฟล์ที่วาง)
+    # คอลัมน์ Date = วันที่ของ PR: บรรทัด "Date:" ในเอกสาร -> วันที่นำหน้าชื่อไฟล์
     # -> PR Request Date ในเอกสาร -> (ไม่พบเลย) วันที่อัปโหลด
     # วันที่ Upload จริงเก็บแยกใน created_at อัตโนมัติ (ใช้นับวันค้างของแถบแจ้งเตือน)
     pr_file_date = (
         _parse_iso_date_or_none(extracted.pr_document_date)
-        or find_pr_date_in_file_names([document.name for document in documents])
+        or find_pr_date_in_file_names([item.file_name])
         or pr_request_date
         or date.today()
     )
-    record = RecordFields(
+    return RecordFields(
         date=pr_file_date.isoformat(),
         vendor=extracted.vendor or UNKNOWN_VENDOR_FOLDER,
         total_price=float(extracted.total_amount) if extracted.total_amount else 0.0,
         tax_id=extracted.tax_id or None,
-        pr_run_no=extracted.pr_run_no or None,
+        pr_run_no=item.pr_no or extracted.pr_run_no or None,
         category=category,
         invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
         tel=extracted.tel or None,
         pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
         qt_no=extracted.qt_no or None,
-        # Description = ชื่อไฟล์ PR ที่ตัดส่วนเกินแล้ว (ไม่มีไฟล์ PR ใช้ไฟล์แรกที่แนบ / ไม่มีไฟล์เลยใช้ค่าที่อ่านจากเอกสาร)
-        description=clean_pr_file_name((readable or documents)[0].name)
-        if documents
-        else (extracted.description or None),
+        description=item.description,
         unit_price=float(extracted.unit_price) if extracted.unit_price else None,
     )
-    return record, warning
-
-
-def attach_documents_without_pr(documents: list[UploadedFile]) -> tuple[list[SubmitResult], list[str]]:
-    """เพิ่มไฟล์ที่ไม่ใช่ PR เข้าโฟลเดอร์ของ PR ที่ตรงกันทีละไฟล์ โดยไม่สร้างแถวใหม่ ไฟล์ที่ไม่ตรงจะไม่ถูกบันทึก
-
-    Args:
-        documents: ไฟล์ที่วาง (ไม่มีไฟล์ PR อยู่ในชุด)
-
-    Returns:
-        (ผลการเพิ่มไฟล์ของแต่ละแถว, ชื่อไฟล์ที่จับคู่ไม่ได้)
-    """
-    candidates = find_pr_folder_candidates()
-    profiles = FolderProfileCache()  # อ่านไฟล์ในโฟลเดอร์ของแต่ละ PR ครั้งเดียวต่อการ Upload
-    files_by_transaction: dict[int, tuple[FolderMatch, list[tuple[str, bytes]]]] = {}
-    unmatched_names: list[str] = []
-    for document in documents:
-        file_bytes = document.getvalue()
-        # อ่านจากสำเนาในหน่วยความจำ และรวมชื่อไฟล์ด้วย เพราะไฟล์สแกนอาจมีคำจาก Description เฉพาะในชื่อไฟล์
-        text = f"{document.name}\n{extract_text_from_file(io.BytesIO(file_bytes), document.name)}"
-        match = match_document_to_pr(text, candidates, profiles)
-        if match:
-            transaction_id = int(match.transaction["id"])
-            files_by_transaction.setdefault(transaction_id, (match, []))[1].append((document.name, file_bytes))
-        else:
-            unmatched_names.append(document.name)
-    results = [attach_files_to_record(match, files) for match, files in files_by_transaction.values()]
-    return results, unmatched_names
 
 
 def _build_folder_match_warning(match: FolderMatch) -> str:
@@ -2636,24 +2586,27 @@ def finish_submission(summary_message: str, form_counter: int) -> None:
     st.session_state[SESSION_KEY_SUCCESS_MESSAGE] = summary_message
     st.session_state[SESSION_KEY_FORM_COUNTER] = form_counter + 1
     st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
+    st.session_state.pop(SESSION_KEY_UPLOAD_PLAN, None)
     st.rerun()
 
 
 def render_upload_mode(form_counter: int) -> None:
-    """โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload ได้เลย ไม่มีช่องให้กรอกเพิ่ม
-
-    ตอนกด Upload: Extract ข้อมูลจากไฟล์ -> ส่งออกไป เว็บไซต์ (ฐานข้อมูล) / ที่เก็บไฟล์ออนไลน์ / Master-List ผ่าน submit_record
-    ฟิลด์ที่ดึงไม่ได้ไม่บล็อกการบันทึก (แสดงเป็นข้อความเตือนหลังส่ง)
+    """โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload เพื่อดูผลจับคู่ ระบบยังไม่บันทึกจนกว่าผู้ใช้จะยืนยัน
 
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน (ทำให้กล่องวางไฟล์ว่างใหม่หลังส่งสำเร็จ)
     """
+    plan: Optional[UploadPlan] = st.session_state.get(SESSION_KEY_UPLOAD_PLAN)
+    if plan is not None:
+        render_upload_review(plan, form_counter)
+        return
+
     _inject_drag_feedback_script()
     with st.container(key="upload_box_extract"):
         _render_upload_card_heading(
             "📄",
             "Upload P/O",
-            "วางได้หลายไฟล์ ไฟล์ PR (.pdf / .xlsx) สร้างแถวใหม่ ไฟล์อื่นเข้าโฟลเดอร์ของ PR ที่ตรงกัน",
+            "วางได้หลายไฟล์ ระบบจะแสดงผลจับคู่ให้ตรวจก่อนบันทึก",
             "เว็บไซต์ + Drive + Master-List",
         )
         documents: list[UploadedFile] = st.file_uploader(
@@ -2677,49 +2630,217 @@ def render_upload_mode(form_counter: int) -> None:
     if not is_clicked or not documents:
         return
 
-    pr_documents = [document for document in documents if PR_TOKEN_PATTERN.search(document.name)]
-    if not pr_documents:
-        # ไม่มีไฟล์ PR ในชุด -> ไม่สร้างแถวใหม่ไม่ว่ากรณีใด
-        with st.spinner("กำลังอ่านข้อมูลและจับคู่กับ PR..."):
-            results, unmatched_names = attach_documents_without_pr(documents)
-        unmatched_message = (
-            f"ไม่ได้บันทึก {len(unmatched_names)} ไฟล์ เพราะจับคู่กับ PR ไม่ได้หรือตรงหลายรายการ: {', '.join(unmatched_names)}"
-            if unmatched_names
-            else ""
+    with st.spinner("กำลังอ่านไฟล์และหาแถวที่ตรงกัน..."):
+        st.session_state[SESSION_KEY_UPLOAD_PLAN] = build_upload_plan(
+            [(document.name, document.getvalue()) for document in documents], clean_pr_file_name, uuid4().hex
         )
-        failed_results = [result for result in results if result.transaction_id is None]
-        if failed_results or not results:
-            for result in failed_results:
-                st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
-            if unmatched_message:
-                st.error(f"❌ {unmatched_message} กรุณา Upload ไฟล์ PR ก่อน")
-            return
-        summaries = [build_submit_summary(result) for result in results]
-        if unmatched_message:
-            summaries.append(f"⚠️ {unmatched_message}")
-        finish_submission("\n\n".join(summaries), form_counter)
+    st.rerun(scope="fragment")
+
+
+def cancel_upload_review() -> None:
+    """Callback ปุ่มยกเลิก: ทิ้งข้อเสนอ ไม่มีไฟล์หรือแถวใหม่เกิดขึ้น (ถ้าบันทึกบางรายการไปแล้ว รายการนั้นยังอยู่)"""
+    st.session_state.pop(SESSION_KEY_UPLOAD_PLAN, None)
+    st.session_state.pop(SESSION_KEY_UPLOAD_ERRORS, None)
+
+
+def _render_page_assignment(plan: UploadPlan, analysis: FileAnalysis) -> dict[str, Optional[str]]:
+    """วาดตารางแบ่งหน้าของไฟล์ที่มีหลาย PR: หน้าที่อ่านเลขได้มีค่าเสนอ หน้าอื่นผู้ใช้ต้องเลือกเอง
+
+    Args:
+        plan: ข้อเสนอการอัปโหลด
+        analysis: ไฟล์ที่ต้องแบ่งหน้า
+
+    Returns:
+        {key ของหน้า: เลข PR / PAGE_NOT_PR / None}
+    """
+    st.text(f"{analysis.name}: พบ {len(analysis.pr_numbers)} PR ตรวจว่าแต่ละหน้าเป็นของ PR ใด")
+    options = [*analysis.pr_numbers, PAGE_NOT_PR]
+    choices: dict[str, Optional[str]] = {}
+    for page in analysis.pages:
+        default_choice = get_default_page_choice(page)
+        label_column, choice_column = st.columns([3, 2], vertical_alignment="center")
+        preview = " ".join(page.text.split())[:PAGE_PREVIEW_LENGTH] or "(หน้านี้ไม่มีข้อความให้อ่าน)"
+        label_column.text(f"หน้า {page.number}: {preview}")
+        choices[page_choice_key(analysis.index, page.number)] = choice_column.selectbox(
+            f"หน้า {page.number}",
+            options,
+            index=options.index(default_choice) if default_choice else None,
+            format_func=lambda value: "ไม่ใช่ PR" if value == PAGE_NOT_PR else value,
+            placeholder="เลือกว่าหน้านี้เป็นของอะไร",
+            key=f"upload_page_{plan.plan_id}_{analysis.index}_{page.number}",
+            label_visibility="collapsed",
+            disabled=bool(plan.completed),  # บันทึกบางรายการแล้ว ห้ามเปลี่ยนการแบ่งหน้า
+        )
+    return choices
+
+
+def _render_item_decision(plan: UploadPlan, item: ReviewItem, items: list[ReviewItem]) -> Optional[str]:
+    """วาดตัวเลือกปลายทางของรายการ โดยไม่เลือกค่าไว้ให้ แม้จะมีแถวที่แนะนำ
+
+    Args:
+        plan: ข้อเสนอการอัปโหลด
+        item: รายการที่กำลังเลือก
+        items: รายการทั้งหมดในชุด
+
+    Returns:
+        ค่าที่ผู้ใช้เลือก หรือ None ถ้ายังไม่ได้เลือก
+    """
+    st.text(describe_item(item))
+    if item.item_id in plan.completed:
+        st.caption(f"บันทึกแล้ว (รหัสรายการ {plan.completed[item.item_id].transaction_id})")
+        return None
+    st.caption(
+        f"ระบบแนะนำแถว {item.suggestion.transaction['id']}: {item.suggestion.reason}"
+        if item.suggestion
+        else "ไม่พบแถวที่ตรงกัน"
+    )
+    options = build_item_options(plan, item, items)
+    return st.selectbox(
+        f"ปลายทางของ {item.item_id}",
+        list(options),
+        index=None,
+        format_func=options.__getitem__,
+        placeholder="เลือกปลายทาง",
+        key=f"upload_decision_{plan.plan_id}_{item.item_id}",
+        label_visibility="collapsed",
+    )
+
+
+def _finish_upload_plan(plan: UploadPlan, skipped_names: list[str], form_counter: int) -> None:
+    """ทุกรายการจบแล้ว: สรุปผล จำแถวที่บันทึก และปิดหน้าต่าง
+
+    Args:
+        plan: ข้อเสนอการอัปโหลด
+        skipped_names: รายการที่ผู้ใช้เลือกไม่บันทึก
+        form_counter: ตัวนับของฟอร์มปัจจุบัน
+    """
+    # หลาย PR ที่แนบแถวเดียวกันใช้ผลเดียวกัน จึงสรุปครั้งเดียว
+    results = list({id(result): result for result in plan.completed.values()}.values())
+    remember_saved_rows(results)
+    summaries = [build_submit_summary(result) for result in results]
+    if skipped_names:
+        summaries.append(f"ℹ️ ไม่ได้บันทึก: {', '.join(skipped_names)}")
+    finish_submission("\n\n".join(summaries) or "ℹ️ ไม่ได้บันทึกรายการใด", form_counter)
+
+
+def render_upload_review(plan: UploadPlan, form_counter: int) -> None:
+    """วาดหน้ายืนยันผลจับคู่: ปุ่มบันทึกใช้ได้เมื่อเลือกครบ และไม่มีการเขียนข้อมูลก่อนกดปุ่มนี้
+
+    Args:
+        plan: ข้อเสนอการอัปโหลด
+        form_counter: ตัวนับของฟอร์มปัจจุบัน
+    """
+    st.markdown("#### ตรวจผลจับคู่ก่อนบันทึก")
+    for message in st.session_state.get(SESSION_KEY_UPLOAD_ERRORS, []):
+        st.error(f"❌ {message}")
+
+    page_choices: dict[str, Optional[str]] = {}
+    for analysis in plan.files:
+        if analysis.needs_page_review:
+            page_choices.update(_render_page_assignment(plan, analysis))
+
+    items = build_review_items(plan, page_choices)
+    decisions = {item.item_id: _render_item_decision(plan, item, items) for item in items}
+
+    problems = find_review_problems(plan, page_choices, decisions)
+    for problem in problems:
+        st.caption(f"⚠️ {problem}")
+
+    cancel_column, save_column = st.columns([1, 2])
+    cancel_column.button("ยกเลิก", on_click=cancel_upload_review, width="stretch", key="upload_review_cancel")
+    is_confirmed = save_column.button(
+        "ยืนยันและบันทึก", type="primary", width="stretch", disabled=bool(problems), key="upload_review_save"
+    )
+    if not is_confirmed or problems:
         return
 
-    files = [(document.name, document.getvalue()) for document in documents]
-    with st.spinner("กำลังอ่านข้อมูลและส่งออก..."):
-        # ไฟล์ PR ตรงกับแถว PR เดิม -> เพิ่มทุกไฟล์เข้าแถวและโฟลเดอร์เดิม ไม่ตรง -> สร้างรายการใหม่
-        folder_match = find_pr_folder_by_description(
-            clean_pr_file_name(pr_documents[0].name), find_pr_folder_candidates()
+    category = st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0])
+    invoice_choice = st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET)
+    with st.spinner("กำลังบันทึก..."):
+        outcomes = execute_upload_plan(
+            plan, page_choices, decisions, lambda item: build_fields_from_item(item, category, invoice_choice)
         )
-        if folder_match:
-            extract_warning = _build_folder_match_warning(folder_match)
-            result = attach_files_to_record(folder_match, files)
-        else:
-            record, extract_warning = build_record_from_documents(
-                documents,
-                st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0]),
-                st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET),
-            )
-            result = submit_record(record, files)
-    if result.transaction_id is None:
-        st.error(f"❌ {result.error}")  # ไฟล์ที่วางยังอยู่ กด Upload ซ้ำได้
+    errors = [result.error for result in outcomes.values() if result.transaction_id is None]
+    if errors:
+        # ค้างหน้านี้ไว้ กดซ้ำจะทำเฉพาะรายการที่ยังไม่สำเร็จ
+        st.session_state[SESSION_KEY_UPLOAD_ERRORS] = errors
+        st.rerun(scope="fragment")
+    st.session_state.pop(SESSION_KEY_UPLOAD_ERRORS, None)
+    skipped_names = [describe_item(item) for item in items if decisions.get(item.item_id) == ACTION_SKIP]
+    _finish_upload_plan(plan, skipped_names, form_counter)
+
+
+def remember_saved_rows(results: list[SubmitResult]) -> None:
+    """จำรหัสและวันที่ของแถวที่เพิ่งบันทึก เพื่อแจ้งเตือนถ้าอยู่นอกช่วงของ Date Filter
+
+    Args:
+        results: ผลการบันทึก (แถวที่ไม่สำเร็จถูกข้าม)
+    """
+    st.session_state[SESSION_KEY_SAVED_ROWS] = [
+        (result.transaction_id, result.record_date) for result in results if result.transaction_id is not None
+    ]
+
+
+def show_saved_rows(row_dates: list[date]) -> None:
+    """Callback ปุ่ม "แสดงแถวนี้": ขยาย Date Filter ให้ครอบแถวที่เพิ่งบันทึก (ทำเมื่อผู้ใช้กดเท่านั้น)
+
+    Args:
+        row_dates: วันที่ของแถวที่ต้องการให้เห็น
+    """
+    st.session_state[FILTER_START_DATE_KEY] = min(st.session_state[FILTER_START_DATE_KEY], *row_dates)
+    st.session_state[FILTER_END_DATE_KEY] = max(st.session_state[FILTER_END_DATE_KEY], *row_dates)
+    st.session_state.pop(SESSION_KEY_SAVED_ROWS, None)
+
+
+def dismiss_saved_rows_notice() -> None:
+    """Callback ปุ่มปิด: เลิกแจ้งเตือนแถวที่อยู่นอกช่วงวันที่ โดยไม่เปลี่ยน Date Filter"""
+    st.session_state.pop(SESSION_KEY_SAVED_ROWS, None)
+
+
+def find_rows_outside_range(saved_rows: list[tuple[int, str]], start_date: date, end_date: date) -> list[tuple[int, date]]:
+    """คัดแถวที่วันที่อยู่นอกช่วงที่เลือก (วันที่อ่านไม่ได้ถูกข้าม)
+
+    Args:
+        saved_rows: (รหัสแถว, วันที่รูปแบบ ISO)
+        start_date: วันที่เริ่มของ Date Filter
+        end_date: วันที่สิ้นสุดของ Date Filter
+
+    Returns:
+        (รหัสแถว, วันที่) ของแถวที่อยู่นอกช่วง
+    """
+    outside: list[tuple[int, date]] = []
+    for row_id, row_date_text in saved_rows:
+        row_date = _parse_iso_date_or_none(row_date_text)
+        if row_date is not None and not start_date <= row_date <= end_date:
+            outside.append((row_id, row_date))
+    return outside
+
+
+def render_saved_rows_notice(start_date: date, end_date: date) -> None:
+    """แจ้งเตือนเมื่อแถวที่เพิ่งบันทึกอยู่นอกช่วงวันที่ พร้อมปุ่มแสดงแถว โดยไม่เปลี่ยนตัวกรองเอง
+
+    Args:
+        start_date: วันที่เริ่มของ Date Filter
+        end_date: วันที่สิ้นสุดของ Date Filter
+    """
+    saved_rows = st.session_state.get(SESSION_KEY_SAVED_ROWS)
+    if not saved_rows:
         return
-    finish_submission(build_submit_summary(result, extract_warning), form_counter)
+    outside = find_rows_outside_range(saved_rows, start_date, end_date)
+    if not outside:
+        st.session_state.pop(SESSION_KEY_SAVED_ROWS, None)
+        return
+    details = ", ".join(f"แถว {row_id} ({row_date.strftime('%d/%m/%Y')})" for row_id, row_date in outside)
+    st.warning(f"{details} อยู่นอกช่วงวันที่ที่เลือก จึงไม่แสดงในตาราง")
+    show_column, dismiss_column, _ = st.columns([2, 1, 5])
+    show_column.button(
+        "แสดงแถวนี้",
+        on_click=show_saved_rows,
+        args=([row_date for _, row_date in outside],),
+        width="stretch",
+        key="saved_rows_show",
+    )
+    dismiss_column.button("ปิด", on_click=dismiss_saved_rows_notice, width="stretch", key="saved_rows_dismiss")
 
 
 # ---------------------------------------------------------------------------
@@ -3002,6 +3123,7 @@ def render_entry_form(form_counter: int, show_po_uploader: bool = True, title: s
     if result.transaction_id is None:
         st.error(f"❌ {result.error}")
         return
+    remember_saved_rows([result])
     finish_submission(
         build_submit_summary(result, _build_folder_match_warning(folder_match) if folder_match else ""), form_counter
     )
@@ -3112,6 +3234,7 @@ def render_add_button(form_counter: int) -> None:
             # เปิดหน้าต่างทุกครั้งเริ่มที่ขั้นที่ 1 (รวมกรณีปิดด้วยปุ่ม x ระหว่างขั้นที่ 2)
             st.session_state[SESSION_KEY_ENTRY_MODE] = chosen_mode
             st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
+            cancel_upload_review()  # ปิดหน้าต่างค้างไว้แล้วเปิดใหม่ ต้องไม่เห็นข้อเสนอเก่า
             render_entry_dialog(form_counter)
 
 
@@ -3150,6 +3273,7 @@ def render(start_date: date, end_date: date) -> None:
     success_message = st.session_state.pop(SESSION_KEY_SUCCESS_MESSAGE, None)
     if success_message:
         st.success(success_message)
+    render_saved_rows_notice(start_date, end_date)
 
     # แสดงผลการเปลี่ยนสถานะจากตารางครั้งก่อน (เก็บไว้ข้ามการ rerun) แล้วลบทิ้งไม่ให้แสดงซ้ำ
     for message_level, message_text in st.session_state.pop(SESSION_KEY_STATUS_MESSAGES, []):

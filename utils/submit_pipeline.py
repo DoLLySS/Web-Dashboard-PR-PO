@@ -6,7 +6,7 @@
 """
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -98,6 +98,15 @@ class SubmitResult:
     existing_folder: str = ""  # โฟลเดอร์เดิมที่เก็บไฟล์ครั้งนี้ (ว่าง = ใช้โฟลเดอร์ที่ตั้งจากไฟล์ชุดนี้)
     attached_to_existing: bool = False  # True = เพิ่มไฟล์เข้าแถวเดิม ไม่ได้สร้างแถวใหม่
     attached_file_names: list[str] = field(default_factory=list)  # ไฟล์ใหม่ที่เพิ่มเข้าแถวเดิม (ว่าง = ทุกไฟล์มีอยู่แล้ว)
+    record_date: str = ""  # วันที่ของแถว (คอลัมน์ Date ที่ใช้กับ Date Filter)
+
+
+@dataclass
+class StoredFiles:
+    """ไฟล์ของรายการใหม่ที่เก็บแล้ว ใช้สร้างได้หลายแถวโดยไม่เก็บหรือส่งไฟล์ซ้ำ"""
+
+    local_paths: Optional[list[str]]  # None = เก็บในเครื่องไม่สำเร็จ (ดู template.error)
+    template: SubmitResult  # ผลของขั้นเก็บไฟล์ที่ทุกแถวใช้ร่วมกัน
 
 
 @dataclass
@@ -107,6 +116,7 @@ class FolderMatch:
     transaction: dict[str, Any]
     folder_parts: list[str]
     match_count: int  # จำนวนรายการที่ตรงทั้งหมด (มากกว่า 1 = เลือกรายการล่าสุดที่ยังมีโฟลเดอร์)
+    reason: str = ""  # เหตุผลที่จับคู่ได้ (แสดงให้ผู้ใช้ดูก่อนยืนยัน)
 
 
 def find_existing_folder(description: Optional[str], tax_id: Optional[str]) -> Optional[FolderMatch]:
@@ -229,9 +239,10 @@ def _find_best_folder_match(
 def match_document_to_pr(
     text: str, candidates: list[FolderMatch], profiles: Optional[FolderProfileCache] = None
 ) -> Optional[FolderMatch]:
-    """จับคู่ไฟล์ที่ไม่ใช่ PR กับแถว PR ทั้งจากข้อมูลของแถวและไฟล์อื่นในโฟลเดอร์ของแถวนั้น
+    """หาแถว PR ที่แนะนำสำหรับไฟล์ที่ไม่ใช่ PR ผลนี้เป็นเพียงคำแนะนำ ผู้ใช้ต้องยืนยันก่อนบันทึก
 
-    ลำดับ: Tax ID (ไม่นับเลขบริษัทเรา) -> Description ของแถว -> คำเด่นที่ซ้ำกับไฟล์ในโฟลเดอร์
+    ลำดับ: Tax ID ของแถว (ไม่นับเลขบริษัทเรา) -> Description ของแถว -> Tax ID ที่พบในไฟล์ของโฟลเดอร์
+    -> คำเด่นที่ซ้ำกับไฟล์ในโฟลเดอร์ สองขั้นหลังต้องอ่านไฟล์ จึงทำเมื่อขั้นก่อนหน้าตัดสินไม่ได้เท่านั้น
 
     Args:
         text: ข้อความในไฟล์รวมกับชื่อไฟล์
@@ -239,15 +250,29 @@ def match_document_to_pr(
         profiles: ตัวจำโปรไฟล์โฟลเดอร์ (ไม่ส่ง = สร้างใหม่สำหรับการเรียกนี้)
 
     Returns:
-        แถวที่ตรงแถวเดียว หรือ None ถ้าไม่พบ / ตัดสินไม่ได้
+        แถวที่ตรงแถวเดียวพร้อมเหตุผล หรือ None ถ้าไม่พบ / ตัดสินไม่ได้
     """
     profiles = profiles or FolderProfileCache()
     tax_ids = set(find_all_tax_ids(text)) - {OWN_COMPANY_TAX_ID}
-    tax_id_matches = [item for item in candidates if tax_ids & profiles.get(item).tax_ids]
-    if len(tax_id_matches) == 1:
-        return tax_id_matches[0]
-    pool = tax_id_matches or candidates
-    return _find_best_description_match(text, pool) or _find_best_folder_match(text, pool, profiles)
+
+    row_matches = [item for item in candidates if (item.transaction.get("tax_id") or "").strip() in tax_ids]
+    if len(row_matches) == 1:
+        return replace(row_matches[0], reason="Tax ID ตรงกับแถวนี้")
+    pool = row_matches or candidates
+
+    description_match = _find_best_description_match(text, pool)
+    if description_match:
+        return replace(description_match, reason="คำในเอกสารตรงกับ Description ของแถวนี้")
+
+    # Tax ID ในโฟลเดอร์อาจเป็นของผู้ขายคู่เทียบ จึงแยกเหตุผลให้ผู้ใช้เห็น (ไม่เทียบซ้ำถ้าแถวมี Tax ID ตรงอยู่แล้ว)
+    if tax_ids and not row_matches:
+        folder_matches = [item for item in pool if tax_ids & profiles.get(item).tax_ids]
+        if len(folder_matches) == 1:
+            return replace(folder_matches[0], reason="Tax ID ตรงกับไฟล์ในโฟลเดอร์นี้ (อาจเป็นใบเสนอราคาคู่เทียบ)")
+        pool = folder_matches or pool
+
+    folder_match = _find_best_folder_match(text, pool, profiles)
+    return replace(folder_match, reason="คำเด่นตรงกับไฟล์ในโฟลเดอร์นี้") if folder_match else None
 
 
 def _store_files(
@@ -317,7 +342,11 @@ def attach_files_to_record(match: FolderMatch, files: list[tuple[str, bytes]]) -
         files: ไฟล์แนบ (ชื่อไฟล์, เนื้อไฟล์)
     """
     transaction = match.transaction
-    result = SubmitResult(attached_to_existing=True, existing_folder="/".join(match.folder_parts))
+    result = SubmitResult(
+        attached_to_existing=True,
+        existing_folder="/".join(match.folder_parts),
+        record_date=str(transaction.get("date") or ""),
+    )
     known_paths = [
         path.strip() for path in (transaction.get("file_path") or "").split(FILE_PATH_SEPARATOR) if path.strip()
     ]
@@ -336,6 +365,69 @@ def attach_files_to_record(match: FolderMatch, files: list[tuple[str, bytes]]) -
     return result
 
 
+def store_files_for_new_record(
+    fields: RecordFields,
+    files: list[tuple[str, bytes]],
+    when: Optional[datetime] = None,
+    existing_folder_parts: Optional[list[str]] = None,
+) -> StoredFiles:
+    """เก็บไฟล์ของรายการใหม่ในเครื่องและที่เก็บออนไลน์ ยังไม่บันทึกแถวลงฐานข้อมูล
+
+    Args:
+        fields: ฟิลด์ของรายการ (ใช้ fields.date ตั้งโฟลเดอร์)
+        files: ไฟล์แนบ (ชื่อไฟล์, เนื้อไฟล์) ว่างได้
+        when: วันที่สำรองสำหรับตั้งชื่อโฟลเดอร์ ปี/เดือน/วัน (ค่าเริ่มต้น = ตอนนี้) ใช้เมื่อ fields.date อ่านเป็นวันที่ไม่ได้
+            ปกติโฟลเดอร์ตั้งตามวันที่ของไฟล์ PR (fields.date)
+        existing_folder_parts: โฟลเดอร์ของรายการเดิมที่จะเก็บไฟล์ร่วมกัน (ไม่ระบุ = ตั้งโฟลเดอร์จากไฟล์ชุดนี้)
+
+    Returns:
+        ที่อยู่ไฟล์และผลของขั้นเก็บไฟล์ (local_paths เป็น None = เก็บในเครื่องไม่สำเร็จ)
+    """
+    when = when or datetime.now()
+    template = SubmitResult()
+    # โฟลเดอร์ ปี/เดือน/วัน ตามวันที่ของไฟล์ PR (fields.date) ไม่ใช่วันที่ Upload (แปลงไม่ได้ = ใช้ when)
+    try:
+        when = datetime.fromisoformat(f"{fields.date}T00:00:00")
+    except ValueError:
+        pass
+
+    if existing_folder_parts:
+        template.existing_folder = "/".join(existing_folder_parts)
+    folder_parts = existing_folder_parts or build_storage_folder_parts(
+        when, build_dated_folder_name(when, [name for name, _ in files])
+    )
+    return StoredFiles(_store_files(files, folder_parts, when, template), template)
+
+
+def add_record_from_stored_files(fields: RecordFields, stored: StoredFiles) -> SubmitResult:
+    """สร้าง 1 แถวจากไฟล์ที่เก็บแล้ว หลายแถวเรียกซ้ำด้วย stored เดียวกันได้ โดยไฟล์ไม่ถูกเก็บหรือส่งซ้ำ
+
+    Args:
+        fields: ฟิลด์ของรายการ
+        stored: ผลจาก store_files_for_new_record
+
+    Returns:
+        ผลการบันทึกของแถวนี้
+    """
+    result = replace(stored.template, storage_links=list(stored.template.storage_links), record_date=fields.date)
+    if stored.local_paths is None:
+        return result
+
+    # (3) บันทึกลงฐานข้อมูล -> ขึ้นตารางบนเว็บ (ลิงก์ที่กรอกเองมาก่อน ไม่มีก็ใช้ลิงก์ไฟล์แรกที่ส่งขึ้น)
+    record = asdict(fields)
+    record["sharepoint_url"] = fields.sharepoint_url or (result.storage_links[0] if result.storage_links else None)
+    new_id = add_transaction(**record, file_path=FILE_PATH_SEPARATOR.join(stored.local_paths) or None)
+    if new_id is None:
+        result.error = "บันทึกรายการลงฐานข้อมูลไม่สำเร็จ"  # add_transaction แสดงรายละเอียดให้แล้ว
+        return result
+    result.transaction_id = new_id
+
+    # (4) Master-List: เฉพาะฟิลด์ที่ต้องการ ไม่ส่งไฟล์
+    result.masterlist_sent, message = send_to_masterlist(build_masterlist_payload(record))
+    result.masterlist_message = message or ""
+    return result
+
+
 def submit_record(
     fields: RecordFields,
     files: list[tuple[str, bytes]],
@@ -347,37 +439,7 @@ def submit_record(
     Args:
         fields: ฟิลด์ของรายการ
         files: ไฟล์แนบ (ชื่อไฟล์, เนื้อไฟล์) ว่างได้
-        when: วันที่สำรองสำหรับตั้งชื่อโฟลเดอร์ ปี/เดือน/วัน (ค่าเริ่มต้น = ตอนนี้) ใช้เมื่อ fields.date อ่านเป็นวันที่ไม่ได้
-            ปกติโฟลเดอร์ตั้งตามวันที่ของไฟล์ PR (fields.date)
-        existing_folder_parts: โฟลเดอร์ของรายการเดิมที่จะเก็บไฟล์ร่วมกัน (ไม่ระบุ = ตั้งโฟลเดอร์จากไฟล์ชุดนี้)
+        when: ดู store_files_for_new_record
+        existing_folder_parts: ดู store_files_for_new_record
     """
-    when = when or datetime.now()
-    result = SubmitResult()
-    # โฟลเดอร์ ปี/เดือน/วัน ตามวันที่ของไฟล์ PR (fields.date) ไม่ใช่วันที่ Upload (แปลงไม่ได้ = ใช้ when)
-    try:
-        when = datetime.fromisoformat(f"{fields.date}T00:00:00")
-    except ValueError:
-        pass
-
-    if existing_folder_parts:
-        result.existing_folder = "/".join(existing_folder_parts)
-    folder_parts = existing_folder_parts or build_storage_folder_parts(
-        when, build_dated_folder_name(when, [name for name, _ in files])
-    )
-    local_paths = _store_files(files, folder_parts, when, result)
-    if local_paths is None:
-        return result
-
-    # (3) บันทึกลงฐานข้อมูล -> ขึ้นตารางบนเว็บ (ลิงก์ที่กรอกเองมาก่อน ไม่มีก็ใช้ลิงก์ไฟล์แรกที่ส่งขึ้น)
-    record = asdict(fields)
-    record["sharepoint_url"] = fields.sharepoint_url or (result.storage_links[0] if result.storage_links else None)
-    new_id = add_transaction(**record, file_path=FILE_PATH_SEPARATOR.join(local_paths) or None)
-    if new_id is None:
-        result.error = "บันทึกรายการลงฐานข้อมูลไม่สำเร็จ"  # add_transaction แสดงรายละเอียดให้แล้ว
-        return result
-    result.transaction_id = new_id
-
-    # (4) Master-List: เฉพาะฟิลด์ที่ต้องการ ไม่ส่งไฟล์
-    result.masterlist_sent, message = send_to_masterlist(build_masterlist_payload(record))
-    result.masterlist_message = message or ""
-    return result
+    return add_record_from_stored_files(fields, store_files_for_new_record(fields, files, when, existing_folder_parts))
