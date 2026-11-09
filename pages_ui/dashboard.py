@@ -730,7 +730,7 @@ def render_kpi_row(transaction_table: pd.DataFrame) -> None:
         )
     with count_column:
         render_kpi_tile(
-            "kpi_count_card", "จำนวนรายการ", f"{len(transaction_table):,}", ("ผู้ขาย ", f"{vendor_count:,}", " ราย")
+            "kpi_count_card", "จำนวนรายการ", f"{len(transaction_table):,}", ("บริษัท ", f"{vendor_count:,}", " ราย")
         )
     with pending_column:
         render_kpi_tile(
@@ -1300,11 +1300,11 @@ def render_vendor_table_card(transaction_table: pd.DataFrame) -> None:
     """
     with st.container(key="vendor_table_card"):
         st.markdown(
-            '<div class="card-heading">Vendor</div><div class="card-note">ผู้ขายเรียงตามยอดซื้อ</div>',
+            '<div class="card-heading">Company</div><div class="card-note">บริษัทเรียงตามยอดซื้อ</div>',
             unsafe_allow_html=True,
         )
         if transaction_table.empty:
-            render_empty_state("ยังไม่มีข้อมูลผู้ขายในช่วงวันที่ที่เลือก")
+            render_empty_state("ยังไม่มีข้อมูลบริษัทในช่วงวันที่ที่เลือก")
             return
         top_vendor_table = build_top_vendor_table(transaction_table)
         grand_total = float(transaction_table["total_price"].sum())

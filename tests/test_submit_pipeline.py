@@ -1,6 +1,6 @@
 """ทดสอบการจับคู่ไฟล์กับแถว PR และการบันทึกใน utils/submit_pipeline.py
 
-ผลการจับคู่เป็นเพียงคำแนะนำ ผู้ใช้ต้องยืนยันก่อนบันทึก (ดู utils/upload_planner.py และ tests/test_upload_planner.py)
+ผลการจับคู่ใช้ในการอัปโหลดอัตโนมัติ (ดู utils/upload_processor.py และ tests/test_upload_processor.py)
 """
 
 from pathlib import Path

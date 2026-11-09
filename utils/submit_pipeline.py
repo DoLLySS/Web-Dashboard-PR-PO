@@ -30,9 +30,11 @@ from utils.local_storage import (
 from utils.masterlist_client import build_masterlist_payload, send_to_masterlist
 from utils.storage_backend import (
     PR_TOKEN_PATTERN,
+    SIGNED_SUFFIX_PATTERN,
     StorageError,
     build_dated_folder_name,
     build_storage_folder_parts,
+    sanitize_folder_name,
     get_storage_folder_url,
     is_storage_configured,
     upload_files_to_storage,
@@ -45,7 +47,7 @@ FILE_PATH_SEPARATOR: str = "\n"  # ต้องตรงกับ FILE_PATH_SEPA
 
 # การเทียบไฟล์กับ Description ของแถว PR: แยกเป็นคำแล้วนับว่าพบในไฟล์กี่คำ
 DESCRIPTION_WORD_PATTERN: re.Pattern[str] = re.compile(r"[a-z0-9ก-๙]+")
-DESCRIPTION_STOP_WORDS: frozenset[str] = frozenset({"และ", "เเละ", "ซื้อ", "นิ้ว"})  # คำทั่วไปที่ไม่ช่วยระบุ PR
+DESCRIPTION_STOP_WORDS: frozenset[str] = frozenset({"และ", "เเละ", "ซื้อ", "นิ้ว", "รายการ"})  # คำทั่วไปที่ไม่ช่วยระบุ PR
 MIN_MATCHED_DESCRIPTION_WORDS: int = 2  # ต้องพบอย่างน้อยกี่คำ (และต้องมากกว่าครึ่งของคำทั้งหมด)
 
 # การเทียบไฟล์กับไฟล์อื่นในโฟลเดอร์ของ PR: นับเฉพาะ "คำเด่น" (อังกฤษ/ตัวเลขปนกัน ยาวพอ เช่น thinkpad, e14, p2725h)
@@ -332,6 +334,44 @@ def _store_files(
             result.storage_status = "error"
             result.storage_message = str(error)
     return local_paths
+
+
+def _parse_row_date(transaction: dict[str, Any]) -> datetime:
+    """วันที่ของ PR ของแถว: pr_request_date ก่อน ไม่มีหรืออ่านไม่ได้ใช้ date (ไม่ใช่วันอัปโหลด)"""
+    for key in ("pr_request_date", "date"):
+        try:
+            return datetime.fromisoformat(f"{str(transaction.get(key) or '').strip()[:10]}T00:00:00")
+        except ValueError:
+            continue
+    return datetime.now()
+
+
+def resolve_row_folder(transaction: dict[str, Any], file_names: list[str]) -> tuple[list[str], bool]:
+    """โฟลเดอร์ที่ไฟล์ของแถว PR ต้องอยู่ ไฟล์ทั้งหมดของแถวอยู่โฟลเดอร์เดียว
+
+    แถวที่มีโฟลเดอร์แล้วใช้โฟลเดอร์เดิม แถวที่ยังไม่มี (เช่น มาจาก Excel) ตั้งตามวันที่ PR ของแถว:
+    ปี/เดือน/วัน/YYYYMMDD_<ชื่อไฟล์ PR ตัดคำว่า PR> ถ้าชุดที่อัปโหลดไม่มีไฟล์ PR ใช้ YYYYMMDD_<เลข PR ของแถว> แทน
+
+    Args:
+        transaction: แถวปลายทาง
+        file_names: ชื่อไฟล์ที่กำลังอัปโหลด
+
+    Returns:
+        (โครงโฟลเดอร์, True ถ้าเป็นโฟลเดอร์ใหม่ที่ยังไม่มีในแถว)
+    """
+    existing = get_folder_parts_from_file_paths(transaction.get("file_path"))
+    if existing:
+        return existing, False
+    when = _parse_row_date(transaction)
+    has_pr_file = any(
+        PR_TOKEN_PATTERN.search(name) or SIGNED_SUFFIX_PATTERN.search(name.rsplit(".", 1)[0]) for name in file_names
+    )
+    if has_pr_file:
+        folder_name = build_dated_folder_name(when, file_names)
+    else:
+        pr_no = str(transaction.get("pr_run_no") or "").strip()
+        folder_name = sanitize_folder_name(f"{when:%Y%m%d}_{pr_no}" if pr_no else f"{when:%Y%m%d}")
+    return build_storage_folder_parts(when, folder_name), True
 
 
 def attach_files_to_record(match: FolderMatch, files: list[tuple[str, bytes]]) -> SubmitResult:

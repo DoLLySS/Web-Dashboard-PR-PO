@@ -518,6 +518,32 @@ def get_transactions_with_files() -> list[dict[str, Any]]:
         return []
 
 
+def get_transactions_with_identity_fields() -> list[dict[str, Any]]:
+    """อ่านรายการที่ยังไม่ลบและมี Description, Vendor, Tel ครบ (ใช้จับคู่ "PR เดียวกัน") เรียงจากล่าสุดไปเก่าสุด
+
+    การเทียบทำฝั่ง Python เพราะต้องตัดสระไทย/เครื่องหมายก่อนเทียบ ซึ่ง SQL ทำไม่ได้
+
+    Returns:
+        รายการที่พบ (ไม่เจอหรือเกิด Error = รายการว่าง)
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM transactions
+                WHERE is_deleted = 0
+                  AND description IS NOT NULL AND TRIM(description) <> ''
+                  AND vendor IS NOT NULL AND TRIM(vendor) <> ''
+                  AND tel IS NOT NULL AND TRIM(tel) <> ''
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("อ่านรายการเพื่อจับคู่ PR", error)
+        return []
+
+
 def _fetch_transactions(
     start_date: Optional[str],
     end_date: Optional[str],

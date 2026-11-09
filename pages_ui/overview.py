@@ -6,7 +6,7 @@
                                           [ ➕ เพิ่มข้อมูล / อัปโหลดเอกสาร ]  <- กดแล้วเด้งหน้าต่าง (st.dialog)
     ┌────────────────────────────────────────────────────────────┐
     │ การ์ดตาราง (เต็มความกว้าง)                                  │
-    │  Search bar   |   Item ▾   |   Vendor ▾                     │
+    │  Search bar   |   Item ▾   |   Company ▾                     │
     │  ตาราง Master-List                                          │
     └────────────────────────────────────────────────────────────┘
     ▸ Quantity of equipment (กางออกดูได้)
@@ -27,7 +27,6 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
-from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -42,6 +41,7 @@ from data.database import (
     STATUS_RECEIVED,
     add_transaction,
     delete_transactions,
+    get_transaction,
     get_transactions,
     get_unique_vendors,
     update_transaction,
@@ -64,9 +64,10 @@ from utils.local_storage import (
     LocalStorageError,
     build_local_file_url,
     find_file_location,
+    get_folder_parts_from_file_paths,
 )
 from utils.masterlist_client import is_masterlist_configured
-from utils.storage_backend import BACKEND_SHAREPOINT, UNKNOWN_VENDOR_FOLDER, get_active_backend, is_storage_configured
+from utils.storage_backend import BACKEND_SHAREPOINT, get_active_backend, is_storage_configured
 from utils.submit_pipeline import (
     FolderMatch,
     RecordFields,
@@ -74,21 +75,12 @@ from utils.submit_pipeline import (
     find_existing_folder,
     submit_record,
 )
-from utils.text_extractor import extract_fields_from_text
-from utils.upload_planner import (
-    ACTION_SKIP,
-    PAGE_NOT_PR,
-    FileAnalysis,
-    ReviewItem,
-    UploadPlan,
-    build_item_options,
-    build_review_items,
-    build_upload_plan,
-    describe_item,
-    execute_upload_plan,
-    find_review_problems,
-    get_default_page_choice,
-    page_choice_key,
+from utils.upload_processor import (
+    KIND_ATTACHED,
+    KIND_BLOCKED,
+    KIND_CREATED,
+    UploadReport,
+    process_upload,
 )
 
 # บันทึกลง logs/app.log
@@ -107,7 +99,7 @@ TABLE_COLUMNS: dict[str, str] = {
     "total_price": "Price",
     "invoice_status": "Status",
     # --- ข้อมูลจากเอกสาร PR / Quotation (Master-List) แสดงหลังคอลัมน์หลัก เลื่อนตารางไปทางขวาเพื่อดู ---
-    "vendor": "Vendor",  # อยู่ติดกับ Tel.
+    "vendor": "Company",  # อยู่ติดกับ Tel.
     "tel": "Tel.",
     "tax_id": "Tax ID",
     "pr_run_no": "PR No.",
@@ -120,7 +112,7 @@ TABLE_COLUMNS: dict[str, str] = {
 # คำอธิบายภาษาไทยของหัวคอลัมน์ (แสดงเมื่อเอาเมาส์ชี้ที่หัวคอลัมน์) ใช้หัวสั้นเพราะคอลัมน์แคบ
 TABLE_COLUMN_HELP: dict[str, str] = {
     "date": "วันที่เอกสาร",
-    "vendor": "ผู้จัดจำหน่าย",
+    "vendor": "ชื่อบริษัท (Company)",
     "category": "ประเภทสินค้า (Hardware / Software / Network / Service)",
     "total_price": "ราคา (บาท)",
     "invoice_status": "สถานะใบกำกับภาษี: Completed / Pending / Overdue (ค้างเกิน OVERDUE_RULE.days_limit วัน)",
@@ -245,8 +237,9 @@ class FileLinkRenderer {
         if (params.value && /^(https?:\/\/|FILE_STATIC_PREFIX)/i.test(params.value)) {
             // ไฟล์ในเครื่อง (ค่าขึ้นต้น FILE_STATIC_PREFIX) = ปุ่มที่ไม่เปิดลิงก์ ตารางส่ง cellClicked ให้ฝั่ง Python
             // โหมด Desktop (เปิดเฉพาะตอนรันบนเครื่องตัวเอง) เปิดโฟลเดอร์ที่เก็บไฟล์ใน Explorer (โฟลเดอร์สร้างไว้ตอน Upload แล้ว)
-            // นอกนั้น (เช่นบน Server) ไฟล์ในเครื่องเปิดเป็นลิงก์ในแท็บใหม่เหมือนลิงก์ออนไลน์ (http/https)
-            const isLocalFile = FILE_DESKTOP_MODE && !/^https?:/i.test(params.value);
+            // โหมดอื่น (เช่นบน Server) เปิดหน้าต่างแสดงโฟลเดอร์และไฟล์ทั้งหมดของแถวนั้น (เบราว์เซอร์เปิดโฟลเดอร์บน Server ตรง ๆ ไม่ได้)
+            // ลิงก์ออนไลน์ (http/https) เปิดในแท็บใหม่เหมือนเดิม
+            const isLocalFile = !/^https?:/i.test(params.value);  // FILE_DESKTOP_MODE: ใช้แยกโหมดฝั่ง Python
             const link = document.createElement(isLocalFile ? 'span' : 'a');
             if (isLocalFile) {
                 link.setAttribute('role', 'button');
@@ -390,7 +383,7 @@ GRID_DATE_COLUMNS: tuple[str, ...] = ("date", "pr_request_date")
 # ตัวเลือก "ทั้งหมด" ของ dropdown กรอง Item / Vendor
 # (เป็นตัวเลือกแรกของ dropdown จึงแสดงข้อความตามดีไซน์ว่า "Item (ประเภท)" / "Vendor" และหมายถึงไม่กรอง)
 ALL_ITEMS_LABEL: str = "Item (ประเภท)"
-ALL_VENDORS_LABEL: str = "Vendor"
+ALL_VENDORS_LABEL: str = "Company"
 
 # ประเภทไฟล์ที่อนุญาตให้อัปโหลด
 # (pdf และ xlsx/xls ดึงข้อมูลอัตโนมัติได้ รูปภาพยังไม่รองรับ OCR)
@@ -440,6 +433,7 @@ MASTERLIST_TEXT_COLUMNS: dict[str, str] = {
 }
 
 SESSION_KEY_SUCCESS_MESSAGE: str = "overview_success_message"  # ข้อความบันทึกสำเร็จ
+SESSION_KEY_FOLDER_DIALOG_ROW: str = "overview_folder_dialog_row"  # รหัสแถวที่กดไอคอน File (เปิดหน้าต่างแสดงโฟลเดอร์ครั้งเดียว)
 SESSION_KEY_STATUS_MESSAGES: str = "overview_status_messages"  # ผลการเปลี่ยนสถานะในตาราง [(ระดับ, ข้อความ)]
 SESSION_KEY_EDITOR_VERSION: str = (
     "overview_editor_version"  # เลขเวอร์ชันของตาราง เพิ่มเฉพาะเมื่อต้องวาดตารางใหม่จริง ๆ (ล้างสถานะค้างในตาราง)
@@ -456,10 +450,7 @@ SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ �
 # ขั้นที่ 1 = ถามข้อมูลเบื้องต้น, ขั้นที่ 2 = ฟอร์มหลัก/อัปโหลด (รีเซ็ตเป็น 1 ทุกครั้งที่เปิดหน้าต่างและหลังบันทึกสำเร็จ)
 FORM_STEP_QUESTIONS: int = 1
 FORM_STEP_MAIN_FORM: int = 2
-SESSION_KEY_UPLOAD_PLAN: str = "overview_upload_plan"  # ข้อเสนอที่รอผู้ใช้ยืนยัน (มีเนื้อไฟล์อยู่ด้วย)
-SESSION_KEY_UPLOAD_ERRORS: str = "overview_upload_errors"  # รายการที่บันทึกไม่สำเร็จในรอบล่าสุด
 SESSION_KEY_SAVED_ROWS: str = "overview_saved_rows"  # (รหัสแถว, วันที่) ที่เพิ่งบันทึก ใช้แจ้งเตือนเมื่ออยู่นอกช่วงวันที่
-PAGE_PREVIEW_LENGTH: int = 60  # จำนวนตัวอักษรของข้อความตัวอย่างในตารางแบ่งหน้า
 SESSION_KEY_FORM_STEP: str = "form_step"  # ขั้นตอนปัจจุบันของหน้าต่าง
 SESSION_KEY_ENTRY_ITEM: str = "overview_entry_item"  # ประเภท (Item) ที่เลือกในขั้นที่ 1
 SESSION_KEY_ENTRY_HAS_INVOICE: str = "overview_entry_has_invoice"  # สถานะใบกำกับภาษีที่เลือกในขั้นที่ 1
@@ -1292,7 +1283,7 @@ def validate_form_input(
 ) -> list[str]:
     """ตรวจข้อมูลในฟอร์มก่อนบันทึก
 
-    ช่องบังคับ (ห้ามว่าง): Vendor, Tax ID, P/O No., PR Run No., Tel., Email, Name
+    ช่องบังคับ (ห้ามว่าง): Company, Tax ID, P/O No., PR Run No., Tel., Email, Name
     ถ้าจะเพิ่ม/เอาช่องบังคับออก: แก้รายการ required_fields ด้านล่าง (และใส่/ถอด REQUIRED_FIELD_MARK ที่ป้ายช่องใน render_entry_form)
 
     Args:
@@ -1311,7 +1302,7 @@ def validate_form_input(
     problem_messages: list[str] = []
 
     required_fields: list[tuple[str, str]] = [
-        ("Vendor", vendor_name),
+        ("Company", vendor_name),
         ("Tax ID", tax_id),
         ("P/O No.", purchase_order_number),
         ("PR Run No.", pr_run_number),
@@ -1401,7 +1392,7 @@ def find_overdue_transactions(pending_transactions: list[dict[str, Any]], today:
 OVERDUE_TABLE_COLUMNS: dict[str, str] = {
     "id": "รหัส",
     "upload_date": OVERDUE_RULE.reference_date_column_title,
-    "vendor": "ผู้ขาย",
+    "vendor": "บริษัท (Company)",
     "po_no": "เลขที่ PO",
     "total_price": "ราคารวม (บาท)",
     "days_pending": "ค้างมาแล้ว (วัน)",
@@ -1677,7 +1668,7 @@ def build_update_fields(changes: dict[str, Any], original_row: pd.Series) -> tup
         elif column == "vendor":
             vendor_name = str(new_value or "").strip()
             if not vendor_name:
-                raise ValueError("ชื่อผู้ขาย (Vendor) ห้ามว่าง")
+                raise ValueError("ชื่อบริษัท (Company) ห้ามว่าง")
             fields["vendor"] = vendor_name
         elif column == "category":
             fields["category"] = None if new_value in (None, "", NO_CATEGORY_LABEL) else str(new_value)
@@ -2070,13 +2061,16 @@ def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[s
         grid_response: ผลจาก show_grid
         visible_transactions: รายการที่แสดงในตาราง (แถวที่ n ในตาราง = ตัวที่ n)
     """
-    if not DESKTOP_EXPORT_ENABLED:
-        return  # โหมดปกติ (Server): ไอคอนเป็นลิงก์เปิดไฟล์ในเบราว์เซอร์ ไม่ต้องคัดลอกอะไร
     position = find_clicked_file_position(grid_response, {int(t["id"]): n for n, t in enumerate(visible_transactions)})
     if position is None or not 0 <= position < len(visible_transactions):
         return
 
     transaction = visible_transactions[position]
+    if not DESKTOP_EXPORT_ENABLED:
+        # โหมดปกติ (Server): เปิดหน้าต่างแสดงโฟลเดอร์และไฟล์ของแถวนั้น (วาดหลังรีรัน ดู render_file_folder_dialog)
+        st.session_state[SESSION_KEY_FOLDER_DIALOG_ROW] = int(transaction["id"])
+        st.session_state[SESSION_KEY_EDITOR_VERSION] = st.session_state.get(SESSION_KEY_EDITOR_VERSION, 0) + 1
+        st.rerun()
     try:
         pr_date = datetime.fromisoformat(f"{transaction['date']}T00:00:00")  # โฟลเดอร์ ปี/เดือน/วัน ตามวันที่ PR
     except ValueError:
@@ -2092,6 +2086,37 @@ def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[s
     st.session_state[SESSION_KEY_STATUS_MESSAGES] = [message]  # แสดงหลังรีรัน (ดู render ด้านบนของหน้า)
     st.session_state[SESSION_KEY_EDITOR_VERSION] = st.session_state.get(SESSION_KEY_EDITOR_VERSION, 0) + 1
     st.rerun()
+
+
+@st.dialog("โฟลเดอร์ไฟล์", width="medium")
+def show_file_folder_dialog(transaction: dict[str, Any]) -> None:
+    """หน้าต่างแสดงโฟลเดอร์ (ปี/เดือน/วัน/ชื่อไฟล์ PR) และไฟล์ทั้งหมดของแถว กดชื่อไฟล์เพื่อเปิดในแท็บใหม่
+
+    Args:
+        transaction: แถวที่กดไอคอน File
+    """
+    file_paths = transaction.get("file_path") or ""
+    folder_parts = get_folder_parts_from_file_paths(file_paths)
+    if not folder_parts:
+        st.info("ไม่พบไฟล์ของแถวนี้ในเครื่อง")
+        return
+    st.markdown(f"**PR:** {html.escape(str(transaction.get('pr_run_no') or '-'))}")
+    st.caption("โฟลเดอร์: " + " / ".join(folder_parts))
+    for stored_path in [path.strip() for path in file_paths.split(FILE_PATH_SEPARATOR) if path.strip()]:
+        url = build_local_file_url(stored_path)
+        file_name = Path(stored_path.replace("\\", "/")).name
+        if url:
+            st.markdown(f"- [{file_name}]({url})")
+        else:
+            st.markdown(f"- {file_name} (ไม่พบไฟล์)")
+
+
+def render_file_folder_dialog() -> None:
+    """เปิดหน้าต่างโฟลเดอร์ถ้าเพิ่งกดไอคอน File (แสดงครั้งเดียว ไม่เปิดซ้ำเมื่อหน้ารีรัน)"""
+    row_id = st.session_state.pop(SESSION_KEY_FOLDER_DIALOG_ROW, None)
+    transaction = get_transaction(int(row_id)) if row_id is not None else None
+    if transaction:
+        show_file_folder_dialog(transaction)
 
 
 def _bring_explorer_window_to_front(folder_name: str, timeout_seconds: float = 2.0) -> None:
@@ -2213,7 +2238,7 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
                 "Item", [ALL_ITEMS_LABEL, *CATEGORY_OPTIONS], label_visibility="collapsed"
             )
             vendor_options = [ALL_VENDORS_LABEL, *sorted({t["vendor"] for t in range_transactions})]
-            selected_vendor = vendor_column.selectbox("Vendor", vendor_options, label_visibility="collapsed")
+            selected_vendor = vendor_column.selectbox("Company", vendor_options, label_visibility="collapsed")
 
         # ถ้ามีคำค้นหาให้ query ใหม่ตามคำค้น ไม่งั้นใช้รายการทั้งช่วงวันที่ที่มีอยู่แล้ว (ไม่ query ซ้ำ)
         visible_transactions = (
@@ -2506,47 +2531,6 @@ def find_pr_date_in_file_names(file_names: list[str]) -> Optional[date]:
     return next((parsed for parsed in map(parse_date_from_file_name, candidates) if parsed), None)
 
 
-def build_fields_from_item(item: ReviewItem, category: str, invoice_choice: str) -> RecordFields:
-    """Extract ข้อมูลจากรายการที่ผู้ใช้เลือกสร้างแถวใหม่ แล้วประกอบเป็นฟิลด์พร้อมบันทึก
-
-    Args:
-        item: ไฟล์ หรือ 1 PR ในไฟล์ที่มีหลาย PR (ใช้ข้อความเฉพาะหน้าของ PR นั้น)
-        category: หมวดหมู่จากขั้นที่ 1
-        invoice_choice: สถานะใบกำกับภาษีจากขั้นที่ 1
-
-    Returns:
-        ฟิลด์ของแถวใหม่
-    """
-    extracted = extract_fields_from_text(item.text)
-    # พบใบกำกับภาษีในไฟล์ -> ตั้งสถานะเป็น Completed ให้เอง
-    if extracted.has_tax_invoice:
-        invoice_choice = INVOICE_CHOICE_HAS
-    pr_request_date = _parse_iso_date_or_none(extracted.pr_request_date)
-    # คอลัมน์ Date = วันที่ของ PR: บรรทัด "Date:" ในเอกสาร -> วันที่นำหน้าชื่อไฟล์
-    # -> PR Request Date ในเอกสาร -> (ไม่พบเลย) วันที่อัปโหลด
-    # วันที่ Upload จริงเก็บแยกใน created_at อัตโนมัติ (ใช้นับวันค้างของแถบแจ้งเตือน)
-    pr_file_date = (
-        _parse_iso_date_or_none(extracted.pr_document_date)
-        or find_pr_date_in_file_names([item.file_name])
-        or pr_request_date
-        or date.today()
-    )
-    return RecordFields(
-        date=pr_file_date.isoformat(),
-        vendor=extracted.vendor or UNKNOWN_VENDOR_FOLDER,
-        total_price=float(extracted.total_amount) if extracted.total_amount else 0.0,
-        tax_id=extracted.tax_id or None,
-        pr_run_no=item.pr_no or extracted.pr_run_no or None,
-        category=category,
-        invoice_status=INVOICE_CHOICE_TO_DB[invoice_choice],
-        tel=extracted.tel or None,
-        pr_request_date=pr_request_date.isoformat() if pr_request_date else None,
-        qt_no=extracted.qt_no or None,
-        description=item.description,
-        unit_price=float(extracted.unit_price) if extracted.unit_price else None,
-    )
-
-
 def _build_folder_match_warning(match: FolderMatch) -> str:
     """ข้อความเตือนเมื่อตรงหลายรายการ (Tax ID ซ้ำได้ถ้าผู้ขายรายเดียวมีหลาย PR) คืนค่าว่างถ้าตรงรายการเดียว"""
     if match.match_count <= 1:
@@ -2592,27 +2576,61 @@ def finish_submission(summary_message: str, form_counter: int) -> None:
     st.session_state[SESSION_KEY_SUCCESS_MESSAGE] = summary_message
     st.session_state[SESSION_KEY_FORM_COUNTER] = form_counter + 1
     st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
-    st.session_state.pop(SESSION_KEY_UPLOAD_PLAN, None)
     st.rerun()
 
 
+def build_upload_summary(report: UploadReport) -> str:
+    """สรุปผลการอัปโหลดอัตโนมัติ (markdown): แถวใหม่ / แนบเข้าแถวเดิม / ไม่ได้บันทึก พร้อมเหตุผลและคำเตือน"""
+    sections: list[str] = []
+    created = report.of_kind(KIND_CREATED)
+    attached = report.of_kind(KIND_ATTACHED)
+    blocked = report.of_kind(KIND_BLOCKED)
+
+    if created:
+        lines = [f"✅ สร้างแถวใหม่ {len(created)} แถว"]
+        for item in created:
+            lines.append(f"- {item.label} · รหัสรายการ {item.result.transaction_id} · ไฟล์: {item.file_name}")
+        sections.append("\n".join(lines))
+    if attached:
+        lines = [f"📎 ส่งไฟล์เข้าโฟลเดอร์ของแถวเดิม {len(attached)} ไฟล์"]
+        for item in attached:
+            result = item.result
+            status = "" if result.attached_file_names else " (มีไฟล์นี้อยู่แล้ว)"
+            lines.append(
+                f"- {item.file_name} → {item.label} · รหัสรายการ {result.transaction_id} · โฟลเดอร์: {result.existing_folder}{status}"
+            )
+        sections.append("\n".join(lines))
+    if blocked:
+        lines = [f"⛔ ไม่ได้บันทึก {len(blocked)} ไฟล์"]
+        lines.extend(f"- {item.file_name}: {item.reason}" for item in blocked)
+        sections.append("\n".join(lines))
+
+    warnings = [f"- {item.file_name}: {warning}" for item in report.items for warning in item.warnings]
+    if warnings:
+        sections.append("⚠️ ข้อควรตรวจ\n" + "\n".join(warnings))
+
+    # สถานะปลายทางอื่น (รวมครั้งเดียว): ที่เก็บไฟล์ออนไลน์ / Master-List
+    results = report.results
+    storage_notes = list(dict.fromkeys(r.storage_message for r in results if r.storage_status in ("skipped", "error")))
+    sections.extend(f"⚠️ {note}" for note in storage_notes)
+    sent_count = sum(1 for result in results if result.masterlist_sent)
+    if created and sent_count:
+        sections.append(f"📤 ส่งเข้า Master-List แล้ว {sent_count} แถว")
+    return "\n\n".join(sections) or "ℹ️ ไม่ได้บันทึกรายการใด"
+
+
 def render_upload_mode(form_counter: int) -> None:
-    """โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload เพื่อดูผลจับคู่ ระบบยังไม่บันทึกจนกว่าผู้ใช้จะยืนยัน
+    """โหมด "Upload ข้อมูล": วางไฟล์แล้วกด Upload ระบบอ่านไฟล์ PR สร้างแถว/จัดเข้าโฟลเดอร์ให้ทันที ไม่มีหน้ายืนยัน
 
     Args:
         form_counter: ตัวนับของฟอร์มปัจจุบัน (ทำให้กล่องวางไฟล์ว่างใหม่หลังส่งสำเร็จ)
     """
-    plan: Optional[UploadPlan] = st.session_state.get(SESSION_KEY_UPLOAD_PLAN)
-    if plan is not None:
-        render_upload_review(plan, form_counter)
-        return
-
     _inject_drag_feedback_script()
     with st.container(key="upload_box_extract"):
         _render_upload_card_heading(
             "📄",
             "Upload P/O",
-            "วางได้หลายไฟล์ ระบบจะแสดงผลจับคู่ให้ตรวจก่อนบันทึก",
+            "วางไฟล์ PR (Excel หรือ PDF) ระบบสร้างแถวและจัดเข้าโฟลเดอร์ให้อัตโนมัติ ไฟล์อื่นจะถูกจับคู่เข้า PR ให้",
             "เว็บไซต์ + " + _storage_destination_label() + " + Master-List",
         )
         documents: list[UploadedFile] = st.file_uploader(
@@ -2638,144 +2656,18 @@ def render_upload_mode(form_counter: int) -> None:
     if not is_clicked or not documents:
         return
 
-    with st.spinner("กำลังอ่านไฟล์และหาแถวที่ตรงกัน..."):
-        st.session_state[SESSION_KEY_UPLOAD_PLAN] = build_upload_plan(
-            [(document.name, document.getvalue()) for document in documents], clean_pr_file_name, uuid4().hex
+    category: str = st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0])
+    invoice_choice: str = st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET)
+    with st.spinner("กำลังอ่านไฟล์และบันทึก..."):
+        report = process_upload(
+            [(document.name, document.getvalue()) for document in documents],
+            category,
+            INVOICE_CHOICE_TO_DB[invoice_choice],
+            clean_pr_file_name,
+            lambda name: find_pr_date_in_file_names([name]),
         )
-    st.rerun(scope="fragment")
-
-
-def cancel_upload_review() -> None:
-    """Callback ปุ่มยกเลิก: ทิ้งข้อเสนอ ไม่มีไฟล์หรือแถวใหม่เกิดขึ้น (ถ้าบันทึกบางรายการไปแล้ว รายการนั้นยังอยู่)"""
-    st.session_state.pop(SESSION_KEY_UPLOAD_PLAN, None)
-    st.session_state.pop(SESSION_KEY_UPLOAD_ERRORS, None)
-
-
-def _render_page_assignment(plan: UploadPlan, analysis: FileAnalysis) -> dict[str, Optional[str]]:
-    """วาดตารางแบ่งหน้าของไฟล์ที่มีหลาย PR: หน้าที่อ่านเลขได้มีค่าเสนอ หน้าอื่นผู้ใช้ต้องเลือกเอง
-
-    Args:
-        plan: ข้อเสนอการอัปโหลด
-        analysis: ไฟล์ที่ต้องแบ่งหน้า
-
-    Returns:
-        {key ของหน้า: เลข PR / PAGE_NOT_PR / None}
-    """
-    st.text(f"{analysis.name}: พบ {len(analysis.pr_numbers)} PR ตรวจว่าแต่ละหน้าเป็นของ PR ใด")
-    options = [*analysis.pr_numbers, PAGE_NOT_PR]
-    choices: dict[str, Optional[str]] = {}
-    for page in analysis.pages:
-        default_choice = get_default_page_choice(page)
-        label_column, choice_column = st.columns([3, 2], vertical_alignment="center")
-        preview = " ".join(page.text.split())[:PAGE_PREVIEW_LENGTH] or "(หน้านี้ไม่มีข้อความให้อ่าน)"
-        label_column.text(f"หน้า {page.number}: {preview}")
-        choices[page_choice_key(analysis.index, page.number)] = choice_column.selectbox(
-            f"หน้า {page.number}",
-            options,
-            index=options.index(default_choice) if default_choice else None,
-            format_func=lambda value: "ไม่ใช่ PR" if value == PAGE_NOT_PR else value,
-            placeholder="เลือกว่าหน้านี้เป็นของอะไร",
-            key=f"upload_page_{plan.plan_id}_{analysis.index}_{page.number}",
-            label_visibility="collapsed",
-            disabled=bool(plan.completed),  # บันทึกบางรายการแล้ว ห้ามเปลี่ยนการแบ่งหน้า
-        )
-    return choices
-
-
-def _render_item_decision(plan: UploadPlan, item: ReviewItem, items: list[ReviewItem]) -> Optional[str]:
-    """วาดตัวเลือกปลายทางของรายการ โดยไม่เลือกค่าไว้ให้ แม้จะมีแถวที่แนะนำ
-
-    Args:
-        plan: ข้อเสนอการอัปโหลด
-        item: รายการที่กำลังเลือก
-        items: รายการทั้งหมดในชุด
-
-    Returns:
-        ค่าที่ผู้ใช้เลือก หรือ None ถ้ายังไม่ได้เลือก
-    """
-    st.text(describe_item(item))
-    if item.item_id in plan.completed:
-        st.caption(f"บันทึกแล้ว (รหัสรายการ {plan.completed[item.item_id].transaction_id})")
-        return None
-    st.caption(
-        f"ระบบแนะนำแถว {item.suggestion.transaction['id']}: {item.suggestion.reason}"
-        if item.suggestion
-        else "ไม่พบแถวที่ตรงกัน"
-    )
-    options = build_item_options(plan, item, items)
-    return st.selectbox(
-        f"ปลายทางของ {item.item_id}",
-        list(options),
-        index=None,
-        format_func=options.__getitem__,
-        placeholder="เลือกปลายทาง",
-        key=f"upload_decision_{plan.plan_id}_{item.item_id}",
-        label_visibility="collapsed",
-    )
-
-
-def _finish_upload_plan(plan: UploadPlan, skipped_names: list[str], form_counter: int) -> None:
-    """ทุกรายการจบแล้ว: สรุปผล จำแถวที่บันทึก และปิดหน้าต่าง
-
-    Args:
-        plan: ข้อเสนอการอัปโหลด
-        skipped_names: รายการที่ผู้ใช้เลือกไม่บันทึก
-        form_counter: ตัวนับของฟอร์มปัจจุบัน
-    """
-    # หลาย PR ที่แนบแถวเดียวกันใช้ผลเดียวกัน จึงสรุปครั้งเดียว
-    results = list({id(result): result for result in plan.completed.values()}.values())
-    remember_saved_rows(results)
-    summaries = [build_submit_summary(result) for result in results]
-    if skipped_names:
-        summaries.append(f"ℹ️ ไม่ได้บันทึก: {', '.join(skipped_names)}")
-    finish_submission("\n\n".join(summaries) or "ℹ️ ไม่ได้บันทึกรายการใด", form_counter)
-
-
-def render_upload_review(plan: UploadPlan, form_counter: int) -> None:
-    """วาดหน้ายืนยันผลจับคู่: ปุ่มบันทึกใช้ได้เมื่อเลือกครบ และไม่มีการเขียนข้อมูลก่อนกดปุ่มนี้
-
-    Args:
-        plan: ข้อเสนอการอัปโหลด
-        form_counter: ตัวนับของฟอร์มปัจจุบัน
-    """
-    st.markdown("#### ตรวจผลจับคู่ก่อนบันทึก")
-    for message in st.session_state.get(SESSION_KEY_UPLOAD_ERRORS, []):
-        st.error(f"❌ {message}")
-
-    page_choices: dict[str, Optional[str]] = {}
-    for analysis in plan.files:
-        if analysis.needs_page_review:
-            page_choices.update(_render_page_assignment(plan, analysis))
-
-    items = build_review_items(plan, page_choices)
-    decisions = {item.item_id: _render_item_decision(plan, item, items) for item in items}
-
-    problems = find_review_problems(plan, page_choices, decisions)
-    for problem in problems:
-        st.caption(f"⚠️ {problem}")
-
-    cancel_column, save_column = st.columns([1, 2])
-    cancel_column.button("ยกเลิก", on_click=cancel_upload_review, width="stretch", key="upload_review_cancel")
-    is_confirmed = save_column.button(
-        "ยืนยันและบันทึก", type="primary", width="stretch", disabled=bool(problems), key="upload_review_save"
-    )
-    if not is_confirmed or problems:
-        return
-
-    category = st.session_state.get(SESSION_KEY_ENTRY_ITEM, STEP1_ITEM_OPTIONS[0])
-    invoice_choice = st.session_state.get(SESSION_KEY_ENTRY_HAS_INVOICE, INVOICE_CHOICE_NOT_YET)
-    with st.spinner("กำลังบันทึก..."):
-        outcomes = execute_upload_plan(
-            plan, page_choices, decisions, lambda item: build_fields_from_item(item, category, invoice_choice)
-        )
-    errors = [result.error for result in outcomes.values() if result.transaction_id is None]
-    if errors:
-        # ค้างหน้านี้ไว้ กดซ้ำจะทำเฉพาะรายการที่ยังไม่สำเร็จ
-        st.session_state[SESSION_KEY_UPLOAD_ERRORS] = errors
-        st.rerun(scope="fragment")
-    st.session_state.pop(SESSION_KEY_UPLOAD_ERRORS, None)
-    skipped_names = [describe_item(item) for item in items if decisions.get(item.item_id) == ACTION_SKIP]
-    _finish_upload_plan(plan, skipped_names, form_counter)
+    remember_saved_rows(report.saved_results)
+    finish_submission(build_upload_summary(report), form_counter)
 
 
 def remember_saved_rows(results: list[SubmitResult]) -> None:
@@ -2968,11 +2860,11 @@ def _vendor_autocomplete_input(form_counter: int) -> str:
         existing_vendors = [prefilled_vendor, *existing_vendors]
 
     selected_vendor = st.selectbox(
-        f"Vendor{REQUIRED_FIELD_MARK}",
+        f"Company{REQUIRED_FIELD_MARK}",
         options=existing_vendors,
         index=None,
         accept_new_options=True,
-        placeholder="พิมพ์ค้นหา หรือพิมพ์ชื่อผู้ขายใหม่",
+        placeholder="พิมพ์ค้นหา หรือพิมพ์ชื่อบริษัทใหม่",
         key=vendor_key,
     )
     return str(selected_vendor or "").strip()
@@ -3242,7 +3134,6 @@ def render_add_button(form_counter: int) -> None:
             # เปิดหน้าต่างทุกครั้งเริ่มที่ขั้นที่ 1 (รวมกรณีปิดด้วยปุ่ม x ระหว่างขั้นที่ 2)
             st.session_state[SESSION_KEY_ENTRY_MODE] = chosen_mode
             st.session_state[SESSION_KEY_FORM_STEP] = FORM_STEP_QUESTIONS
-            cancel_upload_review()  # ปิดหน้าต่างค้างไว้แล้วเปิดใหม่ ต้องไม่เห็นข้อเสนอเก่า
             render_entry_dialog(form_counter)
 
 
@@ -3282,6 +3173,8 @@ def render(start_date: date, end_date: date) -> None:
     if success_message:
         st.success(success_message)
     render_saved_rows_notice(start_date, end_date)
+
+    render_file_folder_dialog()
 
     # แสดงผลการเปลี่ยนสถานะจากตารางครั้งก่อน (เก็บไว้ข้ามการ rerun) แล้วลบทิ้งไม่ให้แสดงซ้ำ
     for message_level, message_text in st.session_state.pop(SESSION_KEY_STATUS_MESSAGES, []):
