@@ -123,11 +123,13 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 """
 
-# Audit Trail: บันทึกทุกการเพิ่ม/แก้ไข/ลบ (เพิ่มแถวอย่างเดียว ไม่แก้ไขหรือลบ log เดิม)
+# Audit Trail: บันทึกทุกการเพิ่ม/แก้ไข/ลบ (เพิ่มแถวอย่างเดียว ไม่ลบ log เดิม)
+# ข้อยกเว้นเดียว: เมื่อลบแถว ค่าใน details ของ log เดิมของแถวนั้นถูกล้าง เหลือวันเวลา ประเภทการกระทำ และรหัสแถว
 # ถ้าจะเพิ่มข้อมูลที่เก็บใน log ให้เพิ่มคอลัมน์ที่นี่ + _write_audit_log (ไฟล์เก่าต้องเพิ่มคอลัมน์ด้วย ALTER TABLE)
 AUDIT_ACTION_INSERT: str = "INSERT"
 AUDIT_ACTION_UPDATE: str = "UPDATE"
 AUDIT_ACTION_DELETE: str = "DELETE"  # ลบแถวถาวร (log เก่าอาจมี "SOFT_DELETE" จากรุ่นที่ลบแบบซ่อนแถว)
+AUDIT_REDACTED_DETAILS: str = '{"redacted": true}'  # ค่าแทน details ของ log ของแถวที่ถูกลบ
 
 CREATE_AUDIT_LOGS_SQL: str = """
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -280,6 +282,19 @@ def _write_audit_log(
     conn.execute(
         "INSERT INTO audit_logs (action_type, record_id, details) VALUES (?, ?, ?)",
         (action_type, record_id, details_json),
+    )
+
+
+def _redact_audit_details(conn: sqlite3.Connection, record_id: int) -> None:
+    """ล้าง details ของ log เดิมของแถวที่ถูกลบ โดยใช้ connection เดียวกับการลบ (ล้มเหลวแล้ว rollback พร้อมกัน)
+
+    Args:
+        conn: connection ที่กำลังลบแถวอยู่ (ฟังก์ชันนี้ไม่ commit เอง)
+        record_id: id ของแถวที่ถูกลบ (AUTOINCREMENT ไม่นำ id กลับมาใช้ จึงไม่กระทบแถวอื่น)
+    """
+    conn.execute(
+        "UPDATE audit_logs SET details = ? WHERE record_id = ? AND action_type <> ?",
+        (AUDIT_REDACTED_DETAILS, record_id, AUDIT_ACTION_DELETE),
     )
 
 
@@ -828,7 +843,8 @@ def delete_transaction(transaction_id: int) -> bool:
             )
             deleted = cursor.rowcount > 0
             if deleted:
-                # บันทึก log ใน transaction เดียวกับการลบ
+                # ล้างรายละเอียดของ log เดิมและบันทึก log ใน transaction เดียวกับการลบ
+                _redact_audit_details(conn, transaction_id)
                 _write_audit_log(conn, AUDIT_ACTION_DELETE, transaction_id, {"deleted": True})
 
         if not deleted:
@@ -866,6 +882,7 @@ def delete_transactions(transaction_ids: list[int]) -> int:
                 )
                 if cursor.rowcount > 0:
                     deleted_count += 1
+                    _redact_audit_details(conn, transaction_id)
                     _write_audit_log(conn, AUDIT_ACTION_DELETE, transaction_id, {"deleted": True})
         if deleted_count:
             _bump_data_version()

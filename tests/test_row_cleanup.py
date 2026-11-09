@@ -6,7 +6,16 @@ import pytest
 
 import utils.local_storage as local_storage
 import utils.row_cleanup as row_cleanup
-from data.database import _bump_data_version, _get_connection, get_transaction, get_transactions, update_transaction
+from data.database import (
+    AUDIT_REDACTED_DETAILS,
+    _bump_data_version,
+    _get_connection,
+    delete_transaction,
+    delete_transactions,
+    get_transaction,
+    get_transactions,
+    update_transaction,
+)
 from pages_ui.overview import build_delete_confirm_lines
 from pr_fixtures import make_pr_pdf
 from utils.local_storage import FILE_PATH_SEPARATOR
@@ -247,3 +256,43 @@ def test_delete_confirm_lists_every_selected_row_up_to_the_limit() -> None:
 def test_delete_confirm_summarises_rows_beyond_the_limit() -> None:
     lines = build_delete_confirm_lines(make_rows(13))
     assert len(lines) == 11 and lines[-1] == "และอีก 3 รายการ"
+
+
+def audit_details(row_id: int) -> list[str]:
+    with _get_connection() as conn:
+        rows = conn.execute("SELECT details FROM audit_logs WHERE record_id = ? ORDER BY log_id", (row_id,)).fetchall()
+    return [row[0] for row in rows]
+
+
+def test_delete_redacts_only_that_rows_audit_details(isolated_storage: Path) -> None:
+    first, second, _folder = share_folder_with_second_row(isolated_storage, hide_second=False)
+    second_details = audit_details(second["id"])
+    assert any("Monitor Dell" in details for details in audit_details(first["id"]))
+
+    delete_rows_and_files([first["id"]])
+
+    details = audit_details(first["id"])
+    assert details[-1] == '{"deleted": true}'
+    assert set(details[:-1]) == {AUDIT_REDACTED_DETAILS}
+    assert audit_details(second["id"]) == second_details
+
+
+def test_failed_delete_keeps_audit_details(isolated_storage: Path) -> None:
+    upload([(PR_NAME, make_pr_pdf(PR_ITEMS))])
+    row = only_row()
+    before = audit_details(row["id"])
+    with _get_connection() as conn:
+        conn.execute("CREATE TRIGGER block_log BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+
+    assert delete_transactions([row["id"]]) == 0
+
+    assert audit_details(row["id"]) == before and count_rows_in_table() == 1
+
+
+def test_single_delete_redacts_audit_details(isolated_storage: Path) -> None:
+    upload([(PR_NAME, make_pr_pdf(PR_ITEMS))])
+    row = only_row()
+
+    assert delete_transaction(row["id"])
+
+    assert audit_details(row["id"]) == [AUDIT_REDACTED_DETAILS, '{"deleted": true}']
