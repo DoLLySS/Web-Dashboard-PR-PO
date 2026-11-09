@@ -1,6 +1,12 @@
 """ทดสอบสคริปต์สำรองข้อมูล: ต้องกู้คืนได้จริง และลบเฉพาะชุดเก่าที่สคริปต์สร้าง"""
 
+import ast
+import hashlib
+import os
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tarfile
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -8,7 +14,18 @@ from pathlib import Path
 
 import pytest
 
-from scripts.backup import DATABASE_FILE_NAME, UPLOADS_ARCHIVE_NAME, BackupError, create_backup, main
+from scripts.backup import (
+    CODE_ARCHIVE_NAME,
+    DATABASE_FILE_NAME,
+    MANIFEST_FILE_NAME,
+    PROJECT_ROOT,
+    UPLOADS_ARCHIVE_NAME,
+    BackupError,
+    create_backup,
+    default_db_path,
+    default_upload_directory,
+    main,
+)
 
 NOW = datetime(2026, 11, 9, 1, 30, 0)
 DOCUMENT_BYTES = "เอกสาร".encode()
@@ -131,13 +148,139 @@ def test_destination_served_by_web_is_refused(source: tuple[Path, Path]) -> None
 
 
 def test_missing_database_returns_failure_without_touching_backups(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("scripts.backup.DB_PATH", tmp_path / "missing.db")
-    monkeypatch.setattr("scripts.backup.UPLOAD_DIRECTORY", tmp_path / "static" / "local_uploads")
     destination = tmp_path / "backups"
 
-    assert main(["--dest", str(destination)]) == 1
+    assert main(["--db", str(tmp_path / "missing.db"), "--uploads", str(tmp_path / "static" / "local_uploads"), "--dest", str(destination)]) == 1
 
     assert "ไม่พบไฟล์ฐานข้อมูล" in capsys.readouterr().err
     assert not destination.exists()
+
+
+def test_default_paths_come_from_environment_not_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DB_FILE_PATH", str(tmp_path / "x.db"))
+    assert default_db_path() == tmp_path / "x.db"
+    monkeypatch.delenv("DB_FILE_PATH")
+    assert default_db_path() == PROJECT_ROOT / "data" / "masterlist.db"
+    assert default_upload_directory() == PROJECT_ROOT / "static" / "local_uploads"
+
+
+@pytest.fixture
+def project(tmp_path: Path, source: tuple[Path, Path]) -> Path:
+    """โปรเจกต์จำลอง: โค้ด + .env + venv + ฐานข้อมูล + ไฟล์เอกสาร + logs + backups"""
+    root = tmp_path / "static"  # source ใช้ tmp_path/static/local_uploads อยู่แล้ว
+    project_dir = tmp_path / "proj"
+    (project_dir / "utils").mkdir(parents=True)
+    (project_dir / "app.py").write_text("print('app')\n")
+    (project_dir / "utils" / "a.py").write_text("A = 1\n")
+    (project_dir / "utils" / "__pycache__").mkdir()
+    (project_dir / "utils" / "__pycache__" / "a.pyc").write_bytes(b"x")
+    (project_dir / ".env").write_text("SECRET=abc\n")
+    (project_dir / "venv" / "bin").mkdir(parents=True)
+    (project_dir / "venv" / "bin" / "python").write_text("venv")
+    (project_dir / "data").mkdir()
+    (project_dir / "data" / "masterlist.db").write_bytes(b"db")
+    (project_dir / "data" / "masterlist.db-wal").write_bytes(b"wal")
+    (project_dir / "static" / "local_uploads").mkdir(parents=True)
+    (project_dir / "static" / "local_uploads" / "doc.pdf").write_bytes(b"doc")
+    (project_dir / "logs").mkdir()
+    (project_dir / "logs" / "app.log").write_text("log")
+    (project_dir / "backups").mkdir()
+    (project_dir / "backups" / "old.txt").write_text("old")
+    assert root.is_dir()
+    return project_dir
+
+
+def test_code_backup_has_code_and_env_but_no_venv_data_or_uploads(source: tuple[Path, Path], project: Path, tmp_path: Path) -> None:
+    db_path, upload_directory = source
+
+    folder = create_backup(db_path, upload_directory, tmp_path / "out", now=NOW, code_directory=project)
+
+    with tarfile.open(folder / CODE_ARCHIVE_NAME) as archive:
+        names = set(archive.getnames())
+    assert {"proj/app.py", "proj/utils/a.py", "proj/.env"} <= names
+    forbidden = ("venv", "__pycache__", "masterlist.db", "local_uploads", "app.log", "old.txt")
+    assert not [name for name in names if any(word in name for word in forbidden)]
+
+
+def test_backup_is_private_and_manifest_verifies(source: tuple[Path, Path], project: Path, tmp_path: Path) -> None:
+    db_path, upload_directory = source
+
+    folder = create_backup(db_path, upload_directory, tmp_path / "out", now=NOW, code_directory=project)
+
+    assert folder.stat().st_mode & 0o077 == 0
+    assert all(path.stat().st_mode & 0o077 == 0 for path in folder.iterdir())
+    lines = (folder / MANIFEST_FILE_NAME).read_text().splitlines()
+    assert sorted(line.split("  ")[1] for line in lines) == sorted(
+        [CODE_ARCHIVE_NAME, DATABASE_FILE_NAME, UPLOADS_ARCHIVE_NAME]
+    )
+    for line in lines:
+        digest, name = line.split("  ")
+        assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == digest
+
+
+def test_code_backup_inside_the_project_does_not_include_itself(source: tuple[Path, Path], project: Path) -> None:
+    db_path, upload_directory = source
+    destination = project / "my_backups"
+
+    folder = create_backup(db_path, upload_directory, destination, now=NOW, code_directory=project)
+
+    with tarfile.open(folder / CODE_ARCHIVE_NAME) as archive:
+        assert not [name for name in archive.getnames() if "my_backups" in name]
+
+
+def test_missing_code_directory_is_refused(source: tuple[Path, Path], tmp_path: Path) -> None:
+    db_path, upload_directory = source
+    with pytest.raises(BackupError):
+        create_backup(db_path, upload_directory, tmp_path / "out", now=NOW, code_directory=tmp_path / "nope")
+    assert not (tmp_path / "out").exists()
+
+
+def test_main_warns_when_code_backup_contains_env(source: tuple[Path, Path], project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db_path, upload_directory = source
+    code = main(["--db", str(db_path), "--uploads", str(upload_directory), "--code", str(project), "--dest", str(tmp_path / "out")])
+    assert code == 0 and ".env" in capsys.readouterr().out
+
+
+def test_scripts_run_standalone_without_the_application(tmp_path: Path, source: tuple[Path, Path]) -> None:
+    """คัดลอก scripts/ + utils/file_removal.py ไปโฟลเดอร์อื่น แล้วรันด้วย Python เปล่า (ไม่มี streamlit/config/data) ได้"""
+    bundle = tmp_path / "bundle"
+    (bundle / "scripts").mkdir(parents=True)
+    (bundle / "utils").mkdir()
+    for name in ("__init__.py", "backup.py", "purge_deleted.py"):
+        shutil.copy(PROJECT_ROOT / "scripts" / name, bundle / "scripts" / name)
+    for name in ("__init__.py", "file_removal.py"):
+        shutil.copy(PROJECT_ROOT / "utils" / name, bundle / "utils" / name)
+    db_path, upload_directory = source
+    with closing(sqlite3.connect(db_path)) as conn:  # ทำให้เป็นโครงสร้างที่ purge ยอมรับ
+        conn.executescript(
+            "ALTER TABLE transactions ADD COLUMN is_deleted INTEGER DEFAULT 0;"
+            "ALTER TABLE transactions ADD COLUMN file_path TEXT;"
+            "ALTER TABLE transactions ADD COLUMN sharepoint_url TEXT;"
+            "CREATE TABLE audit_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, record_id INTEGER, details TEXT, timestamp TEXT);"
+        )
+        conn.commit()
+    environment = {"PATH": os.environ["PATH"], "PYTHONDONTWRITEBYTECODE": "1"}
+
+    for tool, extra in (("backup.py", []), ("purge_deleted.py", [])):
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", str(bundle / "scripts" / tool), "--db", str(db_path), "--uploads", str(upload_directory),
+             "--dest", str(tmp_path / "out"), *extra],
+            capture_output=True, text=True, env=environment, cwd=tmp_path, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    assert [path.name for path in (tmp_path / "out").iterdir()] and "ModuleNotFoundError" not in result.stderr
+
+
+@pytest.mark.parametrize("module", ["scripts/backup.py", "scripts/purge_deleted.py", "utils/file_removal.py"])
+def test_tool_modules_import_only_the_standard_library(module: str) -> None:
+    allowed_local = {"scripts", "utils"}
+    tree = ast.parse((PROJECT_ROOT / module).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported <= set(sys.stdlib_module_names) | allowed_local, imported - set(sys.stdlib_module_names)

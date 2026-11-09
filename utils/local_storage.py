@@ -14,6 +14,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from config.settings import get_env_flag
+from utils import file_removal
 from utils.storage_backend import build_folder_name_from_files, build_storage_folder_parts
 
 # เปิดเมื่อรันบนเครื่องของผู้ใช้เองเท่านั้น (LOCAL_DESKTOP_EXPORT=1 ใน .env): ตอน Upload สร้างโฟลเดอร์บน Desktop + คัดลอกไฟล์ให้อัตโนมัติ
@@ -27,7 +28,7 @@ UPLOAD_DIRECTORY: Path = Path(__file__).parent.parent / "static" / "local_upload
 # ที่เก็บไฟล์รุ่นเก่า (ก่อนย้ายมา static/) แถวเก่าในฐานข้อมูลยังอ้างที่อยู่นี้
 LEGACY_UPLOAD_DIRECTORY: Path = Path(__file__).parent.parent / "data" / "local_uploads"
 STATIC_URL_PREFIX: str = "/app/static/local_uploads/"  # ลิงก์ที่ Streamlit เสิร์ฟ (ต้องตรงกับ UPLOAD_DIRECTORY)
-FILE_PATH_SEPARATOR: str = "\n"  # ตัวคั่นเมื่อแนบหลายไฟล์ในคอลัมน์ file_path (ต้องตรงกับ submit_pipeline.py)
+FILE_PATH_SEPARATOR: str = file_removal.FILE_PATH_SEPARATOR  # ตัวคั่นเมื่อแนบหลายไฟล์ในคอลัมน์ file_path (ต้องตรงกับ submit_pipeline.py)
 
 
 class LocalStorageError(Exception):
@@ -118,19 +119,11 @@ def build_local_file_url(file_path: Optional[str]) -> Optional[str]:
 
 
 def parse_stored_path(stored_path: str) -> Optional[list[str]]:
-    """แปลง path ที่เก็บในฐานข้อมูล (ไฟล์เดียว) เป็นส่วนของ path ใต้ local_uploads/ โดยไม่แตะดิสก์ (None = path ไม่ปลอดภัย/ว่าง)"""
-    # แปลง "\" เป็น "/" ด้วย เพราะเครื่อง Windows อาจเก็บ path แบบมี backslash
-    stored_path = stored_path.strip().replace("\\", "/")
-    file_name = stored_path.rsplit("/", 1)[-1]
-    if not file_name:
-        return None
+    """แปลง path ที่เก็บในฐานข้อมูล (ไฟล์เดียว) เป็นส่วนของ path ใต้ local_uploads/ โดยไม่แตะดิสก์ (None = path ไม่ปลอดภัย/ว่าง)
 
-    # ส่วนของ path หลัง "local_uploads/" (ไม่มี = path เก่าแบบไม่มีโฟลเดอร์ย่อย)
-    marker = f"{UPLOAD_DIRECTORY.name}/"
-    relative_parts = stored_path.split(marker, 1)[1].split("/") if marker in stored_path else [file_name]
-    if ".." in relative_parts or not all(relative_parts):
-        return None  # กัน path ที่หลุดออกนอกโฟลเดอร์เก็บไฟล์
-    return relative_parts
+    ตรรกะอยู่ที่ utils/file_removal.py (ใช้ร่วมกับเครื่องมือใน scripts/)
+    """
+    return file_removal.parse_stored_path(stored_path, UPLOAD_DIRECTORY.name)
 
 
 def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
@@ -194,41 +187,13 @@ def list_folder_files(folder_parts: Optional[list[str]]) -> list[Path]:
         return []
 
 
-def _safe_upload_path(parts: list[str]) -> Path:
-    """path ใต้ local_uploads/ ที่ลบได้อย่างปลอดภัย
-
-    Raises:
-        OSError: path ว่าง / เป็นตัว local_uploads เอง / เป็น symlink / หลุดออกนอกโฟลเดอร์เก็บไฟล์
-    """
-    path = UPLOAD_DIRECTORY.joinpath(*parts)
-    root = UPLOAD_DIRECTORY.resolve()
-    if not parts or ".." in parts or path.is_symlink() or root not in path.resolve().parents:
-        raise OSError(f"ไม่ลบ path ที่อยู่นอกโฟลเดอร์เก็บไฟล์: {'/'.join(parts)}")
-    return path
-
-
-def _prune_empty_parents(path: Path, stop_at: Path) -> None:
-    """ลบโฟลเดอร์แม่ที่ว่างไล่ขึ้นไป (เช่น วัน/เดือน/ปี) จนถึง stop_at ซึ่งไม่ถูกลบ หยุดเมื่อเจอโฟลเดอร์ที่ไม่ว่าง"""
-    for parent in path.parents:
-        if parent == stop_at or stop_at not in parent.parents:
-            return
-        try:
-            parent.rmdir()
-        except FileNotFoundError:
-            continue  # แถวอื่นในชุดลบเดียวกันอาจลบไปแล้ว ดูชั้นถัดไปต่อ
-        except OSError:
-            return
-
-
 def remove_stored_file(parts: list[str]) -> None:
     """ลบไฟล์เดียวใต้ local_uploads/ พร้อมโฟลเดอร์แม่ที่ว่าง (ไม่มีไฟล์นี้แล้วไม่ถือเป็น error)
 
     Raises:
         OSError: path ไม่ปลอดภัย หรือลบไม่ได้
     """
-    path = _safe_upload_path(parts)
-    path.unlink(missing_ok=True)
-    _prune_empty_parents(path, UPLOAD_DIRECTORY)
+    file_removal.remove_stored_file(UPLOAD_DIRECTORY, parts)
 
 
 def remove_upload_folder(parts: list[str]) -> None:
@@ -237,10 +202,7 @@ def remove_upload_folder(parts: list[str]) -> None:
     Raises:
         OSError: path ไม่ปลอดภัย หรือลบไม่ได้
     """
-    path = _safe_upload_path(parts)
-    if path.exists():
-        shutil.rmtree(path)
-    _prune_empty_parents(path, UPLOAD_DIRECTORY)
+    file_removal.remove_upload_folder(UPLOAD_DIRECTORY, parts)
 
 
 def remove_desktop_copy(folder_parts: list[str], file_names: Optional[list[str]] = None) -> None:
@@ -265,7 +227,7 @@ def remove_desktop_copy(folder_parts: list[str], file_names: Optional[list[str]]
     else:
         for file_name in file_names:
             (folder / file_name).unlink(missing_ok=True)
-    _prune_empty_parents(folder / "_", desktop)
+    file_removal.prune_empty_parents(folder / "_", desktop)
 
 
 def forget_file_url(file_path: Optional[str]) -> None:

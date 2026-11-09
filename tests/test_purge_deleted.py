@@ -10,6 +10,7 @@ import pytest
 
 import data.database as database
 import scripts.purge_deleted as purge
+import utils.local_storage as local_storage
 from data.database import AUDIT_REDACTED_DETAILS, _bump_data_version, _get_connection, get_transactions, update_transaction
 from pr_fixtures import make_pr_pdf
 from scripts.backup import DATABASE_FILE_NAME, UPLOADS_ARCHIVE_NAME
@@ -58,8 +59,13 @@ def audit_rows(record_id: int) -> list[tuple]:
         ).fetchall()
 
 
+def tool_args(tmp_path: Path, *extra: str) -> list[str]:
+    """พารามิเตอร์ path ที่ผู้ใช้ต้องระบุเองเมื่อรันเดี่ยว (ชี้ฐานข้อมูลและโฟลเดอร์ไฟล์ของเทสต์)"""
+    return ["--db", str(database.DB_PATH), "--uploads", str(local_storage.UPLOAD_DIRECTORY), "--dest", str(tmp_path / "bk"), *extra]
+
+
 def run_apply(tmp_path: Path, *extra: str) -> int:
-    return purge.main(["--apply", "--yes", "--dest", str(tmp_path / "bk"), *extra])
+    return purge.main(tool_args(tmp_path, "--apply", "--yes", *extra))
 
 
 def only_backup(tmp_path: Path) -> Path:
@@ -73,7 +79,7 @@ def test_dry_run_changes_nothing_and_counts_are_right(
 ) -> None:
     before = (table("transactions", database.DB_PATH), table("audit_logs", database.DB_PATH), disk_state(isolated_storage))
 
-    assert purge.main(["--dest", str(tmp_path / "bk")]) == 0
+    assert purge.main(tool_args(tmp_path)) == 0
 
     assert before == (table("transactions", database.DB_PATH), table("audit_logs", database.DB_PATH), disk_state(isolated_storage))
     assert not (tmp_path / "bk").exists()
@@ -81,7 +87,7 @@ def test_dry_run_changes_nothing_and_counts_are_right(
     assert "แถวที่ถูกซ่อน ที่จะลบ: 1 แถว" in output
     assert "แถวที่ใช้งานอยู่ (ไม่แตะ): 1 แถว" in output
     assert "ไฟล์ในเครื่องที่จะลบ: 1 ไฟล์" in output
-    summary = purge.read_summary(database.DB_PATH)
+    summary = purge.read_summary(database.DB_PATH, local_storage.UPLOAD_DIRECTORY)
     assert summary.audit_counts == {"INSERT": 1, "UPDATE": 1, "SOFT_DELETE": 1}
 
 
@@ -130,7 +136,7 @@ def test_file_shared_with_active_row_is_kept(rows: tuple[dict, dict], isolated_s
     active, hidden = rows
     with _get_connection() as conn:
         conn.execute("UPDATE transactions SET file_path = ? WHERE id = ?", (active["file_path"], hidden["id"]))
-    summary = purge.read_summary(database.DB_PATH)
+    summary = purge.read_summary(database.DB_PATH, local_storage.UPLOAD_DIRECTORY)
     assert summary.files_on_disk == 0 and len(summary.plan.kept_files) == 1
 
     assert run_apply(tmp_path) == 0
@@ -182,11 +188,11 @@ def test_failure_during_database_step_rolls_back_and_keeps_files(
 
 def test_data_changed_after_summary_stops_before_deleting(rows: tuple[dict, dict], tmp_path: Path) -> None:
     active, hidden = rows
-    summary = purge.read_summary(database.DB_PATH)
+    summary = purge.read_summary(database.DB_PATH, local_storage.UPLOAD_DIRECTORY)
     hide(active["id"])  # มีแถวถูกซ่อนเพิ่มหลังผู้ใช้ดูสรุปแล้ว
 
     with pytest.raises(purge.PurgeError):
-        purge.apply_purge(database.DB_PATH, summary, tmp_path / "bk")
+        purge.apply_purge(database.DB_PATH, local_storage.UPLOAD_DIRECTORY, summary, tmp_path / "bk")
 
     assert {row[0] for row in table("transactions", database.DB_PATH)} == {active["id"], hidden["id"]}
 
@@ -195,7 +201,7 @@ def test_data_changed_after_summary_stops_before_deleting(rows: tuple[dict, dict
 def test_wrong_confirmation_changes_nothing(rows: tuple[dict, dict], tmp_path: Path, answer: str) -> None:
     before = table("transactions", database.DB_PATH)
 
-    assert purge.main(["--apply", "--dest", str(tmp_path / "bk")], ask=lambda _prompt: answer) == 1
+    assert purge.main(tool_args(tmp_path, "--apply"), ask=lambda _prompt: answer) == 1
 
     assert table("transactions", database.DB_PATH) == before and not (tmp_path / "bk").exists()
 
@@ -204,13 +210,13 @@ def test_closed_input_counts_as_no_confirmation(rows: tuple[dict, dict], tmp_pat
     def closed(_prompt: str) -> str:
         raise EOFError
 
-    assert purge.main(["--apply", "--dest", str(tmp_path / "bk")], ask=closed) == 1
+    assert purge.main(tool_args(tmp_path, "--apply"), ask=closed) == 1
     assert not (tmp_path / "bk").exists()
 
 
 def test_correct_confirmation_runs(rows: tuple[dict, dict], tmp_path: Path) -> None:
     active, _hidden = rows
-    assert purge.main(["--apply", "--dest", str(tmp_path / "bk")], ask=lambda _prompt: purge.CONFIRM_WORD) == 0
+    assert purge.main(tool_args(tmp_path, "--apply"), ask=lambda _prompt: purge.CONFIRM_WORD) == 0
     assert [row[0] for row in table("transactions", database.DB_PATH)] == [active["id"]]
 
 
@@ -240,20 +246,55 @@ def test_compact_failure_still_reports_backup_location(
     monkeypatch.undo()
 
 
-def test_missing_database_fails_without_creating_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_database_fails_without_creating_it(tmp_path: Path) -> None:
     missing = tmp_path / "missing.db"
-    monkeypatch.setattr(database, "DB_PATH", missing)
 
-    assert purge.main([]) == 1
+    assert purge.main(["--db", str(missing), "--uploads", str(tmp_path / "up")]) == 1
 
     assert not missing.exists()
 
 
-def test_old_schema_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_old_schema_is_refused(tmp_path: Path) -> None:
     old_db = tmp_path / "old.db"
     with closing(sqlite3.connect(old_db)) as conn:
         conn.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY)")
         conn.commit()
-    monkeypatch.setattr(database, "DB_PATH", old_db)
 
-    assert purge.main([]) == 1
+    assert purge.main(["--db", str(old_db), "--uploads", str(tmp_path / "up")]) == 1
+
+
+def test_audit_constants_match_the_application() -> None:
+    """สคริปต์ไม่ import ตัวแอป จึงต้องตรวจว่าค่าที่คัดลอกมายังตรงกัน"""
+    assert purge.AUDIT_ACTION_DELETE == database.AUDIT_ACTION_DELETE
+    assert purge.AUDIT_REDACTED_DETAILS == database.AUDIT_REDACTED_DETAILS
+    assert purge.DELETE_LOG_DETAILS == '{"deleted": true}'
+
+
+def test_wrong_uploads_path_is_refused_and_changes_nothing(rows: tuple[dict, dict], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """ชี้ --uploads ผิดที่: แถวจะหายแต่ไฟล์ค้าง จึงต้องปฏิเสธก่อนทำอะไร"""
+    before = (table("transactions", database.DB_PATH), table("audit_logs", database.DB_PATH))
+    wrong = tmp_path / "somewhere" / "local_uploads"
+    wrong.mkdir(parents=True)
+
+    code = purge.main(["--db", str(database.DB_PATH), "--uploads", str(wrong), "--dest", str(tmp_path / "bk"), "--apply", "--yes"])
+
+    assert code == 1 and "ระบุ --uploads ผิด" in capsys.readouterr().out
+    assert before == (table("transactions", database.DB_PATH), table("audit_logs", database.DB_PATH))
+    assert not (tmp_path / "bk").exists()
+
+
+def test_allow_missing_files_overrides_the_uploads_guard(rows: tuple[dict, dict], tmp_path: Path) -> None:
+    wrong = tmp_path / "somewhere" / "local_uploads"
+    wrong.mkdir(parents=True)
+
+    code = purge.main(
+        ["--db", str(database.DB_PATH), "--uploads", str(wrong), "--dest", str(tmp_path / "bk"), "--apply", "--yes", "--allow-missing-files"]
+    )
+
+    assert code == 0 and [row[0] for row in table("transactions", database.DB_PATH)] == [rows[0]["id"]]
+
+
+def test_dry_run_prints_the_paths_it_uses(rows: tuple[dict, dict], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert purge.main(tool_args(tmp_path)) == 0
+    output = capsys.readouterr().out
+    assert str(database.DB_PATH) in output and str(local_storage.UPLOAD_DIRECTORY) in output
