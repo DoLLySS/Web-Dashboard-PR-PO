@@ -18,6 +18,7 @@
 ส่วนที่ยังไม่ได้ทำ: OCR สำหรับรูปภาพ
 """
 
+import hashlib
 import html
 import json
 import os
@@ -40,7 +41,6 @@ from data.database import (
     STATUS_PENDING,
     STATUS_RECEIVED,
     add_transaction,
-    delete_transactions,
     get_transaction,
     get_transactions,
     get_unique_vendors,
@@ -61,12 +61,15 @@ from utils.excel_export import build_excel_bytes
 from utils.local_storage import (
     DESKTOP_EXPORT_ENABLED,
     STATIC_URL_PREFIX,
+    UPLOAD_DIRECTORY,
     LocalStorageError,
     build_local_file_url,
     find_file_location,
     get_folder_parts_from_file_paths,
+    list_folder_files,
 )
 from utils.masterlist_client import is_masterlist_configured
+from utils.row_cleanup import delete_rows_and_files
 from utils.storage_backend import BACKEND_SHAREPOINT, get_active_backend, is_storage_configured
 from utils.submit_pipeline import (
     FolderMatch,
@@ -79,7 +82,9 @@ from utils.upload_processor import (
     KIND_ATTACHED,
     KIND_BLOCKED,
     KIND_CREATED,
+    TAX_INVOICE_STATUS_WARNING,
     UploadReport,
+    attach_invoice_to_row,
     process_upload,
 )
 
@@ -440,8 +445,8 @@ SESSION_KEY_EDITOR_VERSION: str = (
 )
 SESSION_KEY_ROW_EFFECTS: str = "overview_row_effects"  # animation แถวที่ยังไม่หมดเวลา {id รายการ: (ชนิด, เวลาหมดอายุ)}
 SESSION_KEY_MAX_SEEN_ID: str = "overview_max_seen_id"  # id รายการสูงสุดที่ตารางเคยเห็น: id ที่สูงกว่านี้ = เพิ่งเพิ่ม
-SESSION_KEY_DELETING_IDS: str = "overview_deleting_ids"  # id ที่กดลบแล้ว รอเล่น animation ก่อนลบจริง (รอบถัดไป)
-SESSION_KEY_LAST_SELECTED_IDS: str = "overview_last_selected_ids"  # id ที่ติ๊กเลือกไว้ในรอบล่าสุด (ปุ่มลบอ่านจากตรงนี้)
+SESSION_KEY_DELETING_IDS: str = "overview_deleting_ids"  # id ที่ยืนยันลบแล้ว รอเล่น animation ก่อนลบจริง (รอบถัดไป)
+DELETE_CONFIRM_MAX_ROWS: int = 10  # จำนวนแถวสูงสุดที่แสดงในหน้ายืนยันการลบ
 SESSION_KEY_LAST_EDIT_SIGNATURE: str = (
     "overview_last_edit_signature"  # ลายนิ้วมือของการแก้ไขที่บันทึกไปแล้ว กันบันทึกซ้ำจากค่าเก่าที่ตารางส่งค้าง
 )
@@ -451,6 +456,7 @@ SESSION_KEY_FORM_COUNTER: str = "overview_form_counter"  # ตัวนับ �
 FORM_STEP_QUESTIONS: int = 1
 FORM_STEP_MAIN_FORM: int = 2
 SESSION_KEY_SAVED_ROWS: str = "overview_saved_rows"  # (รหัสแถว, วันที่) ที่เพิ่งบันทึก ใช้แจ้งเตือนเมื่ออยู่นอกช่วงวันที่
+SESSION_KEY_PENDING_INVOICES: str = "overview_pending_invoices"  # ใบกำกับที่รอผู้ใช้เลือกแถว {รหัสไฟล์: (ชื่อไฟล์, เนื้อไฟล์)}
 SESSION_KEY_FORM_STEP: str = "form_step"  # ขั้นตอนปัจจุบันของหน้าต่าง
 SESSION_KEY_ENTRY_ITEM: str = "overview_entry_item"  # ประเภท (Item) ที่เลือกในขั้นที่ 1
 SESSION_KEY_ENTRY_HAS_INVOICE: str = "overview_entry_has_invoice"  # สถานะใบกำกับภาษีที่เลือกในขั้นที่ 1
@@ -1625,10 +1631,11 @@ def build_table_for_display(transactions: list[dict[str, Any]]) -> pd.DataFrame:
                 "unit_price": transaction.get("unit_price"),  # None = ยังไม่มีราคา แสดงเป็นช่องว่าง
                 # ลิงก์ไฟล์บน SharePoint: ใส่เฉพาะที่ขึ้นต้น http(s):// (ที่เหลือเว้นว่าง ไม่แสดงไอคอน)
                 # ไม่มีลิงก์ให้ใส่ "" (ถ้าใส่ None ตารางจะแสดงคำว่า None)
-                # มีลิงก์ออนไลน์ (โฟลเดอร์ SharePoint) -> ไอคอนเปิดลิงก์นั้นในแท็บใหม่
-                # ไม่มี (ยังไม่ได้สิทธิ์) -> ไอคอนเปิดไฟล์ในระบบ (ถ้าเปิด LOCAL_DESKTOP_EXPORT = เปิดโฟลเดอร์ที่เก็บไฟล์ ดู handle_file_icon_click)
-                "sharepoint_url": _valid_link_or_none(transaction.get("sharepoint_url"))
-                or build_local_file_url(transaction.get("file_path"))
+                # มีไฟล์ในเครื่อง -> ไอคอนเปิดหน้าต่างที่อยู่โฟลเดอร์และไฟล์ทั้งหมด (ลิงก์ SharePoint อยู่ในหน้าต่างนั้น)
+                # (ถ้าเปิด LOCAL_DESKTOP_EXPORT = เปิดโฟลเดอร์ที่เก็บไฟล์ ดู handle_file_icon_click)
+                # ไม่มีไฟล์ในเครื่อง -> ไอคอนเปิดลิงก์ออนไลน์ในแท็บใหม่
+                "sharepoint_url": build_local_file_url(transaction.get("file_path"))
+                or _valid_link_or_none(transaction.get("sharepoint_url"))
                 or "",
             }
         )
@@ -1769,9 +1776,51 @@ def collect_row_effects(all_transactions: list[dict[str, Any]]) -> dict[int, str
     return {transaction_id: effect for transaction_id, (effect, _expires_at) in active.items()}
 
 
-def request_delete_selected() -> None:
-    """callback ปุ่ม "ลบรายการที่เลือก": จำ id ที่ติ๊กไว้ รอบถัดไปจะเล่น animation ลบก่อนแล้วค่อยลบจริง"""
-    st.session_state[SESSION_KEY_DELETING_IDS] = list(st.session_state.get(SESSION_KEY_LAST_SELECTED_IDS, []))
+def forget_deleted_rows(transaction_ids: list[int]) -> None:
+    """ล้างสถานะบนหน้าจอที่ยังอ้างถึงแถวที่ลบแล้ว: animation และแจ้งเตือนแถวที่เพิ่งบันทึก"""
+    deleted = {int(transaction_id) for transaction_id in transaction_ids}
+    effects = st.session_state.get(SESSION_KEY_ROW_EFFECTS, {})
+    st.session_state[SESSION_KEY_ROW_EFFECTS] = {row_id: fx for row_id, fx in effects.items() if row_id not in deleted}
+    saved_rows = st.session_state.get(SESSION_KEY_SAVED_ROWS)
+    if saved_rows:
+        st.session_state[SESSION_KEY_SAVED_ROWS] = [row for row in saved_rows if row[0] not in deleted]
+
+
+def build_delete_confirm_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """ข้อความแถวในหน้ายืนยันการลบ: แสดงไม่เกิน DELETE_CONFIRM_MAX_ROWS แถว ที่เหลือสรุปเป็นจำนวน
+
+    Args:
+        rows: แถวที่ผู้ใช้เลือกจะลบ
+
+    Returns:
+        ข้อความทีละบรรทัด
+    """
+    lines = [format_invoice_row_option(row) for row in rows[:DELETE_CONFIRM_MAX_ROWS]]
+    hidden_count = len(rows) - len(lines)
+    if hidden_count > 0:
+        lines.append(f"และอีก {hidden_count} รายการ")
+    return lines
+
+
+@st.dialog("ยืนยันการลบถาวร", width="medium")
+def show_delete_confirm_dialog(rows: list[dict[str, Any]]) -> None:
+    """หน้ายืนยันก่อนลบ: กดยืนยันแล้วจำ id ไว้ รอบถัดไปจะเล่น animation ลบก่อนแล้วค่อยลบจริง
+
+    Args:
+        rows: แถวที่ผู้ใช้เลือกจะลบ (ตรึงไว้ตอนกดปุ่มลบ)
+    """
+    st.warning(f"ลบ {len(rows)} รายการนี้ถาวร รวมไฟล์ของแถวในเครื่อง ลบแล้วกู้คืนไม่ได้")
+    st.text("\n".join(build_delete_confirm_lines(rows)))
+    if any(row.get("sharepoint_url") for row in rows):
+        st.caption("ไฟล์ที่อยู่บนที่เก็บออนไลน์จะไม่ถูกลบ ต้องลบเองที่ปลายทาง")
+    cancel_column, confirm_column = st.columns(2)
+    if cancel_column.button("ยกเลิก", key="cancel_delete_rows", use_container_width=True):
+        st.rerun()
+    if confirm_column.button(
+        f"🗑️ ลบถาวร {len(rows)} รายการ", key="confirm_delete_rows", type="primary", use_container_width=True
+    ):
+        st.session_state[SESSION_KEY_DELETING_IDS] = [int(row["id"]) for row in rows]
+        st.rerun()
 
 
 def apply_table_edits(
@@ -1781,7 +1830,7 @@ def apply_table_edits(
 
     ใช้ editor_state ซึ่งมี 3 ส่วน (สร้างจากตาราง AgGrid ใน render_table_card):
       - edited_rows  : {ตำแหน่งแถว: {หัวคอลัมน์: ค่าใหม่}}  -> อัปเดตด้วย update_transaction
-      - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบด้วย delete_transactions (ครั้งเดียวทั้งชุด)
+      - deleted_rows : [ตำแหน่งแถว, ...]                    -> ลบถาวรพร้อมไฟล์ด้วย delete_rows_and_files (ครั้งเดียวทั้งชุด)
       - added_rows   : แถวที่ผู้ใช้กดเพิ่มในตาราง           -> ไม่รับ (ให้ใช้ฟอร์ม "กรอก Form" แทน)
     "ตำแหน่งแถว" นับตามตารางเดิมที่แสดง จึงแปลงเป็น id รายการจาก transaction_ids
 
@@ -1810,8 +1859,12 @@ def apply_table_edits(
         except (IndexError, ValueError, TypeError) as error:
             delete_failed_count += 1
             error_reasons.append(f"ลบแถวที่ {position + 1}: {error}")
-    deleted_count = delete_transactions(delete_ids)  # แสดง error ให้เองเมื่อล้มเหลว
+    # ลบถาวรทั้งแถวและไฟล์ในเครื่อง (ส่วนฐานข้อมูลแสดง error ให้เองเมื่อล้มเหลว)
+    cleanup = delete_rows_and_files(delete_ids)
+    deleted_count = cleanup.deleted_count
     delete_failed_count += len(delete_ids) - deleted_count
+    if deleted_count:
+        forget_deleted_rows(delete_ids)
 
     # --- แก้ไข (Update) --- ข้ามแถวที่ถูกลบในรอบเดียวกัน
     for raw_position, changes in edited_rows.items():
@@ -1842,7 +1895,13 @@ def apply_table_edits(
     if updated_count:
         messages.append(("success", f"✅ อัปเดตข้อมูลสำเร็จ {updated_count} รายการ"))
     if deleted_count:
-        messages.append(("success", f"✅ ลบข้อมูลสำเร็จ {deleted_count} รายการ"))
+        messages.append(("success", f"✅ ลบข้อมูลและไฟล์ในเครื่องสำเร็จ {deleted_count} รายการ"))
+    if cleanup.kept_files:
+        messages.append(
+            ("info", f"ℹ️ ยังไม่ได้ลบไฟล์ {len(cleanup.kept_files)} ไฟล์ เพราะแถวอื่น (รวมแถวที่เคยถูกซ่อนไว้) ยังอ้างถึงไฟล์เหล่านี้")
+        )
+    if cleanup.failed:
+        messages.append(("error", f"❌ ลบแถวแล้ว แต่ลบไฟล์ไม่หมด กรุณาตรวจ: {', '.join(cleanup.failed)}"))
     if delete_failed_count:
         messages.append(("error", f"❌ ไม่สามารถลบข้อมูลได้ {delete_failed_count} รายการ"))
     if update_failed_count:
@@ -2090,19 +2149,30 @@ def handle_file_icon_click(grid_response: Any, visible_transactions: list[dict[s
 
 @st.dialog("โฟลเดอร์ไฟล์", width="medium")
 def show_file_folder_dialog(transaction: dict[str, Any]) -> None:
-    """หน้าต่างแสดงโฟลเดอร์ (ปี/เดือน/วัน/ชื่อไฟล์ PR) และไฟล์ทั้งหมดของแถว กดชื่อไฟล์เพื่อเปิดในแท็บใหม่
+    """หน้าต่างแสดงที่อยู่โฟลเดอร์ (ปี/เดือน/วัน/ชื่อไฟล์ PR) และไฟล์จริงทั้งหมดในโฟลเดอร์ กดชื่อไฟล์เพื่อเปิดในแท็บใหม่
 
     Args:
         transaction: แถวที่กดไอคอน File
     """
     file_paths = transaction.get("file_path") or ""
+    stored_paths = [path.strip() for path in file_paths.split(FILE_PATH_SEPARATOR) if path.strip()]
     folder_parts = get_folder_parts_from_file_paths(file_paths)
-    if not folder_parts:
+    online_link = _valid_link_or_none(transaction.get("sharepoint_url"))
+    st.markdown(f"**PR:** {html.escape(str(transaction.get('pr_run_no') or '-'))}")
+    if online_link:
+        st.markdown(f"[เปิดโฟลเดอร์บน SharePoint]({online_link})")
+    if folder_parts:
+        st.caption("โฟลเดอร์: " + " / ".join(folder_parts))
+        st.code(str(UPLOAD_DIRECTORY.joinpath(*folder_parts)), language=None)
+
+    # ไฟล์จริงในโฟลเดอร์ ตามด้วยไฟล์ที่แถวอ้างถึงแต่ไม่อยู่ในโฟลเดอร์นั้น (ไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อย หรือไฟล์ที่หายไป)
+    disk_files = [str(path) for path in list_folder_files(folder_parts)]
+    disk_names = {Path(path).name for path in disk_files}
+    extra_files = [path for path in stored_paths if Path(path.replace("\\", "/")).name not in disk_names]
+    if not disk_files and not extra_files:
         st.info("ไม่พบไฟล์ของแถวนี้ในเครื่อง")
         return
-    st.markdown(f"**PR:** {html.escape(str(transaction.get('pr_run_no') or '-'))}")
-    st.caption("โฟลเดอร์: " + " / ".join(folder_parts))
-    for stored_path in [path.strip() for path in file_paths.split(FILE_PATH_SEPARATOR) if path.strip()]:
+    for stored_path in [*disk_files, *extra_files]:
         url = build_local_file_url(stored_path)
         file_name = Path(stored_path.replace("\\", "/")).name
         if url:
@@ -2306,7 +2376,6 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
                 "deleted_rows": [],
             }
             selected_positions = get_selected_positions(grid_response, grid_table)
-            st.session_state[SESSION_KEY_LAST_SELECTED_IDS] = [int(transaction_ids[n]) for n in selected_positions]
             with action_bar:
                 # Toolbar แบบ space-between: ซ้าย = ปุ่มลบ | กลาง = ช่องว่างดัน | ขวา = กล่องรวมปุ่ม Export
                 # ถ้าจะเพิ่มปุ่มจัดการข้อมูลให้ใส่ใน col_left ถ้าเพิ่มปุ่มส่งออกให้เพิ่มจำนวนใน st.columns ของ col_right
@@ -2315,21 +2384,23 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
                 with col_right:
                     # กล่องห่อฝั่งขวา: แบ่งเป็น 2 กล่องย่อยเท่ากัน ระยะห่างแคบ (gap="small") สำหรับ CSV และ Excel
                     csv_column, excel_column = st.columns(2, gap="small", vertical_alignment="center")
-                col_left.button(
+                delete_clicked = col_left.button(
                     f"🗑️ ลบรายการที่เลือก ({len(selected_positions)})",
                     key="delete_selected_rows",
                     disabled=not selected_positions,
-                    help="ติ๊กช่องหน้าแถวที่ต้องการลบ แล้วกดปุ่มนี้",
+                    help="ติ๊กช่องหน้าแถวที่ต้องการลบ แล้วกดปุ่มนี้ ระบบจะให้ยืนยันก่อนลบถาวร",
                     use_container_width=True,
-                    on_click=request_delete_selected,  # จำแถวที่เลือก -> รอบถัดไปเล่น animation ลบ แล้วค่อยลบจริง
                 )
                 # ส่งออกข้อมูลชุดเดียวกับที่แสดงในตาราง (ผ่าน Date Filter / Search / Item / Vendor แล้ว)
                 # สร้างไฟล์เมื่อกดเตรียมไฟล์เท่านั้น (เดิมสร้าง CSV + Excel ทุกครั้งที่หน้ารีรัน ซึ่งช้าที่สุดของหน้านี้)
                 export_file_stem = f"masterlist_{start_date.isoformat()}_{end_date.isoformat()}"
                 render_export_buttons(display_table, export_file_stem, csv_column, excel_column)
 
+            if delete_clicked:
+                show_delete_confirm_dialog([visible_transactions[n] for n in selected_positions])
+
             if deleting_ids:
-                # แถวที่กดลบถูกส่งไปตารางพร้อม class animation แล้ว: รอให้ animation เล่นจบ ค่อยลบจริงแล้วรีรันให้แถวหายไป
+                # แถวที่ยืนยันลบถูกส่งไปตารางพร้อม class animation แล้ว: รอให้ animation เล่นจบ ค่อยลบจริงแล้วรีรันให้แถวหายไป
                 time.sleep(ROW_FX_DELETE_MS / 1000)
                 editor_state["deleted_rows"] = [
                     transaction_ids.index(transaction_id) for transaction_id in deleting_ids
@@ -2667,7 +2738,83 @@ def render_upload_mode(form_counter: int) -> None:
             lambda name: find_pr_date_in_file_names([name]),
         )
     remember_saved_rows(report.saved_results)
+    remember_pending_invoices(report)
     finish_submission(build_upload_summary(report), form_counter)
+
+
+def remember_pending_invoices(report: UploadReport) -> None:
+    """เก็บใบกำกับภาษีที่จับคู่แถวเองไม่ได้ไว้ข้าม rerun ให้ผู้ใช้เลือกแถว (ไฟล์เนื้อหาเดียวกันเก็บครั้งเดียว)
+
+    Args:
+        report: ผลการอัปโหลดทั้งชุด
+    """
+    waiting = [item for item in report.items if item.needs_row_choice]
+    if waiting:
+        pending = st.session_state.setdefault(SESSION_KEY_PENDING_INVOICES, {})
+        for item in waiting:
+            pending[hashlib.sha256(item.data).hexdigest()[:16]] = (item.file_name, item.data)
+
+
+def format_invoice_row_option(transaction: dict[str, Any]) -> str:
+    """ข้อความของแถวในช่องเลือก: วันที่ · Description · Company · รหัสรายการ
+
+    Args:
+        transaction: แถวในฐานข้อมูล
+
+    Returns:
+        ข้อความที่แสดงในช่องเลือก
+    """
+    parts = (transaction.get("date"), transaction.get("description"), transaction.get("vendor"))
+    return " · ".join(str(part) for part in parts if part) + f" · รหัสรายการ {transaction['id']}"
+
+
+def render_pending_invoice_choice() -> None:
+    """ให้ผู้ใช้เลือกแถวของใบกำกับภาษีที่ระบบจับคู่เองไม่ได้ (แสดงเฉพาะเมื่อมีไฟล์รอ) ไม่เลือกแถวให้เอง"""
+    pending: dict[str, tuple[str, bytes]] = st.session_state.get(SESSION_KEY_PENDING_INVOICES) or {}
+    if not pending:
+        return
+    # รอนานสุดก่อน: แถวที่ค้างมักเป็นแถวที่กำลังรอใบกำกับใบนี้
+    rows = sorted(get_transactions(invoice_status=STATUS_PENDING), key=lambda row: str(row.get("created_at") or ""))
+    labels = {int(row["id"]): format_invoice_row_option(row) for row in rows}
+
+    for token, (name, data) in list(pending.items()):
+        st.warning(f"📄 เลือกแถวของใบกำกับภาษี `{name}` ไฟล์นี้ยังไม่ถูกบันทึกจนกว่าจะเลือกแถว")
+        selected_id: Optional[int] = None
+        if labels:
+            selected_id = st.selectbox(
+                "แถวที่รอใบกำกับภาษี (Pending / Overdue)",
+                options=list(labels),
+                index=None,
+                format_func=labels.get,
+                placeholder="เลือกแถว",
+                key=f"pending_invoice_row_{token}",
+            )
+        else:
+            st.info("ไม่มีแถวที่รอใบกำกับภาษี")
+        attach_column, skip_column, _ = st.columns([3, 1, 4])
+        if attach_column.button(
+            "แนบและเปลี่ยนเป็น Completed",
+            type="primary",
+            disabled=selected_id is None,
+            width="stretch",
+            key=f"pending_invoice_attach_{token}",
+        ):
+            outcome = attach_invoice_to_row(int(selected_id), name, data)
+            if outcome.kind == KIND_ATTACHED:
+                pending.pop(token)
+                remember_saved_rows([outcome.result])
+                message = (
+                    ("success", f"แนบ {name} เข้าแถว {selected_id} และเปลี่ยนเป็น Completed แล้ว")
+                    if TAX_INVOICE_STATUS_WARNING in outcome.warnings
+                    else ("info", f"แนบ {name} เข้าแถว {selected_id} แล้ว แถวนี้เป็น Completed อยู่ก่อนแล้ว")
+                )
+            else:
+                message = ("error", f"แนบ {name} ไม่สำเร็จ: {outcome.reason}")
+            st.session_state.setdefault(SESSION_KEY_STATUS_MESSAGES, []).append(message)
+            st.rerun()
+        if skip_column.button("ข้าม", width="stretch", key=f"pending_invoice_skip_{token}"):
+            pending.pop(token)
+            st.rerun()
 
 
 def remember_saved_rows(results: list[SubmitResult]) -> None:
@@ -3173,6 +3320,7 @@ def render(start_date: date, end_date: date) -> None:
     if success_message:
         st.success(success_message)
     render_saved_rows_notice(start_date, end_date)
+    render_pending_invoice_choice()
 
     render_file_folder_dialog()
 

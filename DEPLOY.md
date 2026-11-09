@@ -33,7 +33,7 @@ streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 3. **HTTPS** — ทำที่ Reverse Proxy ต้องเปิดรองรับ WebSocket (`Upgrade`/`Connection` header) ไม่งั้นหน้าเว็บโหลดไม่ขึ้น
 4. **รันเป็นบริการ** — Windows: NSSM หรือ Task Scheduler (เริ่มเมื่อเครื่องเปิด + restart เมื่อล้ม) / Linux: systemd
 5. **Firewall** — เปิดพอร์ตให้เฉพาะเครือข่ายภายในบริษัท
-6. **สำรองข้อมูล** — สำรองเป็นประจำ: ไฟล์ฐานข้อมูล (`DB_FILE_PATH` รวมไฟล์ `-wal`/`-shm` ถ้าใช้ WAL ให้สำรองตอนไม่มีคนใช้ หรือใช้ `sqlite3 .backup`) และโฟลเดอร์ `static/local_uploads/`
+6. **สำรองข้อมูล** — ตั้ง cron ให้รัน `scripts/backup.py` เป็นประจำ เช่น ทุกวัน 01:30 `30 1 * * * cd /path/to/project && venv/bin/python scripts/backup.py --dest /mnt/backup/masterlist >> logs/backup.log 2>&1` รันได้ขณะแอปทำงาน เก็บ 14 ชุดล่าสุด (ปรับด้วย `--keep`) ปลายทางควรอยู่คนละดิสก์กับข้อมูลจริง วิธีกู้คืนอยู่ต้นไฟล์สคริปต์
 7. **ความลับ** — เก็บ `.env` และไฟล์ key (เช่น Google Service Account) บน Server ให้สิทธิ์อ่านเฉพาะบัญชีที่รันโปรแกรม
 
 ## 4. ข้อจำกัดที่ควรรู้

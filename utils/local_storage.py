@@ -117,14 +117,8 @@ def build_local_file_url(file_path: Optional[str]) -> Optional[str]:
     return url
 
 
-def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
-    """แปลง path ที่เก็บในฐานข้อมูล (ไฟล์เดียว) เป็นส่วนของ path ใต้ static/local_uploads/ ที่ไฟล์มีอยู่จริง
-
-    path แบบเก่าที่ยังอยู่ที่เก็บรุ่นเก่า จะคัดลอกมาไว้ใน static/local_uploads/ ให้ก่อน (ไม่แก้ไฟล์ต้นทาง)
-
-    Returns:
-        ส่วนของ path เช่น ["2026", "Oct", "28", "ABC", "PR_1.pdf"] หรือ None ถ้าไม่มีไฟล์/path ไม่ปลอดภัย
-    """
+def parse_stored_path(stored_path: str) -> Optional[list[str]]:
+    """แปลง path ที่เก็บในฐานข้อมูล (ไฟล์เดียว) เป็นส่วนของ path ใต้ local_uploads/ โดยไม่แตะดิสก์ (None = path ไม่ปลอดภัย/ว่าง)"""
     # แปลง "\" เป็น "/" ด้วย เพราะเครื่อง Windows อาจเก็บ path แบบมี backslash
     stored_path = stored_path.strip().replace("\\", "/")
     file_name = stored_path.rsplit("/", 1)[-1]
@@ -136,6 +130,21 @@ def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
     relative_parts = stored_path.split(marker, 1)[1].split("/") if marker in stored_path else [file_name]
     if ".." in relative_parts or not all(relative_parts):
         return None  # กัน path ที่หลุดออกนอกโฟลเดอร์เก็บไฟล์
+    return relative_parts
+
+
+def _resolve_relative_parts(stored_path: str) -> Optional[list[str]]:
+    """แปลง path ที่เก็บในฐานข้อมูล (ไฟล์เดียว) เป็นส่วนของ path ใต้ static/local_uploads/ ที่ไฟล์มีอยู่จริง
+
+    path แบบเก่าที่ยังอยู่ที่เก็บรุ่นเก่า จะคัดลอกมาไว้ใน static/local_uploads/ ให้ก่อน (ไม่แก้ไฟล์ต้นทาง)
+
+    Returns:
+        ส่วนของ path เช่น ["2026", "Oct", "28", "ABC", "PR_1.pdf"] หรือ None ถ้าไม่มีไฟล์/path ไม่ปลอดภัย
+    """
+    relative_parts = parse_stored_path(stored_path)
+    if relative_parts is None:
+        return None
+    file_name = relative_parts[-1]
 
     if not UPLOAD_DIRECTORY.joinpath(*relative_parts).is_file():
         legacy_path = LEGACY_UPLOAD_DIRECTORY / file_name
@@ -172,6 +181,96 @@ def list_stored_files(file_paths: Optional[str]) -> list[Path]:
         return _resolve_source_files(file_paths or "")
     except LocalStorageError:
         return []
+
+
+def list_folder_files(folder_parts: Optional[list[str]]) -> list[Path]:
+    """ไฟล์จริงทั้งหมดในโฟลเดอร์ใต้ local_uploads/ (ไม่รวมโฟลเดอร์ย่อย) เรียงตามชื่อ ไม่พบ/path ไม่ปลอดภัย = []"""
+    if not folder_parts or ".." in folder_parts or not all(folder_parts):
+        return []
+    folder = UPLOAD_DIRECTORY.joinpath(*folder_parts)
+    try:
+        return sorted((path for path in folder.iterdir() if path.is_file()), key=lambda path: path.name)
+    except OSError:
+        return []
+
+
+def _safe_upload_path(parts: list[str]) -> Path:
+    """path ใต้ local_uploads/ ที่ลบได้อย่างปลอดภัย
+
+    Raises:
+        OSError: path ว่าง / เป็นตัว local_uploads เอง / เป็น symlink / หลุดออกนอกโฟลเดอร์เก็บไฟล์
+    """
+    path = UPLOAD_DIRECTORY.joinpath(*parts)
+    root = UPLOAD_DIRECTORY.resolve()
+    if not parts or ".." in parts or path.is_symlink() or root not in path.resolve().parents:
+        raise OSError(f"ไม่ลบ path ที่อยู่นอกโฟลเดอร์เก็บไฟล์: {'/'.join(parts)}")
+    return path
+
+
+def _prune_empty_parents(path: Path, stop_at: Path) -> None:
+    """ลบโฟลเดอร์แม่ที่ว่างไล่ขึ้นไป (เช่น วัน/เดือน/ปี) จนถึง stop_at ซึ่งไม่ถูกลบ หยุดเมื่อเจอโฟลเดอร์ที่ไม่ว่าง"""
+    for parent in path.parents:
+        if parent == stop_at or stop_at not in parent.parents:
+            return
+        try:
+            parent.rmdir()
+        except FileNotFoundError:
+            continue  # แถวอื่นในชุดลบเดียวกันอาจลบไปแล้ว ดูชั้นถัดไปต่อ
+        except OSError:
+            return
+
+
+def remove_stored_file(parts: list[str]) -> None:
+    """ลบไฟล์เดียวใต้ local_uploads/ พร้อมโฟลเดอร์แม่ที่ว่าง (ไม่มีไฟล์นี้แล้วไม่ถือเป็น error)
+
+    Raises:
+        OSError: path ไม่ปลอดภัย หรือลบไม่ได้
+    """
+    path = _safe_upload_path(parts)
+    path.unlink(missing_ok=True)
+    _prune_empty_parents(path, UPLOAD_DIRECTORY)
+
+
+def remove_upload_folder(parts: list[str]) -> None:
+    """ลบทั้งโฟลเดอร์ใต้ local_uploads/ พร้อมโฟลเดอร์แม่ที่ว่าง (ไม่มีโฟลเดอร์นี้แล้วไม่ถือเป็น error)
+
+    Raises:
+        OSError: path ไม่ปลอดภัย หรือลบไม่ได้
+    """
+    path = _safe_upload_path(parts)
+    if path.exists():
+        shutil.rmtree(path)
+    _prune_empty_parents(path, UPLOAD_DIRECTORY)
+
+
+def remove_desktop_copy(folder_parts: list[str], file_names: Optional[list[str]] = None) -> None:
+    """ลบสำเนาบน Desktop ที่สร้างตอน Upload (ทำงานเฉพาะเมื่อเปิด LOCAL_DESKTOP_EXPORT)
+
+    Args:
+        folder_parts: โครงโฟลเดอร์ ปี/เดือน/วัน/ชื่อ (ตรงกับโฟลเดอร์ใต้ local_uploads/)
+        file_names: ลบเฉพาะไฟล์เหล่านี้ (ไม่ส่ง = ลบทั้งโฟลเดอร์)
+
+    Raises:
+        OSError: path ไม่ปลอดภัย หรือลบไม่ได้
+    """
+    if not DESKTOP_EXPORT_ENABLED:
+        return
+    desktop = get_desktop_directory()
+    folder = desktop.joinpath(*folder_parts)
+    if not folder_parts or ".." in folder_parts or folder.is_symlink():
+        raise OSError(f"ไม่ลบ path บน Desktop: {'/'.join(folder_parts)}")
+    if file_names is None:
+        if folder.exists():
+            shutil.rmtree(folder)
+    else:
+        for file_name in file_names:
+            (folder / file_name).unlink(missing_ok=True)
+    _prune_empty_parents(folder / "_", desktop)
+
+
+def forget_file_url(file_path: Optional[str]) -> None:
+    """ลืมลิงก์ไฟล์ที่จำไว้ของค่าคอลัมน์ file_path นี้ (ใช้เมื่อไฟล์ถูกลบ)"""
+    _file_url_cache.pop(file_path or "", None)
 
 
 def get_desktop_directory() -> Path:

@@ -6,6 +6,7 @@ data/*.db
 data/*.db-*
 data/local_uploads/
 static/local_uploads/
+backups/
 
 # ไฟล์ Log ที่ระบบสร้างขึ้น (เก็บเฉพาะโฟลเดอร์ logs/ ไว้ด้วย .gitkeep)
 logs/*

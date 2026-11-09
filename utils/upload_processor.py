@@ -12,14 +12,16 @@
 """
 
 import io
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
-from data.database import get_transaction, get_transactions_with_identity_fields
+from data.database import STATUS_PENDING, get_transaction, get_transactions_with_identity_fields, mark_invoice_received
 from utils.pr_reader import (
     PrDocument,
     PdfSection,
+    _skeleton,
     build_identity_key,
     read_pdf_sections,
     read_pr_excel,
@@ -51,8 +53,27 @@ BLOCKED_NO_MATCH_REASON: str = (
 )
 UNREADABLE_FILE_REASON: str = (
     "อ่านข้อความในไฟล์ไม่ได้ (ไฟล์สแกนหรือรูปภาพ) จึงจับคู่กับ PR อัตโนมัติไม่ได้และไม่ได้บันทึก "
-    "ระบบยังไม่รองรับการอ่านไฟล์สแกน (OCR)"
+    "ระบบยังไม่รองรับการอ่านไฟล์สแกน (OCR) ตั้งชื่อไฟล์ให้มีชื่อรุ่นตามรายการใน PR (เช่น Dell U2724DE) แล้วอัปโหลดใหม่"
 )
+TAX_INVOICE_KEYWORDS: tuple[str, ...] = ("ใบกำกับภาษี", "Tax Invoice")  # เทียบแบบไม่สนช่องว่าง/ตัวพิมพ์/สระ
+TAX_INVOICE_STATUS_WARNING: str = "พบใบกำกับภาษี: เปลี่ยนสถานะของแถวนี้เป็น Completed แล้ว"
+INFERRED_INVOICE_STATUS_WARNING: str = (
+    "ไม่พบคำว่าใบกำกับภาษีในไฟล์ แต่ไฟล์ตรงกับ PR และไม่ใช่เอกสารอื่น จึงถือเป็นใบกำกับและเปลี่ยนสถานะของแถวนี้เป็น Completed แล้ว "
+    "ถ้าไม่ใช่ใบกำกับ ให้แก้สถานะกลับเป็น Pending ในตาราง"
+)
+# ไฟล์ที่จับคู่กับ PR ได้แต่ไม่มีคำว่าใบกำกับ ถือเป็นใบกำกับ ยกเว้นมีคำเหล่านี้ที่ชื่อไฟล์หรือหัวเอกสาร (เทียบแบบไม่สนช่องว่าง/ตัวพิมพ์/สระ)
+NON_INVOICE_KEYWORDS: tuple[str, ...] = (
+    "ใบเสนอราคา",
+    "Quotation",
+    "คู่เทียบ",
+    "เปรียบเทียบ",
+    "Comparison",
+    "ใบสั่งซื้อ",
+    "Purchase Order",
+)
+NON_INVOICE_NAME_WORD_PATTERN: re.Pattern[str] = re.compile(r"(?<![a-z0-9])(?:po|quote)(?![a-z0-9])", re.IGNORECASE)  # คำสั้น เทียบเฉพาะคำเต็มในชื่อไฟล์
+DOCUMENT_HEADER_LENGTH: int = 400  # ดูเฉพาะหัวเอกสาร เพราะใบกำกับจริงอาจอ้างถึง "ใบสั่งซื้อ" ในเนื้อหา
+INVOICE_CHOOSE_ROW_REASON: str = "ระบบจับคู่ใบกำกับภาษีนี้กับแถวเองไม่ได้ ยังไม่ได้บันทึก กรุณาเลือกแถวที่จะแนบ"
 UNREADABLE_PR_WARNING: str = "อ่านค่าจากไฟล์ PR ไม่ได้ (เช่น ไฟล์สแกน) ต้องกรอก/แก้ค่าในตารางเอง"
 
 
@@ -66,6 +87,8 @@ class ItemOutcome:
     result: Optional[SubmitResult] = None
     reason: str = ""  # เหตุผลที่ไม่บันทึก หรือข้อผิดพลาด
     warnings: list[str] = field(default_factory=list)
+    needs_row_choice: bool = False  # ใบกำกับภาษีที่จับคู่แถวเองไม่ได้ ให้ผู้ใช้เลือกแถว (ใช้ data ที่เก็บไว้)
+    data: bytes = b""  # เนื้อไฟล์ (เก็บเฉพาะกรณี needs_row_choice)
 
 
 @dataclass
@@ -152,7 +175,7 @@ def _build_fields(
     return RecordFields(
         date=row_date,
         vendor=document.vendor or UNKNOWN_VENDOR_FOLDER,
-        total_price=document.unit_price or 0.0,
+        total_price=document.grand_total or document.unit_price or 0.0,  # ราคารวมหลังภาษี ไม่พบใช้ผลรวม Unit Price
         pr_run_no=document.pr_run_no or None,
         category=category,
         invoice_status=invoice_status,
@@ -160,6 +183,20 @@ def _build_fields(
         description=document.description or describe_file(file_name),
         unit_price=document.unit_price,
     )
+
+
+def is_tax_invoice(name: str, text: str) -> bool:
+    """ชื่อไฟล์หรือข้อความในไฟล์มีคำว่า "ใบกำกับภาษี" / "Tax Invoice" (PDF ไทยสะกดสระเพี้ยนได้ จึงเทียบแบบไม่สนสระ)"""
+    haystack = _skeleton(f"{name}\n{text}")
+    return any(_skeleton(keyword) in haystack for keyword in TAX_INVOICE_KEYWORDS)
+
+
+def looks_like_other_document(name: str, text: str) -> bool:
+    """ชื่อไฟล์หรือหัวเอกสารบอกว่าเป็นเอกสารอื่นที่ไม่ใช่ใบกำกับ เช่น ใบเสนอราคา คู่เทียบ ใบสั่งซื้อ"""
+    if NON_INVOICE_NAME_WORD_PATTERN.search(name):
+        return True
+    haystack = _skeleton(f"{name}\n{text[:DOCUMENT_HEADER_LENGTH]}")
+    return any(_skeleton(keyword) in haystack for keyword in NON_INVOICE_KEYWORDS)
 
 
 def _attach_to_row(transaction: dict, file_name: str, data: bytes) -> SubmitResult:
@@ -236,14 +273,42 @@ def _process_other_file(
     text = extract_text_from_file(io.BytesIO(data), name)
     # รวมชื่อไฟล์ด้วย เพราะไฟล์สแกนอาจมีคำจาก Description เฉพาะในชื่อไฟล์
     match = match_document_to_pr(f"{name}\n{text}", candidates, profiles)
+    named_invoice = is_tax_invoice(name, text)
     if match is None:
         reason = BLOCKED_NO_MATCH_REASON if text.strip() else UNREADABLE_FILE_REASON
+        if named_invoice:
+            return ItemOutcome(KIND_BLOCKED, name, name, reason=INVOICE_CHOOSE_ROW_REASON, needs_row_choice=True, data=data)
         return ItemOutcome(KIND_BLOCKED, name, name, reason=reason)
     result = _attach_to_row(match.transaction, name, data)
     label = match.transaction.get("description") or name
     if result.transaction_id is None:
         return ItemOutcome(KIND_BLOCKED, name, label, result, result.error or "แนบไฟล์ไม่สำเร็จ")
-    return ItemOutcome(KIND_ATTACHED, name, label, result, warnings=[f"จับคู่จากเนื้อหาไฟล์: {match.reason}"])
+    warnings = [f"จับคู่จากเนื้อหาไฟล์: {match.reason}"]
+    # มีคำว่าใบกำกับ = ใบกำกับเสมอ; ไม่มีคำนี้แต่จับคู่กับ PR ได้ = ถือเป็นใบกำกับ ยกเว้นเอกสารอื่น
+    if (named_invoice or not looks_like_other_document(name, text)) and _mark_received_if_pending(result.transaction_id):
+        warnings.append(TAX_INVOICE_STATUS_WARNING if named_invoice else INFERRED_INVOICE_STATUS_WARNING)
+    return ItemOutcome(KIND_ATTACHED, name, label, result, warnings=warnings)
+
+
+def _mark_received_if_pending(transaction_id: int) -> bool:
+    """เปลี่ยนแถวเป็น Completed ถ้ายังรอใบกำกับ (Pending/Overdue ในตารางคือ "รอใบกำกับภาษี" เหมือนกันในฐานข้อมูล) แถวที่ Completed อยู่แล้วไม่แตะ"""
+    current = get_transaction(transaction_id)
+    return current is not None and current.get("invoice_status") == STATUS_PENDING and mark_invoice_received(transaction_id)
+
+
+def attach_invoice_to_row(transaction_id: int, name: str, data: bytes) -> ItemOutcome:
+    """แนบใบกำกับภาษีเข้าแถวที่ผู้ใช้เลือกเอง (ใช้เมื่อจับคู่อัตโนมัติไม่ได้) แล้วเปลี่ยนแถวเป็น Completed"""
+    transaction = get_transaction(transaction_id)
+    if transaction is None:
+        return ItemOutcome(KIND_BLOCKED, name, name, reason="ไม่พบแถวที่เลือก (อาจถูกลบไปแล้ว)")
+    label = transaction.get("description") or name
+    result = _attach_to_row(transaction, name, data)
+    if result.transaction_id is None:
+        return ItemOutcome(KIND_BLOCKED, name, label, result, result.error or "แนบไฟล์ไม่สำเร็จ")
+    warnings = ["ผู้ใช้เลือกแถวเอง"]
+    if _mark_received_if_pending(result.transaction_id):
+        warnings.append(TAX_INVOICE_STATUS_WARNING)
+    return ItemOutcome(KIND_ATTACHED, name, label, result, warnings=warnings)
 
 
 def process_upload(

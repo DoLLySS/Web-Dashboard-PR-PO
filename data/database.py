@@ -81,7 +81,7 @@ ADDED_COLUMNS: dict[str, str] = {
     "qt_no": "TEXT",  # เลขที่ Quotation
     "description": "TEXT",  # รายละเอียดอุปกรณ์
     "unit_price": "REAL",  # ราคาสุทธิที่รวม Discount แล้ว (บาท)
-    # Soft Delete: 0 = ใช้งานปกติ, 1 = ถูกลบ (ซ่อนจากทุกหน้าแต่ข้อมูลยังอยู่ในไฟล์ฐานข้อมูล)
+    # 0 = ใช้งานปกติ, 1 = แถวที่ถูกซ่อนจากรุ่นก่อน (ปัจจุบันการลบเป็นการลบถาวร ไม่ตั้งค่านี้แล้ว)
     # ไฟล์ masterlist.db เดิมจะได้คอลัมน์นี้ผ่าน _add_missing_columns โดยแถวเก่าทุกแถวมีค่าเป็น 0
     "is_deleted": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -127,12 +127,12 @@ CREATE TABLE IF NOT EXISTS transactions (
 # ถ้าจะเพิ่มข้อมูลที่เก็บใน log ให้เพิ่มคอลัมน์ที่นี่ + _write_audit_log (ไฟล์เก่าต้องเพิ่มคอลัมน์ด้วย ALTER TABLE)
 AUDIT_ACTION_INSERT: str = "INSERT"
 AUDIT_ACTION_UPDATE: str = "UPDATE"
-AUDIT_ACTION_SOFT_DELETE: str = "SOFT_DELETE"
+AUDIT_ACTION_DELETE: str = "DELETE"  # ลบแถวถาวร (log เก่าอาจมี "SOFT_DELETE" จากรุ่นที่ลบแบบซ่อนแถว)
 
 CREATE_AUDIT_LOGS_SQL: str = """
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    action_type TEXT NOT NULL,                 -- INSERT / UPDATE / SOFT_DELETE
+    action_type TEXT NOT NULL,                 -- INSERT / UPDATE / DELETE (log เก่าอาจเป็น SOFT_DELETE)
     record_id   INTEGER NOT NULL,              -- id ของแถวใน transactions ที่ถูกเปลี่ยน
     details     TEXT,                          -- JSON: ค่าที่เพิ่ม / ค่าเดิม->ค่าใหม่ ที่แก้
     timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -518,6 +518,23 @@ def get_transactions_with_files() -> list[dict[str, Any]]:
         return []
 
 
+def get_all_file_paths() -> Optional[list[str]]:
+    """อ่าน file_path ของทุกแถว รวมแถวที่ถูกซ่อนไว้ (is_deleted = 1) เพื่อตัดสินว่าไฟล์/โฟลเดอร์ยังมีแถวอื่นใช้อยู่หรือไม่
+
+    Returns:
+        ค่า file_path ที่ไม่ว่าง หรือ None ถ้าเกิด Error (ผู้เรียกต้องไม่ลบไฟล์เมื่อได้ None)
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT file_path FROM transactions WHERE file_path IS NOT NULL AND TRIM(file_path) <> ''"
+            ).fetchall()
+        return [row["file_path"] for row in rows]
+    except (sqlite3.Error, OSError) as error:
+        _show_db_error("อ่านที่อยู่ไฟล์ของทุกรายการ", error)
+        return None
+
+
 def get_transactions_with_identity_fields() -> list[dict[str, Any]]:
     """อ่านรายการที่ยังไม่ลบและมี Description, Vendor, Tel ครบ (ใช้จับคู่ "PR เดียวกัน") เรียงจากล่าสุดไปเก่าสุด
 
@@ -552,7 +569,7 @@ def _fetch_transactions(
 ) -> list[dict[str, Any]]:
     """อ่านรายการจากฐานข้อมูลตามตัวกรอง (ไม่จับ Error ให้ผู้เรียกจัดการ เพื่อไม่ให้ cache เก็บผลที่พลาด)"""
     # สร้างเงื่อนไขทีละข้อ ค่าทั้งหมดส่งผ่าน ? เพื่อกัน SQL Injection
-    # Soft Delete: ไม่แสดงรายการที่ถูกลบ (is_deleted = 1) ในทุกกรณี
+    # ไม่แสดงแถวที่ถูกซ่อนจากรุ่นก่อน (is_deleted = 1) ในทุกกรณี
     conditions: list[str] = ["is_deleted = 0"]
     params: list[Any] = []
 
@@ -627,7 +644,7 @@ def get_transactions(
 
 
 def count_transactions() -> int:
-    """นับจำนวนรายการที่ยังใช้งานอยู่ในตาราง transactions (ไม่นับรายการที่ถูกลบแบบ Soft Delete)
+    """นับจำนวนรายการที่ยังใช้งานอยู่ในตาราง transactions (ไม่นับแถวที่ถูกซ่อนจากรุ่นก่อน)
 
     Returns:
         จำนวนแถวที่ยังไม่ถูกลบ (0 ถ้าตารางว่าง หรือเกิด Error ซึ่งจะแสดง st.error ให้แล้ว)
@@ -793,7 +810,9 @@ def mark_invoice_received(transaction_id: int) -> bool:
 
 
 def delete_transaction(transaction_id: int) -> bool:
-    """ลบรายการ 1 แถวตาม id แบบ Soft Delete (ตั้ง is_deleted = 1 ข้อมูลยังอยู่ในฐานข้อมูล แต่ไม่แสดงผล)
+    """ลบรายการ 1 แถวตาม id ออกจากฐานข้อมูลถาวร กู้คืนไม่ได้ (ไฟล์ของแถวให้ใช้ utils/row_cleanup.py ลบ)
+
+    แถวที่ถูกซ่อนไว้จากรุ่นก่อน (is_deleted = 1) ไม่ถูกแตะ
 
     Args:
         transaction_id: id ของรายการที่ต้องการลบ
@@ -804,13 +823,13 @@ def delete_transaction(transaction_id: int) -> bool:
     try:
         with _get_connection() as conn:
             cursor = conn.execute(
-                "UPDATE transactions SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
+                "DELETE FROM transactions WHERE id = ? AND is_deleted = 0",
                 (transaction_id,),
             )
             deleted = cursor.rowcount > 0
             if deleted:
-                # บันทึก log ใน transaction เดียวกับการ UPDATE is_deleted
-                _write_audit_log(conn, AUDIT_ACTION_SOFT_DELETE, transaction_id, {"is_deleted": 1})
+                # บันทึก log ใน transaction เดียวกับการลบ
+                _write_audit_log(conn, AUDIT_ACTION_DELETE, transaction_id, {"deleted": True})
 
         if not deleted:
             logger.warning("ลบไม่สำเร็จ: ไม่พบรายการ id=%s", transaction_id)
@@ -825,7 +844,9 @@ def delete_transaction(transaction_id: int) -> bool:
 
 
 def delete_transactions(transaction_ids: list[int]) -> int:
-    """ลบหลายรายการแบบ Soft Delete ใน connection/transaction เดียว (เร็วกว่าเรียก delete_transaction ทีละแถว)
+    """ลบหลายรายการถาวรใน connection/transaction เดียว (เร็วกว่าเรียก delete_transaction ทีละแถว)
+
+    ไฟล์ของแถวให้ใช้ utils/row_cleanup.py ลบ แถวที่ถูกซ่อนไว้จากรุ่นก่อน (is_deleted = 1) ไม่ถูกแตะ
 
     Args:
         transaction_ids: id ของรายการที่ต้องการลบ
@@ -840,12 +861,12 @@ def delete_transactions(transaction_ids: list[int]) -> int:
         with _get_connection() as conn:
             for transaction_id in transaction_ids:
                 cursor = conn.execute(
-                    "UPDATE transactions SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
+                    "DELETE FROM transactions WHERE id = ? AND is_deleted = 0",
                     (transaction_id,),
                 )
                 if cursor.rowcount > 0:
                     deleted_count += 1
-                    _write_audit_log(conn, AUDIT_ACTION_SOFT_DELETE, transaction_id, {"is_deleted": 1})
+                    _write_audit_log(conn, AUDIT_ACTION_DELETE, transaction_id, {"deleted": True})
         if deleted_count:
             _bump_data_version()
             logger.info("ลบรายการ %s รายการ (batch)", deleted_count)
