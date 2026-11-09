@@ -121,7 +121,7 @@ def build_dated_folder_name(when: datetime, file_names: list[str]) -> str:
 
 
 def build_storage_folder_parts(when: datetime, folder_name: str) -> list[str]:
-    """โครงโฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR เช่น ["2026", "Oct", "28", "20260319_Addin_ซื้อ_NB"] (ใช้วันที่อัปโหลดจริง)"""
+    """โครงโฟลเดอร์ ปี/เดือน/วัน/ชื่อไฟล์ PR เช่น ["2026", "Oct", "28", "20260319_Addin_ซื้อ_NB"] (when = วันที่ของ PR ที่ผู้เรียกส่งมา ไม่ใช่วันอัปโหลด)"""
     return [
         f"{when.year:04d}",
         MONTH_ABBREVIATIONS[when.month - 1],

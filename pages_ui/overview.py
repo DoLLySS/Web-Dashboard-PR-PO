@@ -65,7 +65,8 @@ from utils.local_storage import (
     build_local_file_url,
     find_file_location,
 )
-from utils.storage_backend import UNKNOWN_VENDOR_FOLDER
+from utils.masterlist_client import is_masterlist_configured
+from utils.storage_backend import BACKEND_SHAREPOINT, UNKNOWN_VENDOR_FOLDER, get_active_backend, is_storage_configured
 from utils.submit_pipeline import (
     FolderMatch,
     RecordFields,
@@ -2434,6 +2435,11 @@ def _inject_drag_feedback_script() -> None:
         logger.warning("ฝังสคริปต์ animation การลากไฟล์ไม่สำเร็จ: %s", error)
 
 
+def _storage_destination_label() -> str:
+    """ชื่อที่เก็บไฟล์ออนไลน์ที่ใช้อยู่ตาม STORAGE_BACKEND (ใช้บนการ์ดอัปโหลด)"""
+    return "SharePoint" if get_active_backend() == BACKEND_SHAREPOINT else "Drive"
+
+
 def _render_upload_card_heading(icon: str, title: str, hint: str, badge: str) -> None:
     """วาดหัวข้อของกล่องอัปโหลด: ไอคอน + ชื่อ (ฟอนต์ Prompt ขนาดใหญ่) + คำอธิบายสั้น + ป้ายบอกปลายทางของไฟล์/ข้อมูล
 
@@ -2607,7 +2613,7 @@ def render_upload_mode(form_counter: int) -> None:
             "📄",
             "Upload P/O",
             "วางได้หลายไฟล์ ระบบจะแสดงผลจับคู่ให้ตรวจก่อนบันทึก",
-            "เว็บไซต์ + Drive + Master-List",
+            "เว็บไซต์ + " + _storage_destination_label() + " + Master-List",
         )
         documents: list[UploadedFile] = st.file_uploader(
             "Upload P/O",
@@ -2616,9 +2622,11 @@ def render_upload_mode(form_counter: int) -> None:
             key=_field_key("upload_files", form_counter),
             label_visibility="collapsed",
         )
-    # ชิปบอกปลายทางหลังกด Upload (แสดงเสมอ)
+    # ชิปบอกปลายทางหลังกด Upload ตามการตั้งค่าจริง (ปลายทางที่ยังไม่ได้ตั้งค่าจะถูกข้ามตอนบันทึก จึงแสดงว่ายังไม่เปิดใช้)
+    storage_chip = f"☁️ {_storage_destination_label()}" + ("" if is_storage_configured() else " (ยังไม่ตั้งค่า)")
+    masterlist_chip = "📋 Master-List" + ("" if is_masterlist_configured() else " (ยังไม่ตั้งค่า)")
     st.markdown(
-        '<div class="upload-dest-chips"><span>🌐 เว็บไซต์</span><span>☁️ Drive</span><span>📋 Master-List</span></div>',
+        f'<div class="upload-dest-chips"><span>🌐 เว็บไซต์</span><span>{storage_chip}</span><span>{masterlist_chip}</span></div>',
         unsafe_allow_html=True,
     )
 
