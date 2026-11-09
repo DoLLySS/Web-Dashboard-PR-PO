@@ -9,6 +9,7 @@ from pr_fixtures import build_pdf, make_pr_excel, make_pr_pdf, make_text_pdf, pr
 from utils.pr_reader import (
     build_identity_key,
     read_pdf_sections,
+    read_item_names,
     read_pr_excel,
     summarize_items,
 )
@@ -51,6 +52,43 @@ def test_excel_and_pdf_of_same_pr_share_identity_key() -> None:
     assert excel_document.unit_price == pdf_document.unit_price == 44000.0
     assert excel_document.date == pdf_document.date == "2026-03-19"
     assert excel_document.identity_key == pdf_document.identity_key is not None
+
+
+def test_grand_total_after_vat_is_read_from_pdf_and_excel() -> None:
+    """ราคารวมหลังภาษี (Grand Total) = 44,000 x 1.07 = 47,080 ทั้ง PDF และ Excel; Unit Price รวมยังเป็น 44,000"""
+    pdf_document = read_pdf_sections(make_pr_pdf(TWO_ITEMS))[0].document
+    excel_document = read_pr_excel(make_pr_excel([("Notebook Lenovo ThinkPad E14 G7", 29500), ("Monitor Dell U2724DE", 14500)]))
+    assert pdf_document is not None and excel_document is not None
+    assert pdf_document.grand_total == excel_document.grand_total == 47080.0
+    assert pdf_document.unit_price == excel_document.unit_price == 44000.0
+
+
+def test_missing_grand_total_is_none() -> None:
+    pdf_document = read_pdf_sections(make_pr_pdf(ONE_ITEM, with_grand_total=False))[0].document
+    excel_document = read_pr_excel(make_pr_excel([("Notebook X", 29500)], with_grand_total=False))
+    assert pdf_document is not None and excel_document is not None
+    assert pdf_document.grand_total is None and excel_document.grand_total is None
+
+
+def test_read_item_names_returns_every_item_from_pdf_and_excel(tmp_path: Path) -> None:
+    """ได้ชื่อทุกรายการ ไม่ใช่แค่รายการแรกที่ย่อไว้ใน Description"""
+    expected = ["Notebook Lenovo ThinkPad E14 G7", "Monitor Dell U2724DE"]
+    pdf_path = tmp_path / "pr.pdf"
+    pdf_path.write_bytes(make_pr_pdf(TWO_ITEMS))
+    excel_path = tmp_path / "pr.xlsx"
+    excel_path.write_bytes(make_pr_excel([(name, 1000) for name in expected]))
+    assert read_item_names(pdf_path) == expected
+    assert read_item_names(excel_path) == expected
+
+
+def test_read_item_names_is_empty_for_non_pr_and_missing_files(tmp_path: Path) -> None:
+    quotation = tmp_path / "quote.pdf"
+    quotation.write_bytes(make_text_pdf("just a quotation"))
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"not read")
+    assert read_item_names(quotation) == []
+    assert read_item_names(image) == []
+    assert read_item_names(tmp_path / "missing.pdf") == []
 
 
 def test_signature_date_falls_back_to_next_signer() -> None:

@@ -55,6 +55,7 @@ def pr_form_items(
     vendor: str = "Alpha Trading Co Ltd",
     tel: Optional[str] = "092-849-6930",
     dates: tuple[str, str, str] = ("19-Mar-26", "19-Mar-2026", "19-Mar-2026"),
+    with_grand_total: bool = True,
 ) -> list[tuple[float, float, str]]:
     """ข้อความของฟอร์ม PR 1 หน้า (items = [(Description, Unit Price)])"""
     form: list[tuple[float, float, str]] = [
@@ -83,6 +84,10 @@ def pr_form_items(
     ]
     if tel:
         form.append((120, 615, tel))
+    if with_grand_total:
+        total = sum(float(price.replace(",", "")) for _, price in items)
+        # ป้ายอยู่ต่ำกว่า (Total) ตามไฟล์จริง ตัวเลขต่ำกว่าป้ายราว 5 pt
+        form += [(441, 517, "(Grand"), (473, 517, "Total)"), (523, 522, f"{total * 1.07:,.2f}")]
     for index, (description, price) in enumerate(items):
         top = ROW_FIRST_TOP + index * ROW_STEP
         form += [(42, top + 3, str(index + 1)), (65, top, description), (330, top + 3, "1"), (391, top + 3, price)]
@@ -99,9 +104,10 @@ def make_pr_pdf(
     tel: Optional[str] = "092-849-6930",
     dates: tuple[str, str, str] = ("19-Mar-26", "19-Mar-2026", "19-Mar-2026"),
     extra_pages: int = 0,
+    with_grand_total: bool = True,
 ) -> bytes:
     """PDF ฟอร์ม PR 1 ใบ (ต่อท้ายด้วยหน้าที่ไม่ใช่ฟอร์ม extra_pages หน้า)"""
-    pages = [pr_form_items(items, vendor, tel, dates)]
+    pages = [pr_form_items(items, vendor, tel, dates, with_grand_total)]
     pages += [[(40, 100, "Terms and conditions")] for _ in range(extra_pages)]
     return build_pdf(pages)
 
@@ -116,6 +122,7 @@ def make_pr_excel(
     vendor: str = "Alpha Trading Co Ltd",
     tel: Optional[str] = "092-849-6930",
     when: datetime = datetime(2026, 3, 19),
+    with_grand_total: bool = True,
 ) -> bytes:
     """ไฟล์ Excel ฟอร์ม PR 1 ใบ ตำแหน่งเซลล์เหมือนไฟล์จริง (เลขลำดับอยู่คอลัมน์ C คนละคอลัมน์กับหัว No. ใน B)"""
     workbook = openpyxl.Workbook()
@@ -134,6 +141,10 @@ def make_pr_excel(
         sheet.cell(row, 26, price)
         sheet.cell(row + 1, 5, "continuation line")
     sheet["W27"] = "ราคารวม (Total)"
+    if with_grand_total:
+        total = sum(price for _, price in items)
+        sheet["W29"] = "ราคารวมหลังภาษีมูลค่าเพิ่ม (Grand Total)\nบาท (Baht)"
+        sheet["AJ29"] = round(total * 1.07, 2)
     sheet["B31"] = "บริษัทที่แนะนำให้ติดต่อ  (Suggest source) "
     sheet["B32"], sheet["I32"], sheet["X32"] = "บริษัท (Company):", vendor, "E-Mail:"
     sheet["B34"], sheet["X34"] = "โทรศัพท์ (Tel.):", "Quotation Ref.:"

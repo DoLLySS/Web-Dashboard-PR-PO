@@ -3,7 +3,7 @@
 ค่าที่อ่าน (ตรงกับคอลัมน์ในตาราง):
 - Date        = ช่อง Date ใต้ลายเซ็น "ผู้ร้องขอ (Requested by)" (ว่างจึงใช้ช่องผู้ตรวจสอบ แล้วผู้อนุมัติ)
 - Description = Description ของตาราง "รายการที่ต้องการให้จัดซื้อ" (หลายรายการ = รายการแรก + " (+N รายการ)")
-- Price       = ผลรวม Unit Price ของทุกรายการในตารางนั้น
+- Price       = "ราคารวมหลังภาษีมูลค่าเพิ่ม (Grand Total)" (ไม่พบบรรทัดนี้ใช้ผลรวม Unit Price ของทุกรายการแทน)
 - Vendor      = "บริษัท (Company)" ในกล่อง "บริษัทที่แนะนำให้ติดต่อ (Suggest source)"
 - Tel.        = "โทรศัพท์ (Tel.)" ในกล่องเดียวกัน
 
@@ -16,6 +16,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import openpyxl
@@ -39,6 +40,9 @@ LABEL_QTY: str = "Qty."
 LABEL_DISCOUNT: str = "Discount%"
 LABEL_TOTAL: str = "(Total)"
 LABEL_UNIT_PRICE: str = "unit price"
+LABEL_GRAND: str = "(Grand"
+LABEL_GRAND_EXCEL: str = "grand total"
+GRAND_VALUE_DOWN: float = 8.0  # ตัวเลขยอดรวมอยู่ต่ำกว่าป้ายเล็กน้อยได้เท่านี้
 LABEL_PR_RUN_NO: str = "PR Run No.:"
 
 KEY_FIELD_LABELS: dict[str, str] = {
@@ -68,7 +72,9 @@ class PrDocument:
 
     description: str = ""  # รายการแรก (+N รายการ) ถ้ามีหลายรายการ
     item_count: int = 0
+    items: list[str] = field(default_factory=list)  # ชื่อทุกรายการ (ใช้จับคู่ไฟล์อื่นเข้า PR)
     unit_price: Optional[float] = None  # ผลรวม Unit Price ของทุกรายการ
+    grand_total: Optional[float] = None  # ราคารวมหลังภาษีมูลค่าเพิ่ม (None = ไม่พบบรรทัดนี้)
     vendor: str = ""
     tel: str = ""
     date: str = ""  # YYYY-MM-DD
@@ -303,7 +309,13 @@ def _read_pdf_page(page: Any) -> Optional[PrDocument]:
     descriptions, prices = _read_pdf_items(page, words)
     document.description = summarize_items(descriptions)
     document.item_count = len([text for text in descriptions if text.strip()])
+    document.items = [text.strip() for text in descriptions if text.strip()]
     document.unit_price = sum(prices) if prices else None
+    grand = next(iter(_find_words(words, LABEL_GRAND)), None)
+    if grand is not None:
+        document.grand_total = _parse_money(
+            _chars_text(page.chars, grand["x1"] + 0.5, width, grand["top"] - 2, grand["top"] + GRAND_VALUE_DOWN)
+        )
 
     requested = next(iter(_find_words(words, LABEL_REQUESTED)), None)
     signature_top = requested["top"] if requested is not None else float(page.height) * 0.6
@@ -424,7 +436,11 @@ def _read_excel_sheet(sheet: Any) -> Optional[PrDocument]:
                 prices.append(price)
     document.description = summarize_items(descriptions)
     document.item_count = len([text for text in descriptions if text.strip()])
+    document.items = [text.strip() for text in descriptions if text.strip()]
     document.unit_price = sum(prices) if prices else None
+    grand = next(iter(_find_cells(sheet, LABEL_GRAND_EXCEL)), None)
+    if grand:
+        document.grand_total = _parse_money(_value_right_of_cell(sheet, *grand))
 
     requested = next(iter(_find_cells(sheet, "(Requested by)")), None)
     signature_row = requested[0] if requested else 0
@@ -456,3 +472,33 @@ def read_pr_excel(data: bytes) -> Optional[PrDocument]:
     except Exception as error:  # noqa: BLE001 - ไฟล์จากผู้ใช้เสียได้หลายแบบ
         logger.warning("อ่านฟอร์ม PR จาก Excel ไม่สำเร็จ: %s", type(error).__name__)
         return None
+
+
+_ITEM_NAMES_CACHE: dict[tuple[str, int], list[str]] = {}
+
+
+def read_item_names(path: Path) -> list[str]:
+    """ชื่อทุกรายการของไฟล์ PR (PDF/Excel) ที่เก็บในเครื่อง ไม่ใช่ฟอร์ม PR/อ่านไม่ได้ = [] (ไม่โยน Error)
+
+    จำผลตาม (ที่อยู่ไฟล์, เวลาแก้ไข) ไว้ จึงไม่อ่านไฟล์ซ้ำทุกครั้งที่อัปโหลด
+    """
+    suffix = path.suffix.lower()
+    if suffix != PDF_SUFFIX and suffix not in EXCEL_SUFFIXES:
+        return []
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+        if key in _ITEM_NAMES_CACHE:
+            return _ITEM_NAMES_CACHE[key]
+        data = path.read_bytes()
+    except OSError:
+        return []
+    names: list[str] = []
+    if suffix == PDF_SUFFIX:
+        for section in read_pdf_sections(data):
+            if section.document is not None:
+                names.extend(section.document.items)
+    else:
+        document = read_pr_excel(data)
+        names = list(document.items) if document is not None else []
+    _ITEM_NAMES_CACHE[key] = names
+    return names

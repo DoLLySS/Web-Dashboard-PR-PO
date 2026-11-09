@@ -213,3 +213,42 @@ def test_folder_files_are_read_only_when_earlier_steps_cannot_decide(
     match_document_to_pr(document, candidates)
 
     assert len(read_files) == expected_reads
+
+
+def test_item_count_suffix_is_not_counted_as_description_word() -> None:
+    """เลขใน "(+1 รายการ)" ไม่ใช่คำของ Description: พบ 2 ใน 3 คำจริงต้องจับคู่ได้"""
+    candidate = make_candidate(1, "Alpha Beta Gamma (+1 รายการ)")
+    assert match_document_to_pr("alpha beta", [candidate], FakeProfiles({1: FolderProfile(set(), set())})).transaction["id"] == 1
+
+
+def test_item_names_from_pr_file_are_used_when_description_does_not_match() -> None:
+    """รายการที่ 2 ไม่อยู่ใน Description ที่ย่อไว้ แต่อยู่ในไฟล์ PR ของแถว"""
+    alpha, beta = make_candidate(1, "NB Alpha X100 (+1 รายการ)"), make_candidate(2, "Printer Beta Y200")
+    profiles = FakeProfiles(
+        {
+            1: FolderProfile(set(), set(), ["NB Alpha X100", "Monitor Dell U2724DE"]),
+            2: FolderProfile(set(), set(), ["Printer Beta Y200"]),
+        }
+    )
+    match = match_document_to_pr("Monitor Dell U2724DE.jpg", [alpha, beta], profiles)
+    assert match.transaction["id"] == 1
+    assert match.reason == "ชื่อรายการใน PR ตรงกับแถวนี้"
+
+
+LONG_ITEM_NAME = "Monitor \u201cDell\u201d UltraSharp U2724DE QHD 2560 x 1440 27.0\u2033"  # รูปแบบชื่อจากไฟล์ PR จริง
+
+
+@pytest.mark.parametrize("file_name", ["Monitor Dell U2724DE.jpg", "Dell_U2724DE.png"])
+def test_long_item_name_matches_short_file_name_with_model_code(file_name: str) -> None:
+    """ชื่อรายการยาวมีสเปกครบ ชื่อไฟล์มีแค่บางคำ: มีรหัสรุ่นตรง + อีกอย่างน้อย 1 คำ = จับคู่ได้"""
+    candidate = make_candidate(1, "NB Alpha X100 (+1 รายการ)")
+    profiles = FakeProfiles({1: FolderProfile(set(), set(), [LONG_ITEM_NAME])})
+    assert match_document_to_pr(file_name, [candidate], profiles).transaction["id"] == 1
+
+
+@pytest.mark.parametrize("file_name", ["Monitor Dell.jpg", "U2724DE.jpg", "Monitor 2560.jpg"])
+def test_long_item_name_needs_model_code_and_another_word(file_name: str) -> None:
+    """ไม่มีรหัสรุ่น หรือมีรหัสรุ่นคำเดียว = หลักฐานไม่พอ ไม่เดา"""
+    candidate = make_candidate(1, "NB Alpha X100 (+1 รายการ)")
+    profiles = FakeProfiles({1: FolderProfile(set(), set(), [LONG_ITEM_NAME])})
+    assert match_document_to_pr(file_name, [candidate], profiles) is None

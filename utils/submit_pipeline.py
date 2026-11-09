@@ -39,6 +39,7 @@ from utils.storage_backend import (
     is_storage_configured,
     upload_files_to_storage,
 )
+from utils.pr_reader import read_item_names
 from utils.text_extractor import OWN_COMPANY_TAX_ID, extract_text_from_file, find_all_tax_ids
 
 logger = get_logger(__name__)
@@ -161,12 +162,17 @@ def find_pr_folder_by_description(description: Optional[str], candidates: list[F
     return FolderMatch(matches[0].transaction, matches[0].folder_parts, len(matches))
 
 
+def _strip_item_suffix(description: Optional[str]) -> str:
+    """ตัด " (+N รายการ)" ท้าย Description ที่ย่อไว้ออก (เลข N ไม่ใช่ชื่อรายการ)"""
+    return re.sub(r"\s*\(\+\d+\s*รายการ\)\s*$", "", description or "")
+
+
 def _find_best_description_match(text: str, candidates: list[FolderMatch]) -> Optional[FolderMatch]:
     """หาแถวที่พบคำจาก Description ในไฟล์มากที่สุด คืน None ถ้าไม่ถึงเกณฑ์ หรือคะแนนสูงสุดเท่ากันหลายแถว"""
     document_words = set(DESCRIPTION_WORD_PATTERN.findall(text.lower()))
     scored: list[tuple[float, FolderMatch]] = []
     for candidate in candidates:
-        description = (candidate.transaction.get("description") or "").lower()
+        description = _strip_item_suffix(candidate.transaction.get("description")).lower()
         words = set(DESCRIPTION_WORD_PATTERN.findall(description)) - DESCRIPTION_STOP_WORDS
         matched_count = len(words & document_words)
         if matched_count >= MIN_MATCHED_DESCRIPTION_WORDS and matched_count * 2 > len(words):
@@ -184,6 +190,7 @@ class FolderProfile:
 
     tax_ids: set[str]
     words: set[str]
+    item_names: list[str] = field(default_factory=list)  # ชื่อทุกรายการจากไฟล์ PR ในโฟลเดอร์
 
 
 class FolderProfileCache:
@@ -204,11 +211,46 @@ class FolderProfileCache:
         row_tax_id = (candidate.transaction.get("tax_id") or "").strip()
         tax_ids = {row_tax_id} if row_tax_id else set()
         words: set[str] = set()
+        item_names: list[str] = []
         for path in list_stored_files(candidate.transaction.get("file_path")):
+            item_names.extend(name for name in read_item_names(path) if name not in item_names)
             text = extract_text_from_file(path, path.name)
             tax_ids.update(find_all_tax_ids(text))
             words.update(_distinctive_words(f"{path.name}\n{text}"))
-        return FolderProfile(tax_ids - {OWN_COMPANY_TAX_ID}, words)
+        return FolderProfile(tax_ids - {OWN_COMPANY_TAX_ID}, words, item_names)
+
+
+def _is_model_code(word: str) -> bool:
+    """คำที่เป็นรหัสรุ่น: มีทั้งตัวอักษรและตัวเลข เช่น e14, u2724de (ไม่นับเลขล้วน เช่น 27, 2560)"""
+    return any(char.isdigit() for char in word) and any(char.isalpha() for char in word)
+
+
+def _find_best_item_match(
+    text: str, candidates: list[FolderMatch], profiles: FolderProfileCache
+) -> Optional[FolderMatch]:
+    """หาแถวที่ชื่อรายการใดรายการหนึ่งใน PR (ไม่ใช่แค่รายการแรกที่ย่อไว้ใน Description) พบในไฟล์/ชื่อไฟล์
+
+    คืน None ถ้าไม่ถึงเกณฑ์ หรือคะแนนสูงสุดเท่ากันหลายแถว
+    """
+    document_words = set(DESCRIPTION_WORD_PATTERN.findall(text.lower()))
+    scored: list[tuple[float, FolderMatch]] = []
+    for candidate in candidates:
+        names = profiles.get(candidate).item_names
+        best = 0.0
+        for name in names:
+            words = set(DESCRIPTION_WORD_PATTERN.findall(name.lower())) - DESCRIPTION_STOP_WORDS
+            matched = words & document_words
+            # ชื่อรายการจริงยาว (สเปกครบ) ชื่อไฟล์มักมีแค่บางคำ จึงยอมรับเมื่อมีรหัสรุ่นตรง แม้ไม่ถึงครึ่ง
+            has_model_code = any(_is_model_code(word) for word in matched)
+            if len(matched) >= MIN_MATCHED_DESCRIPTION_WORDS and (len(matched) * 2 > len(words) or has_model_code):
+                best = max(best, len(matched) / len(words))
+        if best:
+            scored.append((best, candidate))
+    if not scored:
+        return None
+    top = max(score for score, _ in scored)
+    winners = [candidate for score, candidate in scored if score == top]
+    return winners[0] if len(winners) == 1 else None
 
 
 def _distinctive_words(text: str) -> set[str]:
@@ -243,8 +285,9 @@ def match_document_to_pr(
 ) -> Optional[FolderMatch]:
     """หาแถว PR ที่แนะนำสำหรับไฟล์ที่ไม่ใช่ PR ผลนี้เป็นเพียงคำแนะนำ ผู้ใช้ต้องยืนยันก่อนบันทึก
 
-    ลำดับ: Tax ID ของแถว (ไม่นับเลขบริษัทเรา) -> Description ของแถว -> Tax ID ที่พบในไฟล์ของโฟลเดอร์
-    -> คำเด่นที่ซ้ำกับไฟล์ในโฟลเดอร์ สองขั้นหลังต้องอ่านไฟล์ จึงทำเมื่อขั้นก่อนหน้าตัดสินไม่ได้เท่านั้น
+    ลำดับ: Tax ID ของแถว (ไม่นับเลขบริษัทเรา) -> Description ของแถว -> ชื่อทุกรายการในไฟล์ PR ของแถว
+    -> Tax ID ที่พบในไฟล์ของโฟลเดอร์ -> คำเด่นที่ซ้ำกับไฟล์ในโฟลเดอร์
+    สามขั้นหลังต้องอ่านไฟล์ จึงทำเมื่อขั้นก่อนหน้าตัดสินไม่ได้เท่านั้น
 
     Args:
         text: ข้อความในไฟล์รวมกับชื่อไฟล์
@@ -265,6 +308,10 @@ def match_document_to_pr(
     description_match = _find_best_description_match(text, pool)
     if description_match:
         return replace(description_match, reason="คำในเอกสารตรงกับ Description ของแถวนี้")
+
+    item_match = _find_best_item_match(text, pool, profiles)
+    if item_match:
+        return replace(item_match, reason="ชื่อรายการใน PR ตรงกับแถวนี้")
 
     # Tax ID ในโฟลเดอร์อาจเป็นของผู้ขายคู่เทียบ จึงแยกเหตุผลให้ผู้ใช้เห็น (ไม่เทียบซ้ำถ้าแถวมี Tax ID ตรงอยู่แล้ว)
     if tax_ids and not row_matches:
