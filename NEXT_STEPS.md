@@ -1,79 +1,62 @@
-# NEXT_STEPS — บันทึกช่วยจำสำหรับวันกลับมาทำต่อ
+# NEXT_STEPS — งานที่เหลือ
 
-อัปเดตล่าสุด: 2026-10-26 (Save point: Local MVP complete)
+อัปเดตล่าสุด: 2026-11-09
 
-## 1. สถานะปัจจุบัน: ระบบ Local ทำงานสมบูรณ์
+## 1. สถานะปัจจุบัน
 
-ใช้งานจริงในเครื่องได้ครบ โดยไม่ต้องพึ่ง SharePoint
+ระบบทำงานในเครื่องได้ครบโดยไม่ต้องใช้ที่เก็บออนไลน์ ดูรายการฟีเจอร์และข้อจำกัดใน `README.md` และการนำขึ้น Server ใน `DEPLOY.md`
 
-| ฟีเจอร์ | รายละเอียด |
-|---|---|
-| Master-List | เพิ่ม / แก้ไขในตาราง / ลบรายการ PR/PO และใบกำกับภาษี เก็บใน SQLite (`data/`) |
-| ดึงข้อมูลจากไฟล์ | อ่าน PDF/Excel แล้วเติม TaxID, Vendor, Net Price ลงฟอร์มให้อัตโนมัติ (`utils/text_extractor.py`) |
-| เก็บไฟล์แนบ | บันทึกลง `data/local_uploads/` แล้วผูกกับรายการ (`utils/local_storage.py`) |
-| แจ้งเตือน | Banner เตือนรายการค้างใบกำกับภาษีเกินกำหนด |
-| Dashboard | สรุปยอดตามสถานะ และ Net Price |
-| Logging | บันทึกลง `logs/app.log` (หมุนไฟล์อัตโนมัติ) ตั้งระดับด้วย `LOG_LEVEL` ใน `.env` |
-| ความทนทาน | `init_db()` ทำครั้งเดียวต่อการรัน กัน "database is locked", ดัก Error แบบเจาะจง, ค่า `.env` ผิดไม่ทำให้แครช |
+ยังไม่ได้เชื่อม SharePoint, Master-List หรือ Server จริง
 
-## 2. สิ่งที่ต้องทำเมื่อได้สิทธิ์ SharePoint
+## 2. เชื่อม SharePoint ผ่าน Power Automate
 
-**ขั้นที่ 1 — ขอข้อมูลจากผู้ดูแล SharePoint/Azure**
-- URL ของ Site, Client ID, Client Secret (App ต้องมีสิทธิ์เขียนใน Site นั้น)
-- โฟลเดอร์ปลายทางต้องมีอยู่แล้วบน SharePoint (ค่าเริ่มต้น `Shared Documents/PR-PO`)
+**ไม่ใช้ `utils/sharepoint_api.py` แล้ว** โค้ดนั้นล็อกอินแบบ Client ID/Secret ผ่าน Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026 ([MC693863](https://mc.merill.net/message/MC693863))
 
-**ขั้นที่ 2 — เติมค่าใน `.env`** (คัดลอกจาก `.env.example`; ห้าม commit `.env`)
-```
-SHAREPOINT_URL=https://<บริษัท>.sharepoint.com/sites/<ชื่อ site>
-SHAREPOINT_CLIENT_ID=<Application (client) ID>
-SHAREPOINT_CLIENT_SECRET=<Client Secret>
-SHAREPOINT_FOLDER_PATH=Shared Documents/PR-PO   # ไม่บังคับ
-```
+แนวทาง: แอปส่งไฟล์ไปที่ HTTP trigger ของ Flow แล้ว Flow สร้างโฟลเดอร์ `ปี/เดือน/วัน/ชื่อ` ใน Document Library และตอบลิงก์กลับ ไฟล์ในเครื่องยังเป็นต้นฉบับ ถ้าส่งออนไลน์ไม่สำเร็จ แถวและไฟล์ในเครื่องยังอยู่ และระบบแจ้งเตือน
 
-**ขั้นที่ 3 — เปิดใช้โค้ดใน `pages_ui/overview.py`** (มี 2 จุด)
-1. ใกล้บรรทัด 38-39: ปลดคอมเมนต์ `from utils.sharepoint_api import SharePointError, upload_document_to_sharepoint`
-2. ฟังก์ชัน `save_document_and_get_path()` ใกล้บรรทัด 315: **แทนที่** บล็อก `try ... save_document_locally ... except LocalStorageError` ด้วยบล็อก SharePoint ที่คอมเมนต์ไว้ข้างล่าง (อย่าแค่ปลดคอมเมนต์ เพราะโค้ดเดิมมี `return` ก่อนแล้ว โค้ดใหม่จะไม่ถูกรัน)
-   - ถ้าอยากเก็บสำรองในเครื่องด้วย ให้เรียก `save_document_locally` ก่อน แล้วค่อยอัปโหลดขึ้น SharePoint
+**S0 — ข้อมูลที่ต้องถาม IT (ยังไม่ต้องเขียนโค้ด)**
+1. สิทธิ์ใช้ HTTP trigger ของ Power Automate (ปกติเป็นฟีเจอร์ Premium)
+2. Site URL, ชื่อ Document Library และโฟลเดอร์ราก พร้อมไลบรารีทดสอบที่ว่าง
+3. เจ้าของ Flow ควรเป็นบัญชีบริการหรือกลุ่ม ไม่ใช่บุคคล และ connection ต้องเขียนไลบรารีได้
+4. นโยบายของ tenant ว่า HTTP trigger ให้ใครเรียกได้ (ตรวจกับเอกสาร Microsoft ปัจจุบัน)
+5. เพดานขนาดคำขอและเวลาตอบของ Flow เทียบกับไฟล์ 50 MB (base64 ใหญ่ขึ้นราว 1/3) ถ้าไม่พอต้องแบ่งส่งเป็นชิ้น
+6. ต้องส่งข้อมูลแถวเข้า Master-List ด้วยหรือไม่ และเมื่อลบแถวต้องลบไฟล์ออนไลน์ด้วยหรือไม่
 
-**ขั้นที่ 4 — ตรวจ `utils/sharepoint_api.py`**
-- วิธีหลัก (Client ID/Secret) ทำงานอยู่แล้ว ไม่ต้องปลดคอมเมนต์อะไร
-- ปลดคอมเมนต์ `UserCredential` เฉพาะกรณีไม่มี App/Secret และบัญชีไม่เปิด MFA (ทำตามขั้นตอนในคอมเมนต์ของไฟล์ + ใส่ `SHAREPOINT_USERNAME/PASSWORD` ใน `.env`)
+**S1 — กำหนดรูปแบบการส่ง**
+- คำขอต่อ 1 ไฟล์: `{folderParts[], fileName, contentBase64, sha256}`
+- คำตอบ: `{fileUrl, folderUrl}` หรือ `{error}`
+- URL ของ Flow มีลายเซ็นลับในตัว ถือเป็นรหัสผ่าน เก็บใน `.env` (`POWER_AUTOMATE_UPLOAD_URL`) ห้ามลง log หรือ Git และเพิ่ม header `X-Api-Key` (`POWER_AUTOMATE_API_KEY`) ให้ Flow ตรวจซ้ำ
 
-**ขั้นที่ 5 — ทดสอบ**
-1. รีสตาร์ทแอป (ต้องรีสตาร์ทเพื่อให้โหลด `.env` ใหม่)
-2. อัปโหลดไฟล์ทดสอบ 1 ไฟล์ → ตรวจว่าไฟล์ขึ้นในโฟลเดอร์บน SharePoint และไอคอนไฟล์ในตารางเปิดลิงก์ได้
-3. ถ้า Error: ข้อความไทยบนหน้าจอบอกสิ่งที่ควรตรวจ และดูรายละเอียดใน `logs/app.log`
+**S2 — เขียนโค้ด:** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` แล้วค่อยส่ง Master-List ผ่าน `utils/masterlist_client.py`
 
-## 2.4 ทดสอบส่งไฟล์ขึ้น Google Drive (แทน SharePoint ระหว่างรอสิทธิ์)
+**S3 — เทสต์กับเซิร์ฟเวอร์ปลอม:** สำเร็จ, 4xx/5xx, timeout, JSON เพี้ยน, URL ไม่ใช่ https, ชื่อภาษาไทย, ความลับไม่โผล่ใน log, ส่งไม่สำเร็จแล้วแถวและไฟล์ในเครื่องยังอยู่
 
-ไฟล์จากหน้า Upload / ฟอร์ม จะถูกส่งไปที่ `<โฟลเดอร์ราก>/ปี/เดือน/วัน/Vendor/` (ใช้วันที่อัปโหลดจริง) ผ่าน `utils/storage_backend.py`
-1. สร้าง Service Account ใน Google Cloud (เปิด Drive API) แล้วดาวน์โหลดไฟล์ JSON key เก็บไว้นอกโปรเจค/Git
-2. สร้างโฟลเดอร์ใน **Shared Drive** (Service Account ไม่มีพื้นที่เก็บของตัวเองใน My Drive) แล้วแชร์ให้อีเมลของ Service Account แบบ Editor
-3. ใส่ใน `.env`: `STORAGE_BACKEND=gdrive`, `GDRIVE_SERVICE_ACCOUNT_FILE=<path ของ JSON key>`, `GDRIVE_ROOT_FOLDER_ID=<ID โฟลเดอร์>` แล้วรีสตาร์ทแอป
-4. เมื่อได้สิทธิ์ SharePoint: เปลี่ยนเป็น `STORAGE_BACKEND=sharepoint` (โครงโฟลเดอร์เดียวกัน; ส่วนสร้างโฟลเดอร์ย่อยบน SharePoint ยังไม่เคยทดสอบจริง)
-   - เมื่อ SharePoint ตั้งค่าครบ: ตอน Upload ระบบสร้างโฟลเดอร์ `ปี/เดือน(Jan..Dec)/วัน/Vendor` แล้วส่งไฟล์ขึ้นทันที และเก็บ **ลิงก์โฟลเดอร์** ลงคอลัมน์ File — ไอคอน File จะเปิดโฟลเดอร์นั้นในแท็บใหม่ (`utils/sharepoint_api.py` `build_folder_url`; รูปลิงก์ `Forms/AllItems.aspx?id=` ยังไม่ยืนยันกับ SharePoint จริง)
-   - แถวที่ยังไม่มีลิงก์ออนไลน์ ไอคอนยังคัดลอกไฟล์ไป Desktop เหมือนเดิม
-   - **เมื่อได้สิทธิ์และยืนยันแล้ว ให้ลบฟีเจอร์ Desktop**: `export_files_to_desktop` + `get_desktop_directory` ใน `utils/local_storage.py`, `handle_file_icon_click` / `find_clicked_file_position` / `_open_folder_in_explorer` ใน `pages_ui/overview.py` (+ `cellClicked` ใน `update_on`) และกิ่ง `isLocalFile` ใน `FILE_LINK_RENDERER_JS`
-5. Master-List: `utils/masterlist_client.py` เป็น stub รอ API (ตั้ง `MASTERLIST_API_URL` และเติมการเรียกจริงใน `send_to_masterlist`)
+**S4 — สร้าง Flow:** trigger พร้อม schema, ตรวจ `X-Api-Key`, สร้างโฟลเดอร์ซ้อนชั้น (ต้องลองจริงว่าสร้างซ้ำแล้ว error หรือไม่), สร้างไฟล์, ตอบลิงก์ และเปิดการแจ้งเตือนเมื่อ Flow ล้มเหลว
 
-## 2.5 ภารกิจหลักรอบถัดไป: AgGrid + Typography
+**S5 — ทดสอบกับไลบรารีว่าง:** ส่งไฟล์ทดสอบเล็ก ๆ ก่อน แล้วทดสอบทั้งแอปบนสำเนาข้อมูล ทั้งชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ และกรณี Flow ปิดหรือล้มเหลว
 
-1. ยกเลิกตาราง Streamlit พื้นฐาน และติดตั้ง `streamlit-aggrid` สำหรับหน้า Overview และ Dashboard
-2. ปรับแต่ง GridOptions ขยายขนาดตัวอักษรและเพิ่มระยะห่าง (Padding) ให้ตารางอ่านง่ายและดูเป็น Enterprise
-3. อัปเกรด Typography ฝัง Global CSS ขยายขนาดฟอนต์ของ Popup, เมนู และปุ่มต่างๆ ให้สมมาตรกับหน้าจอใหญ่
+**S6 — เปิดใช้งาน:** ตั้งค่าใน `.env` ตัดสินใจเรื่องการย้ายไฟล์เดิมขึ้น SharePoint และนโยบายการลบไฟล์ออนไลน์ จากนั้นพิจารณาลบ `utils/sharepoint_api.py` พร้อม `Office365-REST-Python-Client`
 
-สถานะตอน save point: โค้ดร่างของทั้ง 3 ข้อมีอยู่แล้ว (`ui_grid.py` เป็นโมดูลตารางกลาง, `requirements.txt` ปักเวอร์ชัน `streamlit-aggrid`, ฟอนต์ตั้งใน `.streamlit/config.toml` และ `config/styles.py`)
-แต่ตอนนี้ **ทดสอบกับข้อมูลสาธิตเท่านั้น** ให้ตรวจซ้ำกับข้อมูลจริงก่อนถือว่าเสร็จ
-- หลัง pull ต้องรัน `pip install -r requirements.txt`
-- ที่จอประมาณ 1366px ถ้าเปิด sidebar จะมีแถบเลื่อนแนวนอนเล็กน้อย; คอลัมน์ Vendor/Item/Tel/PR No. ถูกตัดด้วย "…" บนจอแคบ (ชี้เมาส์ดูข้อความเต็ม)
-- ปรับความกว้างคอลัมน์ได้ที่ `TABLE_COLUMN_WIDTHS` ใน `pages_ui/overview.py` และธีมที่ `ui_grid.py`
+## 3. Google Drive (ใช้ทดสอบระหว่างยังไม่มี SharePoint)
 
-## 3. ข้อควรระวัง / งานค้างที่รู้อยู่แล้ว
+1. สร้าง Service Account ใน Google Cloud เปิด Drive API แล้วเก็บไฟล์ JSON key ไว้นอกโปรเจกต์
+2. สร้างโฟลเดอร์ใน **Shared Drive** (Service Account ไม่มีพื้นที่ของตัวเองใน My Drive) แล้วแชร์ให้อีเมลของ Service Account แบบ Editor
+3. ใส่ `STORAGE_BACKEND=gdrive`, `GDRIVE_SERVICE_ACCOUNT_FILE` และ `GDRIVE_ROOT_FOLDER_ID` ใน `.env` แล้วรีสตาร์ทแอป
 
-- **ยังไม่เคยทดสอบกับ SharePoint จริง** อาจต้องปรับเล็กน้อยตอนต่อจริง
-- ไฟล์เก่าที่อยู่ใน `data/local_uploads/` จะไม่ถูกย้ายขึ้น SharePoint อัตโนมัติ (ต้องเขียนสคริปต์ย้ายเองถ้าต้องการ)
-- โฟลเดอร์โปรเจคอยู่ใน OneDrive: ค่าเริ่มต้นไม่เปิดโหมด WAL ของ SQLite ตั้งใจ (ไฟล์ `-wal/-shm` ที่ถูก sync อาจทำให้ DB เสีย) บน Server ให้ตั้ง `DB_FILE_PATH` ชี้ดิสก์ในเครื่อง + `DB_JOURNAL_MODE=WAL` ใน `.env`
-- การนำขึ้น Server: ดู `DEPLOY.md` (ล็อกอิน/SSO, HTTPS, service, backup เป็นงานฝั่ง IT) และ `LOCAL_DESKTOP_EXPORT` ต้องเป็น `0` บน Server (ฟีเจอร์ Desktop ยังไม่ลบ จะลบเมื่อได้สิทธิ์ SharePoint)
-- ถ้าบันทึกรายการไม่สำเร็จแล้วกดซ้ำ ไฟล์แนบอาจถูกบันทึกซ้ำใน `local_uploads/` (ไฟล์เหลือทิ้งเล็กน้อย)
-- `planning.md` เป็นเอกสารช่วงแรก อาจไม่ตรงกับโครงสร้างปัจจุบัน ให้ยึด `README.md` เป็นหลัก
-- `generate_mock_data.py` ยังใช้ `print()` (เป็นสคริปต์ CLI ตั้งใจไว้)
+## 4. งานถัดไป
+
+**จัดระเบียบโค้ด (ไม่เปลี่ยนพฤติกรรม)**
+- ลบโค้ดที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file`
+- ตัดสินใจเรื่องโค้ด Windows และโหมด Desktop export ใน `pages_ui/overview.py` และ `utils/local_storage.py`
+- เพิ่ม ruff ใน `requirements-dev.txt` และแตก `pages_ui/overview.py` (ประมาณ 3,300 บรรทัด) เป็นโมดูลย่อย
+- เพิ่มเทสต์ `data/database.py`, `utils/text_extractor.py`, `utils/excel_export.py` และการคำนวณใน `pages_ui/dashboard.py`
+
+**ฟีเจอร์ที่รอตัดสินใจ:** Excel หนึ่งไฟล์หลายแถว, OCR, เก็บไฟล์ที่รอเลือกแถวลงดิสก์ชั่วคราว, กันไฟล์ซ้ำด้วย hash, หน้าดู Audit Log, แจ้งเตือน Overdue ทางอีเมลหรือ LINE
+
+## 5. ข้อควรระวังที่รู้อยู่แล้ว
+
+- เกณฑ์ค้าง 14 วันนับจากวันอัปโหลดเป็นการชั่วคราว รอเจ้าของงานยืนยันว่าควรนับจากวันใด (`OVERDUE_RULE` ใน `config/constants.py`)
+- ไฟล์ที่จับคู่กับ PR ได้และไม่มีคำบอกว่าเป็นเอกสารอื่น จะถูกนับเป็นใบกำกับ จึงเปลี่ยนสถานะผิดได้ ผู้ใช้แก้กลับเป็น Pending ในตารางได้ แต่ไฟล์ที่แนบแล้วยังอยู่
+- ไฟล์ที่รอเลือกแถวเก็บอยู่ในเซสชันของเบราว์เซอร์ รีเฟรชแล้วหาย
+- ถ้าโฟลเดอร์โปรเจกต์อยู่บน OneDrive ห้ามใช้ `DB_JOURNAL_MODE=WAL` เพราะไฟล์ `-wal` / `-shm` ที่ถูก sync อาจทำให้ฐานข้อมูลเสีย
+- CSS ผูกกับ Streamlit 1.66.1 (selector `data-testid`) ถ้าอัปเกรดต้องตรวจหน้าจอใหม่

@@ -1,5 +1,5 @@
 # Library ที่ระบบต้องใช้ (ติดตั้งด้วย: pip install -r requirements.txt)
-# ทดสอบแล้วกับ Python 3.11 — ถ้าจะอัปเกรดเวอร์ชัน ให้ทดสอบหน้า Overview/Dashboard ก่อนใช้งานจริง
+# ทดสอบล่าสุดกับ Python 3.12.3 — ถ้าจะอัปเกรดเวอร์ชัน ให้ทดสอบหน้า Overview/Dashboard ก่อนใช้งานจริง
 
 # --- เว็บและการแสดงผล ---
 streamlit==1.66.1      # เว็บ UI (app.py, pages_ui/)
@@ -12,7 +12,7 @@ pdfplumber==0.11.10    # อ่านข้อความจาก PDF
 openpyxl==3.1.5        # อ่านไฟล์ Excel .xlsx
 xlrd==2.0.2            # อ่านไฟล์ Excel .xls เก่า
 
-# --- SharePoint (utils/sharepoint_api.py — ติดตั้งไว้ล่วงหน้า แม้ยังไม่เปิดใช้) ---
+# --- SharePoint แบบเดิม (utils/sharepoint_api.py — ใช้ไม่ได้แล้ว ดู NEXT_STEPS.md) และ .env ---
 python-dotenv==1.2.4                  # อ่านรหัสจากไฟล์ .env
 Office365-REST-Python-Client==3.3.0   # เชื่อม SharePoint
 

@@ -1,3 +1,5 @@
+> **เอกสารประวัติ:** เนื้อหาด้านล่างเขียนไว้ในช่วงแรกและอาจไม่ตรงกับโค้ดปัจจุบัน ให้ยึด `README.md`, `DEPLOY.md` และ `NEXT_STEPS.md`
+
 # IT PR/PO & Tax Invoice MasterList — Project Planning
 
 ระบบภายในสำหรับทีม IT Support (3-4 คน) ใช้บันทึกและติดตามเอกสาร PR / PO / ใบกำกับภาษี

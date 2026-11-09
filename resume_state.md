@@ -1,3 +1,5 @@
+> **เอกสารประวัติ:** เนื้อหาด้านล่างเขียนไว้ในช่วงแรกและอาจไม่ตรงกับโค้ดปัจจุบัน ให้ยึด `README.md`, `DEPLOY.md` และ `NEXT_STEPS.md`
+
 # Resume State — IT PR/PO & Tax Invoice MasterList
 
 อัปเดตล่าสุด: 2026-10-27 — จุดเซฟนี้คือ Git commit ล่าสุดบน branch `master` (ดู `git log -1`)

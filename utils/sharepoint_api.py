@@ -1,7 +1,8 @@
 """เชื่อมต่อ SharePoint: อัปโหลดไฟล์เอกสาร (PR/PO/ใบกำกับภาษี) แล้วคืนลิงก์ของไฟล์
 
-*** เตรียมไว้รอสิทธิ์ *** ถูกเรียกผ่าน utils/storage_backend.py เมื่อ STORAGE_BACKEND=sharepoint และตั้งค่าครบเท่านั้น
-(ยังไม่ได้ทดสอบกับ SharePoint จริง) ระหว่างนี้ไฟล์ถูกเก็บในโฟลเดอร์ static/local_uploads/ ผ่าน utils/local_storage.py
+*** ใช้ไม่ได้แล้ว *** การล็อกอินด้วย Client ID/Secret ในไฟล์นี้ใช้ Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026
+แผนใหม่คือเชื่อมผ่าน Power Automate (ดู NEXT_STEPS.md) ถูกเรียกผ่าน utils/storage_backend.py เมื่อ STORAGE_BACKEND=sharepoint และตั้งค่าครบเท่านั้น
+และไม่เคยทดสอบกับ SharePoint จริง
 
 ตั้งค่าผ่านไฟล์ .env (ห้ามใส่รหัสผ่านในโค้ด และ .env ถูกกันไม่ให้ขึ้น Git แล้ว):
     SHAREPOINT_URL            เช่น https://yourcompany.sharepoint.com/sites/IT

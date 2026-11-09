@@ -1,62 +1,122 @@
-# คู่มือนำระบบขึ้น Server บริษัท (สำหรับทีม IT)
+# คู่มือนำระบบขึ้น Server Linux (สำหรับทีม IT)
 
-เอกสารนี้สรุปสิ่งที่ต้องตั้งค่า/ตัดสินใจก่อนใช้งานจริง ส่วนที่แก้ในโค้ดแล้วมีเครื่องหมาย ✅ ส่วนที่ต้องให้ทีม IT ทำมีเครื่องหมาย ⬜
+เอกสารนี้สรุปสิ่งที่ต้องตั้งค่าและตัดสินใจก่อนใช้งานจริง
+
+> **สถานะการทดสอบ:** ระบบทดสอบบน Linux กับ Python 3.12.3 ด้วยคำสั่ง `streamlit run` ในเครื่องพัฒนาเท่านั้น ยังไม่เคยขึ้น Server จริง ตัวอย่าง systemd และ nginx ด้านล่างยังไม่ได้ทดสอบ ควรทดลองกับผู้ใช้กลุ่มเล็กก่อน
 
 ## 1. ติดตั้งและรัน
 
-```
-py -3.11 -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env        # แล้วกรอกค่าจริง (ห้าม commit ไฟล์ .env)
-streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+ต้องมี Python 3.12 และแพ็กเกจ venv ของระบบ (บน Ubuntu คือ `python3-venv`)
+
+```bash
+cd /opt/masterlist                  # โฟลเดอร์โปรเจกต์ ตัวอย่างเท่านั้น
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+cp .env.example .env                # แล้วกรอกค่าจริง ห้าม commit ไฟล์นี้
+chmod 600 .env
+venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-ค่าตั้งต้นของ Server อยู่ใน `.streamlit/config.toml` ✅ (headless, จำกัดไฟล์อัปโหลด 50 MB, ป้องกัน XSRF, ปิดการส่งสถิติ, ซ่อนเมนูนักพัฒนา)
+- บัญชีที่รันแอปต้องเขียนได้ใน `data/` (หรือโฟลเดอร์ของ `DB_FILE_PATH`), `static/local_uploads/` และ `logs/`
+- ไฟล์เอกสารเก็บที่ `static/local_uploads/` ในโฟลเดอร์โปรเจกต์เสมอ ถ้าย้ายโปรเจกต์ต้องย้ายโฟลเดอร์นี้ไปด้วย
+- ค่าตั้งต้นของ Server อยู่ใน `.streamlit/config.toml` (headless, ไฟล์อัปโหลดไม่เกิน 50 MB, ป้องกัน XSRF, ปิดการส่งสถิติ, ซ่อนเมนูนักพัฒนา)
+- **รัน Streamlit โปรเซสเดียวเท่านั้น** เลขเวอร์ชันข้อมูลที่ใช้ล้าง cache อยู่ในหน่วยความจำของโปรเซส (`_data_version` ใน `data/database.py`) ถ้ารันหลายโปรเซส ผู้ใช้อาจเห็นข้อมูลเก่าได้นานสูงสุด 60 วินาที
+
+### รันเป็นบริการด้วย systemd (ตัวอย่าง)
+
+```ini
+# /etc/systemd/system/masterlist.service
+[Unit]
+Description=IT PR/PO Masterlist
+After=network.target
+
+[Service]
+User=masterlist
+WorkingDirectory=/opt/masterlist
+ExecStart=/opt/masterlist/venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Reverse proxy ด้วย nginx (ตัวอย่าง)
+
+ต้องส่งต่อ WebSocket ไม่เช่นนั้นหน้าเว็บจะโหลดไม่ขึ้น และต้องตั้ง `client_max_body_size` ให้รับไฟล์ได้เท่ากับ `maxUploadSize`
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name masterlist.example.com;
+    # ใส่ค่าใบรับรอง TLS ของบริษัทที่นี่
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400;
+    }
+}
+```
 
 ## 2. ตัวแปรใน `.env` ที่เกี่ยวกับ Server
 
 | ตัวแปร | ค่าบน Server | ความหมาย |
 |---|---|---|
-| `LOCAL_DESKTOP_EXPORT` | `0` (ค่าเริ่มต้น) | ✅ `1` = กดไอคอน File แล้วคัดลอกไป Desktop ของ**เครื่องที่รันโปรแกรม** ใช้เฉพาะตอนรันบนเครื่องตัวเอง บน Server ต้องเป็น `0` ไอคอนจะเปิดไฟล์ในเบราว์เซอร์แทน |
-| `DB_FILE_PATH` | เช่น `D:/masterlist/masterlist.db` | ✅ ที่เก็บฐานข้อมูล ต้องเป็นดิสก์ในเครื่อง Server ห้ามอยู่ OneDrive / network share (SQLite จะเสียหายได้) |
-| `DB_JOURNAL_MODE` | `WAL` | ✅ รองรับผู้ใช้เปิด/บันทึกพร้อมกันได้ดีขึ้น (ใช้ได้เมื่อ `DB_FILE_PATH` อยู่ดิสก์ในเครื่อง) |
-| `STORAGE_BACKEND` | `sharepoint` เมื่อได้สิทธิ์ | ที่เก็บไฟล์ที่อัปโหลด (ดู `.env.example`) |
+| `LOCAL_DESKTOP_EXPORT` | `0` (ค่าเริ่มต้น) | `1` = กดไอคอน File แล้วคัดลอกไฟล์ไป Desktop ของเครื่องที่รันโปรแกรม ใช้ได้เฉพาะตอนรันบนเครื่องตัวเอง ส่วน `0` = กดแล้วเปิดหน้าต่างรายการไฟล์ของแถวให้กดเปิดในเบราว์เซอร์ (แถวที่มีแต่ลิงก์ออนไลน์จะเปิดลิงก์นั้น) |
+| `DB_FILE_PATH` | เช่น `/var/lib/masterlist/masterlist.db` | ที่เก็บฐานข้อมูล ต้องเป็นดิสก์ในเครื่อง ห้ามอยู่บน OneDrive หรือ network share เพราะ SQLite อาจเสียหาย ถ้าไม่ตั้งจะใช้ `data/masterlist.db` |
+| `DB_JOURNAL_MODE` | `WAL` | ให้ผู้อ่านไม่ขวางผู้เขียน ใช้ได้เมื่อฐานข้อมูลอยู่บนดิสก์ในเครื่อง |
+| `STORAGE_BACKEND` | ดูหมายเหตุด้านล่าง | ที่เก็บไฟล์ออนไลน์ ถ้าตั้งค่าไม่ครบ ระบบจะข้ามการส่งไฟล์ออนไลน์และเก็บในเครื่องอย่างเดียว |
 | `LOG_LEVEL` | `INFO` | ระดับ log ที่เขียนลง `logs/app.log` (หมุนไฟล์อัตโนมัติ) |
 
-## 3. สิ่งที่ต้องตัดสินใจ/ตั้งค่าฝั่ง IT ⬜
+**หมายเหตุ SharePoint:** อย่าตั้ง `STORAGE_BACKEND=sharepoint` โค้ดส่วนนี้ล็อกอินแบบ Client ID/Secret ผ่าน Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026 ([MC693863](https://mc.merill.net/message/MC693863)) แผนใหม่คือเชื่อมผ่าน Power Automate ดู `NEXT_STEPS.md`
 
-1. **ล็อกอิน / สิทธิ์** — ตอนนี้ระบบ**ไม่มีล็อกอิน** ใครเข้า URL ได้ก็ดู แก้ ลบข้อมูลได้ ทางเลือก
-   - วางหลัง Reverse Proxy ที่บังคับ SSO ของบริษัท (IIS/nginx + Entra ID/AD) — แนะนำ ไม่ต้องแก้โค้ด
-   - หรือใช้ `st.login()` (OIDC ในตัว Streamlit) ต้องมี Client ID/Secret จาก IT แล้วให้ทีมพัฒนาเพิ่มโค้ด
-2. **ไฟล์เอกสารเปิดได้โดยไม่ล็อกอิน** — ไฟล์ใน `static/local_uploads/` ถูกเสิร์ฟที่ `/app/static/...` ใครรู้ลิงก์เปิดได้ ถ้ามีเอกสารลับต้องวางหลังด่านล็อกอินตามข้อ 1 (ห้ามเปิดพอร์ตสู่อินเทอร์เน็ต) และเมื่อได้สิทธิ์ SharePoint ให้เปลี่ยน `STORAGE_BACKEND=sharepoint` เพื่อเก็บไฟล์ที่นั่นแทน
-3. **HTTPS** — ทำที่ Reverse Proxy ต้องเปิดรองรับ WebSocket (`Upgrade`/`Connection` header) ไม่งั้นหน้าเว็บโหลดไม่ขึ้น
-4. **รันเป็นบริการ** — Windows: NSSM หรือ Task Scheduler (เริ่มเมื่อเครื่องเปิด + restart เมื่อล้ม) / Linux: systemd
-5. **Firewall** — เปิดพอร์ตให้เฉพาะเครือข่ายภายในบริษัท
-6. **สำรองข้อมูล** — ตั้ง cron ให้รัน `scripts/backup.py` เป็นประจำ เช่น ทุกวัน 01:30 `30 1 * * * cd /path/to/project && venv/bin/python scripts/backup.py --dest /mnt/backup/masterlist >> logs/backup.log 2>&1` รันได้ขณะแอปทำงาน เก็บ 14 ชุดล่าสุด (ปรับด้วย `--keep`) ปลายทางควรอยู่คนละดิสก์กับข้อมูลจริง วิธีกู้คืนอยู่ต้นไฟล์สคริปต์
-7. **ความลับ** — เก็บ `.env` และไฟล์ key (เช่น Google Service Account) บน Server ให้สิทธิ์อ่านเฉพาะบัญชีที่รันโปรแกรม
+## 3. สิ่งที่ต้องตัดสินใจหรือตั้งค่าฝั่ง IT
+
+1. **ล็อกอินและสิทธิ์** ตอนนี้ระบบไม่มีล็อกอิน ใครเข้า URL ได้ก็ดู แก้ และลบข้อมูลถาวรได้ ทางเลือกคือ
+   - วางหลัง reverse proxy ที่บังคับ SSO ของบริษัท (แนะนำ เพราะไม่ต้องแก้โค้ด และกันไฟล์ตามข้อ 2 ได้ด้วย)
+   - ใช้ `st.login()` ของ Streamlit ซึ่งต้องเพิ่มโค้ด และไม่ได้กันไฟล์ตามข้อ 2
+2. **ไฟล์เอกสารเปิดได้โดยไม่ล็อกอิน** ไฟล์ใน `static/local_uploads/` ถูกเสิร์ฟที่ `/app/static/...` ใครรู้ลิงก์ก็เปิดได้ ห้ามเปิดพอร์ตสู่อินเทอร์เน็ต
+3. **HTTPS** ทำที่ reverse proxy
+4. **Firewall** เปิดพอร์ตให้เฉพาะเครือข่ายภายในบริษัท ถ้าใช้ proxy ให้แอปฟังที่ `127.0.0.1` ตามตัวอย่าง
+5. **สำรองข้อมูล** ตั้ง cron ให้รัน `scripts/backup.py` รันได้ขณะแอปทำงาน เก็บ 14 ชุดล่าสุด (ปรับด้วย `--keep`) ปลายทางควรอยู่คนละดิสก์กับข้อมูลจริง และห้ามอยู่ใน `static/` วิธีกู้คืนอยู่ในหัวข้อ 5
+   ```
+   30 1 * * * cd /opt/masterlist && venv/bin/python scripts/backup.py --dest /mnt/backup/masterlist >> logs/backup.log 2>&1
+   ```
+6. **ความลับ** ตั้ง `.env` และไฟล์ key (เช่น Google Service Account) เป็น `chmod 600` ให้บัญชีที่รันแอปอ่านได้คนเดียว
 
 ## 4. ข้อจำกัดที่ควรรู้
 
-- ฐานข้อมูลเป็น SQLite: เหมาะกับผู้ใช้ที่บันทึกพร้อมกันระดับหลักสิบคน ถ้าผู้ใช้เพิ่มมากหรือต้องการ High Availability ควรย้ายไป PostgreSQL / SQL Server (เป็นงานแยก)
-- ระบบ**ยังไม่เคยทดสอบบน Server จริงและกับ SharePoint จริง** ควรทดลองกับผู้ใช้กลุ่มเล็กก่อน
-- ฟีเจอร์คัดลอกไป Desktop (`LOCAL_DESKTOP_EXPORT`) ยังไม่ได้ลบออกจากโค้ด จะลบเมื่อได้สิทธิ์ SharePoint (ดู `NEXT_STEPS.md`)
+- ฐานข้อมูลเป็น SQLite เหมาะกับทีมเล็ก ยังไม่ได้ทดสอบกับผู้ใช้หลายคนพร้อมกัน ถ้าต้องการรองรับผู้ใช้มากหรือ High Availability ต้องย้ายไปฐานข้อมูลแบบ server ซึ่งเป็นงานแยก
+- การลบแถวในตารางเป็นการลบถาวรพร้อมไฟล์ในเครื่อง กู้คืนได้จากชุดสำรองเท่านั้น ไฟล์บนที่เก็บออนไลน์ไม่ถูกลบ
+- โค้ดเปิด Explorer และคัดลอกไฟล์ไป Desktop (`LOCAL_DESKTOP_EXPORT`) ยังอยู่ในโปรแกรม แต่ไม่มีประโยชน์บน Server
 
-## 5. ล้างแถวเก่าที่ถูกซ่อนและรายละเอียดใน Audit Log
+## 5. สำรอง กู้คืน และล้างข้อมูลเก่า
 
-รุ่นก่อนลบแถวด้วยการซ่อนไว้ แถวเหล่านั้นและไฟล์ของแถวจึงยังอยู่ในระบบ ใช้ `scripts/purge_deleted.py` ล้างครั้งเดียว ใน Audit Log ของแถวที่ลบแล้วจะเหลือวันเวลา ประเภทการกระทำ และรหัสแถว ส่วนแถวที่ใช้งานอยู่และ log ของแถวเหล่านั้นไม่ถูกแตะ
+### กู้คืนจากชุดสำรอง
+
+ชุดสำรองแต่ละชุดคือโฟลเดอร์ `backup_ปปปปดดวว_ชชนนวว/` มี `masterlist.db` และ `local_uploads.tar.gz` หยุดแอปก่อน แล้วรัน
+
+```bash
+cp <ชุดสำรอง>/masterlist.db <ไฟล์ฐานข้อมูล>
+rm -f <ไฟล์ฐานข้อมูล>-wal <ไฟล์ฐานข้อมูล>-shm
+tar -xzf <ชุดสำรอง>/local_uploads.tar.gz -C <โปรเจกต์>/static
+```
+
+คำสั่ง `tar` แตกทับโฟลเดอร์เดิมโดยไม่ลบไฟล์ที่เพิ่มหลังวันที่สำรอง ถ้าต้องการให้ตรงกับชุดสำรองทุกไฟล์ ให้ย้าย `static/local_uploads/` เดิมออกก่อน
+
+### ล้างแถวเก่าที่ถูกซ่อนและรายละเอียดใน Audit Log
+
+รุ่นก่อนลบแถวด้วยการซ่อนไว้ แถวและไฟล์จึงยังอยู่ในระบบ ใช้ `scripts/purge_deleted.py` ล้างครั้งเดียว Audit Log ของแถวที่ลบแล้วจะเหลือวันเวลา ประเภทการกระทำ และรหัสแถว ส่วนแถวที่ใช้งานอยู่และ log ของแถวเหล่านั้นไม่ถูกแตะ
+
+**ต้องรันจากโฟลเดอร์โปรเจกต์ที่แอปใช้จริง** เพราะโฟลเดอร์ไฟล์เอกสารผูกกับตำแหน่งของโค้ด ถ้ารันจากโฟลเดอร์อื่น ชุดสำรองจะไม่มีไฟล์เอกสารจริงและไฟล์จะไม่ถูกลบ
 
 1. ดูสรุปก่อน คำสั่งนี้ไม่เปลี่ยนอะไร: `venv/bin/python scripts/purge_deleted.py`
 2. หยุดแอป แล้วสั่งล้าง ระบบสำรองข้อมูลให้ก่อนเสมอ และให้พิมพ์ `PURGE` เพื่อยืนยัน: `venv/bin/python scripts/purge_deleted.py --apply --dest /mnt/backup/masterlist_before_purge`
    ถ้าไม่ใส่ `--dest` ชุดสำรองจะอยู่ที่ `backups/before_purge/` ในโปรเจกต์
 3. เปิดแอปใหม่และตรวจตาราง
-
-**กู้คืน** (หยุดแอปก่อน) สคริปต์พิมพ์คำสั่งพร้อม path จริงให้หลังล้างเสร็จ:
-
-```
-cp <ชุดสำรอง>/masterlist.db <ไฟล์ฐานข้อมูล>
-rm -f <ไฟล์ฐานข้อมูล>-wal <ไฟล์ฐานข้อมูล>-shm
-tar -xzf <ชุดสำรอง>/local_uploads.tar.gz -C <โปรเจกต์>/static
-```
 
 ชุดสำรองมีข้อมูลเก่าครบ รวม Description และ Company จึงต้องเก็บในที่ปลอดภัย และลบเองเมื่อไม่ต้องการแล้ว สคริปต์ไม่ลบไฟล์บนที่เก็บออนไลน์และไฟล์ใน `data/local_uploads/` ส่วนจำนวนที่เกี่ยวข้องจะแสดงในสรุป
