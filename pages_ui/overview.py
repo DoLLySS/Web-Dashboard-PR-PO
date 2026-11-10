@@ -58,7 +58,7 @@ from ui_grid import (
     show_grid,
 )
 from utils.csv_export import dataframe_to_csv_bytes
-from utils.excel_export import TEXT_ID_COLUMNS, build_excel_bytes
+from utils.excel_export import TEXT_ID_COLUMNS, build_excel_bytes, excel_file_name
 from utils.local_storage import (
     DESKTOP_EXPORT_ENABLED,
     STATIC_URL_PREFIX,
@@ -2270,17 +2270,20 @@ def convert_table_to_csv_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
         return None
 
 
-def convert_table_to_excel_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
+def convert_table_to_excel_bytes(
+    export_table: pd.DataFrame, date_range: tuple[date, date] | None = None
+) -> Optional[bytes]:
     """แปลงตารางเป็นไฟล์ .xlsx ในหน่วยความจำ (ต้องใช้ openpyxl) จัดรูปแบบตาม utils/excel_export.py
 
     Args:
         export_table: ตารางที่กรองแล้ว (หัวคอลัมน์ตาม TABLE_COLUMNS)
+        date_range: ช่วงวันที่จาก Date Filter (แสดงที่ท้ายกระดาษตอนพิมพ์)
 
     Returns:
         ไบต์ของไฟล์ Excel หรือ None ถ้าแปลงไม่สำเร็จ
     """
     try:
-        return build_excel_bytes(export_table)
+        return build_excel_bytes(export_table, date_range=date_range)
     except (ValueError, TypeError, OSError, ImportError) as error:
         logger.error("แปลงตารางเป็น Excel ไม่สำเร็จ: %s", error, exc_info=True)
         st.error(f"❌ สร้างไฟล์ Excel ไม่สำเร็จ: {error}")
@@ -2399,7 +2402,7 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
                 # ส่งออกข้อมูลชุดเดียวกับที่แสดงในตาราง (ผ่าน Date Filter / Search / Item / Vendor แล้ว)
                 # สร้างไฟล์เมื่อกดเตรียมไฟล์เท่านั้น (เดิมสร้าง CSV + Excel ทุกครั้งที่หน้ารีรัน ซึ่งช้าที่สุดของหน้านี้)
                 export_file_stem = f"masterlist_{start_date.isoformat()}_{end_date.isoformat()}"
-                render_export_buttons(display_table, export_file_stem, csv_column, excel_column)
+                render_export_buttons(display_table, export_file_stem, csv_column, excel_column, (start_date, end_date))
 
             if delete_clicked:
                 show_delete_confirm_dialog([visible_transactions[n] for n in selected_positions])
@@ -2442,7 +2445,11 @@ def render_table_card(range_transactions: list[dict[str, Any]], start_date: date
 
 
 def render_export_buttons(
-    display_table: pd.DataFrame, export_file_stem: str, csv_column: Any, excel_column: Any
+    display_table: pd.DataFrame,
+    export_file_stem: str,
+    csv_column: Any,
+    excel_column: Any,
+    date_range: tuple[date, date] | None = None,
 ) -> None:
     """วาดปุ่ม Export CSV / Excel: สร้างไฟล์ตอนผู้ใช้กดปุ่มเท่านั้น (ไม่สร้างทุกครั้งที่หน้ารีรัน)
 
@@ -2454,6 +2461,7 @@ def render_export_buttons(
         export_file_stem: ชื่อไฟล์ (ไม่รวมนามสกุล)
         csv_column: คอลัมน์ที่วางปุ่ม CSV
         excel_column: คอลัมน์ที่วางปุ่ม Excel
+        date_range: ช่วงวันที่จาก Date Filter ใส่ท้ายกระดาษของไฟล์ Excel
     """
     csv_column.download_button(
         "⬇️ Export CSV",
@@ -2465,8 +2473,8 @@ def render_export_buttons(
     )
     excel_column.download_button(
         "⬇️ Export Excel",
-        data=lambda: convert_table_to_excel_bytes(display_table) or b"",
-        file_name=f"{export_file_stem}.xlsx",
+        data=lambda: convert_table_to_excel_bytes(display_table, date_range) or b"",
+        file_name=excel_file_name(date.today()),  # Excel ตั้งชื่อด้วยวันที่ส่งออก (CSV ยังใช้ชื่อมีช่วงวันที่)
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="export_excel_button",
         use_container_width=True,

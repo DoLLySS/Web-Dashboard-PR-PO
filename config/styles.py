@@ -620,7 +620,7 @@ def build_responsive_css() -> str:
   [data-testid="stButton"], [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"],
   [data-testid="stButton"] button, [data-testid="stDownloadButton"] button,
   [data-testid="stFormSubmitButton"] button {{ width: 100%; }}
-  .st-key-dashboard_export [data-testid="stDownloadButton"] {{ justify-content: stretch; }}
+  .st-key-dashboard_actions [data-testid="stDownloadButton"] {{ justify-content: stretch; }}
   .st-key-page_header [data-testid="stColumn"]:has(.header-spacer) {{ display: none; }}  /* ซ่อนคอลัมน์ว่างของแถบหัว */
 
   /* ทุกแถวคอลัมน์ในเนื้อหาหลักเรียงต่อกันแนวตั้ง (Streamlit ทำเองที่ < 640px เราครอบคลุมถึง 767px ด้วย) */

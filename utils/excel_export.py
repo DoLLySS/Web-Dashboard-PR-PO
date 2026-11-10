@@ -13,6 +13,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.page import PageMargins
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -31,7 +32,9 @@ LINK_COLUMN: str = "File"
 STATUS_COLUMN: str = "Status"
 WRAP_COLUMNS: frozenset[str] = frozenset({"Description"})
 
-DATE_FORMAT: str = "DD/MM/YYYY"
+# [$-409] = บังคับปฏิทินสากล (ค.ศ.) ไม่เช่นนั้น Excel ที่ตั้งภาษาไทยจะแสดงปี พ.ศ. เช่น 19/03/2569
+DATE_FORMAT: str = "[$-409]DD/MM/YYYY"
+DATE_DISPLAY_WIDTH: int = len("DD/MM/YYYY")
 MONEY_FORMAT: str = "#,##0.00"
 
 HEADER_FILL = PatternFill("solid", fgColor="1E3A8A")
@@ -169,6 +172,28 @@ def _write_cell(cell: Cell, header: str, value: Any) -> None:
         _set_text(cell, _clean_text(value))
 
 
+def excel_file_name(day: date) -> str:
+    """ชื่อไฟล์ Excel ที่ Export: masterlist_ปปปป-ดด-วว.xlsx (วันที่ส่งออก)"""
+    return f"masterlist_{day.isoformat()}.xlsx"
+
+
+def _online_link_or_blank(value: Any) -> str:
+    """เหลือเฉพาะลิงก์ออนไลน์ (http/https) ส่วนที่อยู่ไฟล์ในเครื่อง เช่น /app/static/... ใช้นอกเว็บแอปไม่ได้และเป็นข้อมูลภายใน จึงไม่ลงไฟล์"""
+    text = "" if _is_blank(value) else _clean_text(value)
+    return text if text.lower().startswith(("http://", "https://")) else ""
+
+
+def _prepare_table(table: pd.DataFrame) -> pd.DataFrame:
+    """เตรียมตารางก่อนเขียน: คอลัมน์ File เหลือเฉพาะลิงก์ออนไลน์ และตัดคอลัมน์ทิ้งเมื่อไม่มีแถวไหนมีลิงก์เลย (ตารางไม่มีแถว = คงไว้)"""
+    if LINK_COLUMN not in table.columns:
+        return table
+    prepared = table.copy()
+    prepared[LINK_COLUMN] = prepared[LINK_COLUMN].map(_online_link_or_blank)
+    if len(prepared) and not (prepared[LINK_COLUMN] != "").any():
+        prepared = prepared.drop(columns=[LINK_COLUMN])
+    return prepared
+
+
 def _display_width(text: str) -> float:
     """ความกว้างโดยประมาณของข้อความ (อักขระไทยที่เป็นสระ/วรรณยุกต์ลอยไม่กินที่)"""
     return sum(0 if "ั" <= ch <= "ฺ" or "็" <= ch <= "๎" else 1 for ch in text)
@@ -186,7 +211,7 @@ def _fit_column_widths(sheet: Any, headers: list[str]) -> None:
                 if cell_value is None:
                     continue
                 if isinstance(cell_value, (date, datetime)):
-                    body_longest = max(body_longest, len(DATE_FORMAT))
+                    body_longest = max(body_longest, DATE_DISPLAY_WIDTH)
                 elif isinstance(cell_value, float):
                     body_longest = max(body_longest, len(f"{cell_value:,.2f}"))
                 else:
@@ -208,11 +233,68 @@ def _row_height(sheet: Any, row_number: int, headers: list[str]) -> float:
     return max(BASE_ROW_HEIGHT, LINE_HEIGHT * lines + 7)
 
 
-def build_excel_bytes(table: pd.DataFrame) -> bytes:
+SUMMARY_COUNT_FORMAT: str = '"จำนวน "#,##0" รายการ"'
+SUMMARY_LABEL: str = "รวม (ตามตัวกรอง)"
+SUMMARY_COUNT_COLUMN: str = "Date"  # คอลัมน์ที่ทุกแถวมีค่า ใช้นับจำนวนรายการ
+SUMMARY_MONEY_COLUMN: str = "Price"
+PAGE_MARGIN_INCH: float = 0.4
+PAPER_SIZE_A4: int = 9
+
+
+def _write_summary_row(sheet: Any, headers: list[str], data_row_count: int) -> None:
+    """แถวสรุปใต้ตาราง (เว้น 1 แถวจากตาราง Excel): จำนวนรายการและยอดรวม Price
+
+    ใช้ SUBTOTAL เพื่อให้ตัวเลขเปลี่ยนตามตัวกรองในไฟล์ (สูตรนี้สร้างโดยระบบเท่านั้น ข้อมูลของผู้ใช้ยังเป็นข้อความล้วน)
+    """
+    if data_row_count == 0 or not headers:
+        return
+    summary_row = data_row_count + 3
+    last_data_row = data_row_count + 1
+    summary_font = Font(name="Tahoma", size=11, bold=True)
+
+    count_header = SUMMARY_COUNT_COLUMN if SUMMARY_COUNT_COLUMN in headers else headers[0]
+    count_letter = get_column_letter(headers.index(count_header) + 1)
+    # ป้ายอยู่คอลัมน์แรก, จำนวนอยู่คอลัมน์ที่ 2 (ถ้ามี; กว้างพอแสดงข้อความ) ไม่เช่นนั้นอยู่คอลัมน์แรก
+    count_column = 2 if len(headers) > 1 else 1
+    if count_column == 2:
+        label_cell = sheet.cell(row=summary_row, column=1, value=SUMMARY_LABEL)
+        label_cell.font = summary_font
+        label_cell.alignment = Alignment(horizontal="left", vertical="center")
+    count_cell = sheet.cell(row=summary_row, column=count_column, value=f"=SUBTOTAL(103,{count_letter}2:{count_letter}{last_data_row})")
+    count_cell.number_format = SUMMARY_COUNT_FORMAT
+    count_cell.font = summary_font
+    count_cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    if SUMMARY_MONEY_COLUMN in headers:
+        money_column = headers.index(SUMMARY_MONEY_COLUMN) + 1
+        money_letter = get_column_letter(money_column)
+        money_cell = sheet.cell(row=summary_row, column=money_column, value=f"=SUBTOTAL(109,{money_letter}2:{money_letter}{last_data_row})")
+        money_cell.number_format = MONEY_FORMAT
+        money_cell.font = summary_font
+        money_cell.alignment = Alignment(horizontal="right", vertical="center")
+
+
+def _setup_print(sheet: Any, date_range: tuple[date, date] | None) -> None:
+    """หน้าพิมพ์: A4 แนวนอน กว้างพอดี 1 หน้า ขอบแคบ ซ้ำแถวหัวตาราง ท้ายกระดาษมีช่วงวันที่ของข้อมูลและเลขหน้า"""
+    sheet.page_setup.paperSize = PAPER_SIZE_A4
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_margins = PageMargins(left=PAGE_MARGIN_INCH, right=PAGE_MARGIN_INCH, top=0.5, bottom=0.6, header=0.3, footer=0.3)
+    sheet.print_title_rows = "1:1"
+    if date_range is not None:
+        start, end = date_range
+        sheet.oddFooter.left.text = f"ข้อมูลวันที่ {start:%d/%m/%Y} – {end:%d/%m/%Y}"
+    sheet.oddFooter.right.text = "หน้า &P / &N"
+
+
+def build_excel_bytes(table: pd.DataFrame, date_range: tuple[date, date] | None = None) -> bytes:
     """สร้างไฟล์ .xlsx ในหน่วยความจำจากตาราง
 
     Args:
         table: ตารางที่กรองแล้ว หัวคอลัมน์ตาม TABLE_COLUMNS (Date, Description, Item, Price, Status, ...)
+        date_range: ช่วงวันที่ของข้อมูล (เริ่ม, สิ้นสุด) แสดงที่ท้ายกระดาษตอนพิมพ์ ไม่ระบุก็ได้
 
     Returns:
         ไบต์ของไฟล์ .xlsx
@@ -220,6 +302,7 @@ def build_excel_bytes(table: pd.DataFrame) -> bytes:
     Raises:
         ValueError, TypeError, OSError: ถ้าสร้างไฟล์ไม่สำเร็จ (ผู้เรียกเป็นคนแจ้งผู้ใช้)
     """
+    table = _prepare_table(table)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = SHEET_NAME
@@ -248,11 +331,8 @@ def build_excel_bytes(table: pd.DataFrame) -> bytes:
         sheet.add_table(excel_table)
     sheet.sheet_view.showGridLines = False
     sheet.sheet_view.zoomScale = 100
-    sheet.page_setup.orientation = "landscape"
-    sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 0
-    sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.print_title_rows = "1:1"
+    _write_summary_row(sheet, headers, table.shape[0])
+    _setup_print(sheet, date_range)
 
     excel_buffer = io.BytesIO()
     workbook.save(excel_buffer)

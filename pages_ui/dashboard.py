@@ -31,7 +31,9 @@ from config.logging_setup import get_logger
 from config.styles import FONT_FAMILY, PALETTE
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
 from ui_common import build_css
+from pages_ui.overview import build_table_for_display
 from utils.csv_export import dataframe_to_csv_bytes
+from utils.excel_export import build_excel_bytes, excel_file_name
 
 logger = get_logger(__name__)
 
@@ -426,23 +428,37 @@ PAGE_CSS_RULES: str = """
     .vendor-name { font-size: 17px; }
     .vendor-amount { font-size: 17px; }
 }
-/* ปุ่ม Export: ปุ่มสี accent เรียบ มุม 8px ชี้แล้วยกขึ้น/เข้มขึ้น ไอคอนเด้ง กดแล้วยุบ */
-.st-key-dashboard_export { animation: dash-fade-up var(--dash-in) var(--dash-ease) 0.1s backwards; }
-.st-key-dashboard_export [data-testid="stDownloadButton"] { display: flex; justify-content: flex-end; }
-.st-key-dashboard_export button {
-    background: var(--ui-accent); color: #ffffff; border: none; border-radius: 8px; padding: 0.55rem 1.3rem; font-weight: 700;
+/* ปุ่ม Export: กลุ่มเดียวชิดขวา สูง/ระยะห่างเท่ากัน Excel = ปุ่มหลัก (สี accent เต็ม), CSV = ปุ่มรอง (พื้นขาว ขอบสี accent) */
+.st-key-dashboard_actions {
+    animation: dash-fade-up var(--dash-in) var(--dash-ease) 0.1s backwards;
+    display: flex; flex-direction: row; flex-wrap: wrap; align-items: stretch; justify-content: flex-end; gap: 8px;
+}
+.st-key-dashboard_actions [data-testid="stDownloadButton"] { display: flex; width: auto; }
+.st-key-dashboard_actions button {
+    min-height: 44px; border-radius: 8px; padding: 0.55rem 1.3rem; font-weight: 700; white-space: nowrap;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+.st-key-dashboard_export_excel button {
+    background: var(--ui-accent); color: #ffffff; border: 1.5px solid var(--ui-accent);
     box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.5);
-    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
-.st-key-dashboard_export button p, .st-key-dashboard_export button span { color: #ffffff; }
-.st-key-dashboard_export button:hover:not(:disabled) {
-    background: var(--ui-accent-hover); transform: translateY(-2px); box-shadow: 0 10px 20px -6px rgba(37, 99, 235, 0.6); color: #ffffff; border: none;
+.st-key-dashboard_export_excel button p, .st-key-dashboard_export_excel button span { color: #ffffff; }
+.st-key-dashboard_export_excel button:hover:not(:disabled) {
+    background: var(--ui-accent-hover); border-color: var(--ui-accent-hover); color: #ffffff;
+    transform: translateY(-2px); box-shadow: 0 10px 20px -6px rgba(37, 99, 235, 0.6);
 }
-.st-key-dashboard_export button:hover:not(:disabled) [data-testid="stIconMaterial"] { animation: dash-bounce 0.7s ease-in-out infinite; }
-.st-key-dashboard_export button:active:not(:disabled) { transform: translateY(0) scale(0.97); box-shadow: 0 3px 8px -4px rgba(37, 99, 235, 0.6); }
-.st-key-dashboard_export button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.4); outline-offset: 2px; }
-.st-key-dashboard_export button:disabled { background: var(--ui-border); box-shadow: none; }
-.st-key-dashboard_export button:disabled p, .st-key-dashboard_export button:disabled span { color: var(--ui-text-muted); }
+.st-key-dashboard_export_csv button {
+    background: #ffffff; color: var(--ui-accent); border: 1.5px solid var(--ui-accent); box-shadow: none;
+}
+.st-key-dashboard_export_csv button p, .st-key-dashboard_export_csv button span { color: var(--ui-accent); }
+.st-key-dashboard_export_csv button:hover:not(:disabled) {
+    background: rgba(37, 99, 235, 0.08); border-color: var(--ui-accent-hover); transform: translateY(-2px);
+}
+.st-key-dashboard_actions button:hover:not(:disabled) [data-testid="stIconMaterial"] { animation: dash-bounce 0.7s ease-in-out infinite; }
+.st-key-dashboard_actions button:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.st-key-dashboard_actions button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.4); outline-offset: 2px; }
+.st-key-dashboard_actions button:disabled { background: var(--ui-border); border-color: var(--ui-border); box-shadow: none; }
+.st-key-dashboard_actions button:disabled p, .st-key-dashboard_actions button:disabled span { color: var(--ui-text-muted); }
 /* จอกลาง (480-1100px): KPI เรียง 2x2 (จอแคบกว่า 480px ซ้อนทีละช่อง) */
 @media (min-width: 480px) and (max-width: 1100px) {
     [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-kpi_total_card) { flex-wrap: wrap; }
@@ -452,11 +468,11 @@ PAGE_CSS_RULES: str = """
 }
 /* Tablet ขึ้นไป (768px+): แถวหัวส่วน ชื่อกินที่เหลือ ปุ่ม Export กว้างตามข้อความชิดขวา (ไม่ใช่สัดส่วนที่เหลือที่ว่างกลางแถว) */
 @media (min-width: 768px) {
-    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_export) { flex-wrap: nowrap; }
-    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_export) > [data-testid="stColumn"]:first-child {
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_actions) { flex-wrap: nowrap; }
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_actions) > [data-testid="stColumn"]:first-child {
         flex: 1 1 0; min-width: 0;
     }
-    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_export) > [data-testid="stColumn"]:last-child {
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .st-key-dashboard_actions) > [data-testid="stColumn"]:last-child {
         flex: 0 0 auto; width: auto; min-width: max-content;
     }
     /* การ์ดแนวโน้ม: แถวหัว (ชื่อ | ปุ่มช่วงเวลา) และแถวยอดรวม (ยอดรวม | Detail Graph) ฝั่งขวากว้างตามเนื้อหา ฝั่งซ้ายกินที่เหลือ */
@@ -493,10 +509,11 @@ PAGE_CSS_RULES: str = """
     .trend-stat-value small { display: inline; margin-left: 6px; }
     .trend-delta em { display: none; }
 }
-/* มือถือ (<640px): ปุ่ม Export เต็มความกว้างใต้ชื่อ */
+/* มือถือ (<640px): กลุ่มปุ่ม Export อยู่ใต้ชื่อ ปุ่มทั้งสองกว้างเท่ากันเต็มแถว (แคบมากจะขึ้นบรรทัดใหม่ ไม่ซ้อนกัน) */
 @media (max-width: 639px) {
-    .st-key-dashboard_export, .st-key-dashboard_export [data-testid="stDownloadButton"], .st-key-dashboard_export button { width: 100%; justify-content: center; }
-    .st-key-dashboard_export { margin-top: 10px; }
+    .st-key-dashboard_actions { margin-top: 10px; justify-content: stretch; }
+    .st-key-dashboard_actions [data-testid="stDownloadButton"] { flex: 1 1 140px; width: auto; }
+    .st-key-dashboard_actions button { width: 100%; justify-content: center; }
 }
 /* มือถือเล็ก (<480px): KPI ทีละช่อง การ์ดกระชับ ไอคอนไปอยู่หน้าป้าย */
 @media (max-width: 479px) {
@@ -506,15 +523,15 @@ PAGE_CSS_RULES: str = """
 }
 /* อุปกรณ์สัมผัส: ไม่มี hover จึงไม่ยกการ์ด/ปุ่มค้าง */
 @media (hover: none) {
-    [class*="st-key-kpi_"][class*="_card"]:hover, .st-key-dashboard_export button:hover:not(:disabled) { transform: none; }
+    [class*="st-key-kpi_"][class*="_card"]:hover, .st-key-dashboard_actions button:hover:not(:disabled) { transform: none; }
 }
 /* ผู้ใช้ที่ตั้งค่าลดการเคลื่อนไหว: ปิด animation / transition ทั้งหมดของหน้านี้ (กราฟแสดงครบทันที) */
 @media (prefers-reduced-motion: reduce) {
     .section-head, .section-title::after, [class*="st-key-"][class*="_card"], [class*="st-key-kpi_"][class*="_card"]::before,
     .kpi-value, .kpi-icon, .kpi-dot, .equip-row, .equip-bar i, .vendor-row, .vendor-bar i, .st-key-vendor_table_card::before, .st-key-trend_card [data-testid="stPlotlyChart"],
     .trend-total, .trend-delta, .trend-stat, .trend-empty, .st-key-price_range button, .st-key-price_range [role="radiogroup"]::before,
-    .st-key-equipment_card [data-testid="stPlotlyChart"], .st-key-dashboard_export, .st-key-dashboard_export button,
-    .st-key-dashboard_export [data-testid="stIconMaterial"] {
+    .st-key-equipment_card [data-testid="stPlotlyChart"], .st-key-dashboard_actions, .st-key-dashboard_actions button,
+    .st-key-dashboard_actions [data-testid="stIconMaterial"] {
         animation: none !important; transition: none !important;
     }
     .st-key-equipment_card [data-testid="stPlotlyChart"] { -webkit-mask-image: none; mask-image: none; }
@@ -641,28 +658,40 @@ def build_top_vendor_table(transaction_table: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_header_row(start_date: date, end_date: date) -> None:
-    """วาดแถวหัวส่วน: ชื่อ 'ภาพรวม' + ช่วงวันที่ที่เลือก ทางซ้าย และปุ่ม Export CSV ชิดขวา
+    """วาดแถวหัวส่วน: ชื่อ 'ภาพรวม' + ช่วงวันที่ที่เลือก ทางซ้าย และปุ่ม Export CSV / Excel ชิดขวา
 
     Args:
         start_date: วันที่เริ่มต้นจาก Date Filter
         end_date: วันที่สิ้นสุดจาก Date Filter
     """
     export_csv = build_export_csv(start_date, end_date)
-    title_column, export_column = st.columns([3, 1], vertical_alignment="center")
+    title_column, actions_column = st.columns([3, 2], vertical_alignment="center")
     title_column.markdown(
         '<div class="section-head"><div class="section-title">ภาพรวม</div>'
         f'<span class="section-sub">{CALENDAR_ICON}{start_date:%d/%m/%Y} – {end_date:%d/%m/%Y}</span></div>',
         unsafe_allow_html=True,
     )
-    export_column.download_button(
-        "Export CSV",
-        icon=":material/download:",
-        data=export_csv,
-        file_name=f"masterlist_{start_date.isoformat()}_{end_date.isoformat()}.csv",
-        mime="text/csv",
-        disabled=not export_csv,  # ไม่มีข้อมูลให้ปิดปุ่ม
-        key="dashboard_export",
-    )
+    with actions_column.container(horizontal=True, horizontal_alignment="right", gap="small", key="dashboard_actions"):
+        st.download_button(
+            "Export Excel",
+            icon=":material/download:",
+            data=lambda: export_excel_for_download(start_date, end_date),  # สร้างไฟล์ตอนกดเท่านั้น ไม่ใช่ทุกครั้งที่หน้ารีรัน
+            file_name=excel_file_name(date.today()),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",  # ปุ่มหลัก
+            disabled=not export_csv,  # ไม่มีข้อมูลให้ปิดปุ่ม
+            key="dashboard_export_excel",
+        )
+        st.download_button(
+            "Export CSV",
+            icon=":material/download:",
+            data=export_csv,
+            file_name=f"masterlist_{start_date.isoformat()}_{end_date.isoformat()}.csv",
+            mime="text/csv",
+            type="secondary",  # ปุ่มรอง
+            disabled=not export_csv,
+            key="dashboard_export_csv",
+        )
 
 
 def format_kpi_value(value: str) -> str:
@@ -1329,6 +1358,34 @@ def build_export_csv(start_date: date, end_date: date) -> bytes:
         return b""
     export_table = pd.DataFrame(transactions).drop(columns=list(EXPORT_EXCLUDED_COLUMNS), errors="ignore")
     return dataframe_to_csv_bytes(export_table, EXPORT_ID_COLUMNS)
+
+
+def build_export_excel(start_date: date, end_date: date) -> bytes:
+    """สร้างไฟล์ Excel (.xlsx) ของรายการทั้งหมดในช่วงวันที่ ใช้ตารางและรูปแบบเดียวกับปุ่ม Export Excel ของหน้า Overview
+
+    Args:
+        start_date: วันที่เริ่มต้นจาก Date Filter
+        end_date: วันที่สิ้นสุดจาก Date Filter
+
+    Returns:
+        ไบต์ของไฟล์ .xlsx (ว่างถ้าไม่มีข้อมูล)
+
+    Raises:
+        ValueError, TypeError, OSError: สร้างไฟล์ไม่สำเร็จ
+    """
+    transactions = get_transactions(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    if not transactions:
+        return b""
+    return build_excel_bytes(build_table_for_display(transactions), date_range=(start_date, end_date))
+
+
+def export_excel_for_download(start_date: date, end_date: date) -> bytes:
+    """ฟังก์ชันที่ download_button เรียกตอนกดดาวน์โหลด: ล้มเหลวแล้วบันทึก log และคืนไฟล์ว่าง (ไม่ให้หน้าพัง)"""
+    try:
+        return build_export_excel(start_date, end_date)
+    except (ValueError, TypeError, OSError, ImportError) as error:
+        logger.error("สร้างไฟล์ Excel ของ Dashboard ไม่สำเร็จ: %s", error, exc_info=True)
+        return b""
 
 
 def render(start_date: date, end_date: date) -> None:
