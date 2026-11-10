@@ -1,6 +1,6 @@
 # งานค้างแยกตามผู้รับผิดชอบ
 
-ณ commit `36aa060` (ยังไม่ push)
+ณ commit `e78482f` (ยังไม่ push)
 
 ## งานของคนอื่น
 
@@ -41,9 +41,14 @@
 - S5 ทดสอบกับไลบรารีว่างด้วย `scripts/check_flow.py` แล้วทดสอบทั้งแอปบนสำเนาข้อมูล (ชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ Flow ปิด/ล้มเหลว)
 - S6 เปิดใช้: ตั้ง `.env`, ตัดสินใจเรื่องย้ายไฟล์เดิมขึ้น SharePoint และนโยบายลบไฟล์ออนไลน์, แล้วพิจารณาลบ `utils/sharepoint_api.py` พร้อม `Office365-REST-Python-Client`
 
+## ค้างหลัง S2b (ส่ง Master-List ผ่าน Flow: เขียนและทดสอบกับ Flow ปลอมแล้ว)
+
+- IT ยืนยันปลายทางจริง, ฟิลด์ที่ต้องการ และการกันซ้ำด้วย `requestId` (`02_S0_IT_REQUEST.md` ข้อ 6)
+- ปุ่ม "ส่งแถวนี้เข้า Master-List ซ้ำ" และสถานะส่งแล้ว/ยังต่อแถว (ต้องแก้ schema) ทำหลังตัดสินใจเรื่อง `requestId`
+- ทดสอบกับ Flow และปลายทางจริงด้วยข้อมูลปลอม/ไลบรารีว่างก่อน
+
 ## งานโค้ดที่เลื่อนไว้ (ไม่ทำรอบนี้)
 
-- S2b ส่ง Master-List ผ่าน Flow (`utils/masterlist_client.py`)
 - ลบฟังก์ชันที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file` (ตรวจเพิ่ม: `ui_grid.render_readonly_grid` เรียกจาก `render_equipment_table` เท่านั้น จึงไม่มีใครใช้ถ้าลบตัวนั้น, ค่าคงที่ `overview.TABLE_COLUMN_HELP` ไม่มีใครอ้าง, `database.delete_transaction` ใช้ในเทสต์เท่านั้น)
 - ตัดสินใจเรื่องโค้ด Windows / Desktop export ใน `pages_ui/overview.py`, `utils/local_storage.py`
 - เพิ่ม ruff ใน `requirements-dev.txt`
