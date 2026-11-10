@@ -27,7 +27,9 @@
 - คำตอบ: `{fileUrl, folderUrl}` หรือ `{error}`
 - URL ของ Flow มีลายเซ็นลับในตัว ถือเป็นรหัสผ่าน เก็บใน `.env` (`POWER_AUTOMATE_UPLOAD_URL`) ห้ามลง log หรือ Git และเพิ่ม header `X-Api-Key` (`POWER_AUTOMATE_API_KEY`) ให้ Flow ตรวจซ้ำ
 
-**S2 — เขียนโค้ด: เสร็จ** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` (ส่งทีละไฟล์, ลิงก์โฟลเดอร์มาจากคำตอบของ Flow, ไม่เปิดเผย URL/คีย์, ไม่ตาม redirect, retry เฉพาะ 429/503, ไม่ retry เมื่อ timeout / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว) ยังไม่ได้ทำ: ส่ง Master-List ผ่าน `utils/masterlist_client.py` (S2b)
+**S2 — เขียนโค้ด: เสร็จ** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` (ส่งทีละไฟล์, ลิงก์โฟลเดอร์มาจากคำตอบของ Flow, ไม่เปิดเผย URL/คีย์, ไม่ตาม redirect, retry เฉพาะ 429/503, ไม่ retry เมื่อ timeout / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว) 
+
+**S2b — ส่ง Master-List ผ่าน Flow: เสร็จ (ทดสอบกับ Flow ปลอมเท่านั้น)** `utils/masterlist_client.py` ส่ง `POST {requestId, record}` (record = 13 ฟิลด์ใน `MASTERLIST_FIELDS` ไม่มีไฟล์/path) ไปที่ `MASTERLIST_API_URL` (+ `MASTERLIST_API_KEY`, `MASTERLIST_TIMEOUT_SECONDS` ค่าเริ่มต้น 30) คาดคำตอบ `{"ok": true}` ใช้แกนส่ง HTTP เดียวกับการส่งไฟล์ (ไม่ตาม redirect, ต้อง https, ไม่ลง log ซึ่ง URL/คีย์, retry เฉพาะ 429/503 ด้วย `requestId` เดิม) ส่งล้มหรือช้าแล้วแถวและไฟล์ในเครื่องยังอยู่ และสรุปหลังอัปโหลดแจ้งว่า Master-List ส่งไม่สำเร็จ timeout/502/504/คำตอบเพี้ยนไม่ retry เพราะ Flow อาจสร้างรายการไปแล้ว **ยังไม่มี:** ปุ่มส่งแถวนี้ซ้ำ และสถานะ "ส่งแล้ว/ยัง" ต่อแถวในฐานข้อมูล สัญญาและปลายทางจริงรอ IT ยืนยัน (S0 ข้อ 6)
 
 **S3 — เทสต์กับเซิร์ฟเวอร์ปลอม: เสร็จ** `tests/test_power_automate.py` ครอบคลุมสำเร็จ, 4xx/5xx, retry, timeout, JSON เพี้ยน, redirect, URL ไม่ปลอดภัย, ความลับไม่โผล่ใน log, ส่งไม่สำเร็จแล้วแถวและไฟล์ในเครื่องยังอยู่
 

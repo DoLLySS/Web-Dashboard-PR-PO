@@ -4,6 +4,8 @@
 ยังไม่เคย push: local นำ `origin/master` (`d69d911`) อยู่ 12 commit (9 commit ของงานจริง + `76135fd` + `76e5e00` handoff + commit ของไฟล์นี้) ผู้ใช้สั่งไว้ว่า **ยังไม่ต้อง push**
 ไฟล์ `.vscode/settings.json` มีการแก้ค้างอยู่ ไม่ใช่ของผู้ช่วย **ห้ามรวมใน commit**
 
+**อัปเดต 2026-11-10:** S2b (ส่ง Master-List ผ่าน Flow ปลอม) ทำแล้วใน commit `187c245` และ `e6ae19f` ดู `NEXT_STEPS.md` หัวข้อ S2b และ `handoff/00_SUMMARY.md` (ผลทดสอบและ checksum ล่าสุดอยู่ที่นั่น ไม่ใช่ตารางข้างล่างซึ่งเป็นของวันที่ 2026-11-09)
+
 อ่านคู่กับ: `README.md` (ภาพรวมและข้อจำกัด), `DEPLOY.md` (ขึ้น Linux, สำรอง, กู้คืน, ล้างข้อมูลเก่า), `NEXT_STEPS.md` (แผน Power Automate S0–S6)
 
 ---
@@ -77,7 +79,7 @@ git archive --format=tar --prefix=masterlist/ 2ce30d5 -- . ':(exclude).vscode' |
 | **ผู้ดูแลเซิร์ฟเวอร์** | ขึ้นเซิร์ฟเวอร์ Linux จริง (systemd, nginx+WebSocket, HTTPS, firewall, cron สำรอง `scripts/backup.py`), ตัดสินใจเรื่องล็อกอิน/SSO (ตอนนี้ไม่มีล็อกอิน และไฟล์ใน `/app/static/...` เปิดได้โดยไม่ล็อกอิน) | ยังไม่มีเซิร์ฟเวอร์จริง ตัวอย่างใน `DEPLOY.md` ยังไม่ได้ทดสอบ |
 | **เจ้าของงาน** | ยืนยันวันที่เริ่มนับ 14 วัน (ตอนนี้นับจากวันอัปโหลดชั่วคราว: `OVERDUE_RULE` ใน `config/constants.py`), Excel หลายแถวต่อไฟล์, OCR | ยังไม่มีคำตอบ |
 
-งานโค้ดที่ผู้ใช้เลือกเลื่อนไว้ (ไม่ทำรอบนี้): ส่ง Master-List ผ่าน Flow (S2b), ลบฟังก์ชันที่ไม่มีใครเรียก (`ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file`), เพิ่มเทสต์ให้ `data/database.py`/`excel_export`/`text_extractor`/`dashboard`, แตก `pages_ui/overview.py` (ราว 3,300 บรรทัด), ลบโค้ด Windows/Desktop export, ติดตั้ง ruff, ลบ `utils/sharepoint_api.py` พร้อม dependency `Office365-REST-Python-Client` (หลัง Flow จริงใช้ได้)
+งานโค้ดที่ผู้ใช้เลือกเลื่อนไว้ (ไม่ทำรอบนี้): ลบฟังก์ชันที่ไม่มีใครเรียก (`ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file`), เพิ่มเทสต์ให้ `data/database.py`/`excel_export`/`text_extractor`/`dashboard`, แตก `pages_ui/overview.py` (ราว 3,300 บรรทัด), ลบโค้ด Windows/Desktop export, ติดตั้ง ruff, ลบ `utils/sharepoint_api.py` พร้อม dependency `Office365-REST-Python-Client` (หลัง Flow จริงใช้ได้)
 
 ## 6. ข้อตกลงกับผู้ใช้ที่ยังใช้อยู่
 

@@ -32,7 +32,7 @@
 | สำรองข้อมูล (`scripts/backup.py`) และล้างข้อมูลเก่า (`scripts/purge_deleted.py`) | ✅ ทดสอบบนสำเนาแล้ว วิธีใช้อยู่ใน `DEPLOY.md` |
 | ส่งไฟล์ขึ้น Google Drive | 🟡 ใช้ทดสอบ ดู `NEXT_STEPS.md` |
 | ส่งไฟล์ขึ้น SharePoint ผ่าน Power Automate | 🟡 โค้ดฝั่งแอปเสร็จและทดสอบกับ Flow ปลอมแล้ว **ยังไม่เคยใช้กับ Flow จริง** รอ Flow จากทีม IT ดู `NEXT_STEPS.md` |
-| ส่งข้อมูลเข้า Master-List | ❌ ยังไม่ส่งจริง รอ API |
+| ส่งข้อมูลแถวเข้า Master-List ผ่าน Flow | 🟡 โค้ดฝั่งแอปเสร็จและทดสอบกับ Flow ปลอมแล้ว (`MASTERLIST_API_URL`) **ยังไม่เคยใช้กับ Flow จริง** ปลายทางจริงรอ IT ยืนยัน |
 | OCR สำหรับ PDF สแกน / รูปภาพ | ❌ ยังไม่ได้ทำ ไฟล์สแกนจับคู่ได้จากชื่อไฟล์เท่านั้น |
 | Excel หนึ่งไฟล์หลายแถว | ❌ ยังไม่รองรับ Excel หนึ่งไฟล์นับเป็น PR 1 ใบ |
 | ล็อกอิน | ❌ ไม่มี ดู `DEPLOY.md` ก่อนเปิดให้ผู้อื่นใช้ |
@@ -98,7 +98,7 @@ Web-Dashboard-PR-PO/
 │   ├── power_automate_api.py # ส่งไฟล์ผ่าน Power Automate ไปที่ SharePoint
 │   ├── file_removal.py    # ตรรกะลบไฟล์ใต้ local_uploads (ใช้ร่วมกับ scripts/)
 │   ├── sharepoint_api.py  # SharePoint แบบเดิม (ใช้ไม่ได้แล้ว ดู NEXT_STEPS.md)
-│   ├── masterlist_client.py # Master-List (ยังไม่ส่งจริง)
+│   ├── masterlist_client.py # Master-List ผ่าน Flow (ทดสอบกับ Flow ปลอมเท่านั้น)
 │   └── excel_export.py    # Export Excel
 ├── data/
 │   ├── database.py        # ที่เดียวที่เขียน SQL
