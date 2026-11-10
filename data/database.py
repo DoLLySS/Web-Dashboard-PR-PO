@@ -257,7 +257,12 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     for column_name, column_type in ADDED_COLUMNS.items():
         if column_name not in existing_columns:
             # ชื่อและชนิดมาจากค่าคงที่ในไฟล์นี้เท่านั้น (ไม่ได้มาจากผู้ใช้) จึงใส่ใน SQL ตรง ๆ ได้
-            conn.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_type}")
+            try:
+                conn.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_type}")
+            except sqlite3.OperationalError as error:
+                # โปรเซสอื่นที่เริ่มพร้อมกันเพิ่มคอลัมน์นี้ไปก่อนระหว่างที่เราตรวจ: ข้ามได้ ส่วน error อื่นต้องรายงานต่อ
+                if "duplicate column name" not in str(error).lower():
+                    raise
 
 
 def _write_audit_log(

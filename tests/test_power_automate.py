@@ -45,6 +45,7 @@ class Reply:
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
+    raw: bytes = b""  # ตอบด้วยข้อมูลดิบที่ไม่ใช่ HTTP แล้วตัดการเชื่อมต่อ
     drop: bool = False  # ตัดการเชื่อมต่อทันทีหลังรับคำขอ (จำลองการเชื่อมต่อหลุดระหว่างส่ง)
 
 
@@ -76,6 +77,11 @@ class FakeFlow:
                 reply = outer.responder(recorded) if outer.responder else outer.replies[index]
                 if reply.delay:
                     time.sleep(reply.delay)
+                if reply.raw:
+                    self.close_connection = True
+                    self.wfile.write(reply.raw)
+                    self.wfile.flush()
+                    return
                 if reply.drop:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)
@@ -355,6 +361,27 @@ def test_success_status_without_file_url_warns_the_file_may_exist(flow: FakeFlow
 
     assert "รูปแบบไม่ถูกต้อง" in str(error.value) and "ตรวจในไลบรารีก่อนส่งซ้ำ" in str(error.value)
     assert_no_secret(str(error.value))
+
+
+def test_garbage_reply_is_reported_as_flow_failure_with_the_duplicate_warning(flow: FakeFlow) -> None:
+    flow.replies = [Reply(raw=b"this is not http\r\n\r\n")]
+
+    with pytest.raises(PowerAutomateError) as error:
+        upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    assert "ตรวจในไลบรารีก่อนส่งซ้ำ" in str(error.value)
+    assert_no_secret(str(error.value))
+
+
+@pytest.mark.parametrize("bad_key", ["key\nInjected: 1", "คีย์ไทย", "tab\tkey", "key\rmore"])
+def test_unusable_api_key_is_reported_before_anything_is_sent(flow: FakeFlow, monkeypatch: pytest.MonkeyPatch, bad_key: str) -> None:
+    monkeypatch.setenv("POWER_AUTOMATE_API_KEY", bad_key)
+
+    with pytest.raises(PowerAutomateError) as error:
+        upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    assert "POWER_AUTOMATE_API_KEY" in str(error.value) and bad_key not in str(error.value)
+    assert flow.requests == []
 
 
 def test_timeout_is_not_retried_because_the_file_may_exist(flow: FakeFlow, monkeypatch: pytest.MonkeyPatch) -> None:

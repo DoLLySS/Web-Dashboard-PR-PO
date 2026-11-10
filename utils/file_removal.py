@@ -42,7 +42,7 @@ def parse_stored_path(stored_path: str, upload_dir_name: str) -> Optional[list[s
 
     Returns:
         ส่วนของ path หลังชื่อโฟลเดอร์เก็บไฟล์ หรือ [ชื่อไฟล์] ถ้าเป็นโครงเก่าที่ไม่มีโฟลเดอร์ย่อย
-        None = path ว่างหรือไม่ปลอดภัย (มี ".." หรือส่วนว่าง)
+        None = path ว่างหรือไม่ปลอดภัย (มี ".." หรือ "." หรือส่วนว่าง)
     """
     stored_path = stored_path.strip().replace("\\", "/")
     file_name = stored_path.rsplit("/", 1)[-1]
@@ -50,7 +50,7 @@ def parse_stored_path(stored_path: str, upload_dir_name: str) -> Optional[list[s
         return None
     marker = f"{upload_dir_name}/"
     relative_parts = stored_path.split(marker, 1)[1].split("/") if marker in stored_path else [file_name]
-    if ".." in relative_parts or not all(relative_parts):
+    if any(part in ("", ".", "..") for part in relative_parts):
         return None
     return relative_parts
 

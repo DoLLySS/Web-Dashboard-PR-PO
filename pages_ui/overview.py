@@ -57,7 +57,8 @@ from ui_grid import (
     build_grid_options,
     show_grid,
 )
-from utils.excel_export import build_excel_bytes
+from utils.csv_export import dataframe_to_csv_bytes
+from utils.excel_export import TEXT_ID_COLUMNS, build_excel_bytes
 from utils.local_storage import (
     DESKTOP_EXPORT_ENABLED,
     STATIC_URL_PREFIX,
@@ -405,7 +406,9 @@ UPLOAD_STAMP_FILE_NAME_PATTERN: str = (
 )
 
 # เลขประจำตัวผู้เสียภาษีของไทยมี 13 หลัก
+CSV_ID_COLUMNS: frozenset[str] = TEXT_ID_COLUMNS  # คอลัมน์รหัส (Tel., Tax ID, PR No., QT No.) ที่ CSV ต้องคง 0 นำหน้า
 TAX_ID_LENGTH: int = 13
+TAX_ID_PATTERN: str = rf"[0-9]{{{TAX_ID_LENGTH}}}"  # เลขอารบิกเท่านั้น (str.isdigit รับเลขไทยและตัวยก ซึ่งไม่ตรงกับ Tax ID จาก PDF)
 
 # ตรวจอีเมลแบบหลวม ๆ: มีตัวอักษร @ ตัวอักษร . ตัวอักษร
 EMAIL_PATTERN: str = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
@@ -1321,7 +1324,7 @@ def validate_form_input(
             problem_messages.append(f"กรุณากรอก {field_label}")
 
     # ถ้ากรอกแล้วต้องมีรูปแบบถูกต้อง (ช่องที่ว่างถูกแจ้งไปแล้วด้านบน)
-    if tax_id and not (tax_id.isdigit() and len(tax_id) == TAX_ID_LENGTH):
+    if tax_id and not re.fullmatch(TAX_ID_PATTERN, tax_id):
         problem_messages.append(f"TaxID ต้องเป็นตัวเลข {TAX_ID_LENGTH} หลัก")
 
     if tel and not re.match(TEL_PATTERN, tel):
@@ -1695,7 +1698,7 @@ def build_update_fields(changes: dict[str, Any], original_row: pd.Series) -> tup
             fields[column] = text_value or None
         elif column == "tax_id":
             tax_id_value = str(new_value or "").strip()
-            if tax_id_value and not (tax_id_value.isdigit() and len(tax_id_value) == TAX_ID_LENGTH):
+            if tax_id_value and not re.fullmatch(TAX_ID_PATTERN, tax_id_value):
                 raise ValueError(f"Tax ID ต้องเป็นตัวเลข {TAX_ID_LENGTH} หลัก")
             fields["tax_id"] = tax_id_value or None
         elif column == "pr_request_date":
@@ -1900,6 +1903,8 @@ def apply_table_edits(
         messages.append(
             ("info", f"ℹ️ ยังไม่ได้ลบไฟล์ {len(cleanup.kept_files)} ไฟล์ เพราะแถวอื่น (รวมแถวที่เคยถูกซ่อนไว้) ยังอ้างถึงไฟล์เหล่านี้")
         )
+    if cleanup.skipped_ids:
+        messages.append(("error", f"❌ ไม่ได้ลบ {len(cleanup.skipped_ids)} แถว เพราะอ่านข้อมูลแถวไม่สำเร็จหรือแถวถูกลบไปแล้ว ลองใหม่อีกครั้ง"))
     if cleanup.failed:
         messages.append(("error", f"❌ ลบแถวแล้ว แต่ลบไฟล์ไม่หมด กรุณาตรวจ: {', '.join(cleanup.failed)}"))
     if delete_failed_count:
@@ -2258,7 +2263,7 @@ def convert_table_to_csv_bytes(export_table: pd.DataFrame) -> Optional[bytes]:
         ไบต์ของไฟล์ CSV หรือ None ถ้าแปลงไม่สำเร็จ
     """
     try:
-        return export_table.to_csv(index=False).encode("utf-8-sig")
+        return dataframe_to_csv_bytes(export_table, CSV_ID_COLUMNS)
     except (ValueError, TypeError, UnicodeError) as error:
         logger.error("แปลงตารางเป็น CSV ไม่สำเร็จ: %s", error, exc_info=True)
         st.error(f"❌ สร้างไฟล์ CSV ไม่สำเร็จ: {error}")

@@ -296,3 +296,21 @@ def test_single_delete_redacts_audit_details(isolated_storage: Path) -> None:
     assert delete_transaction(row["id"])
 
     assert audit_details(row["id"]) == [AUDIT_REDACTED_DETAILS, '{"deleted": true}']
+
+
+def test_deletion_events_go_to_the_application_log() -> None:
+    """log การลบต้องเข้า logs/app.log (logger ใต้ masterlist) ไม่ใช่แค่ stderr"""
+    assert row_cleanup.logger.name.startswith("masterlist.")
+
+
+def test_row_that_cannot_be_read_is_not_deleted_and_is_reported(isolated_storage: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """อ่านแถวไม่ได้ (เช่น DB ล็อกชั่วคราว) ต้องไม่ลบแถว ไม่เช่นนั้นไฟล์ของแถวนั้นจะกำพร้า"""
+    upload([(PR_NAME, make_pr_pdf(PR_ITEMS))])
+    row = only_row()
+    folder = row_folder(isolated_storage, row)
+    monkeypatch.setattr(row_cleanup, "get_transaction", lambda _id: None)
+
+    report = delete_rows_and_files([row["id"]])
+
+    assert report.deleted_count == 0 and report.skipped_ids == [row["id"]]
+    assert get_transaction(row["id"]) is not None and folder.is_dir()

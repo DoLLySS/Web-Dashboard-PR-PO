@@ -18,6 +18,7 @@
 
 import base64
 import hashlib
+import http.client
 import json
 import re
 import time
@@ -179,7 +180,8 @@ def _send(request: urllib.request.Request, host: str, timeout: int) -> tuple[int
                 ) from error
             logger.warning("เชื่อมต่อ Power Automate ไม่ได้ (host=%s): %s", host, type(error.reason).__name__)
             raise PowerAutomateError("เชื่อมต่อ Flow ไม่ได้: ตรวจอินเทอร์เน็ต/ไฟร์วอลล์ และค่า POWER_AUTOMATE_UPLOAD_URL") from error
-        except OSError as error:
+        except (OSError, http.client.HTTPException) as error:
+            # HTTPException (เช่น คำตอบที่ไม่ใช่ HTTP) ไม่ใช่ OSError แต่เกิดหลังส่งคำขอไปแล้วเช่นกัน
             logger.warning("ติดต่อ Power Automate ไม่สำเร็จ (host=%s): %s", host, type(error).__name__)
             raise PowerAutomateError(f"ติดต่อ Flow ไม่สำเร็จ: การเชื่อมต่อหลุดระหว่างส่ง {FILE_MAYBE_CREATED_HINT}") from error
         if status in RETRY_STATUS_CODES and attempt < MAX_RETRIES:
@@ -204,6 +206,9 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
     api_key = get_env_text(API_KEY_SETTING)
     secrets = (url, api_key)
     host = urlparse(url).hostname or ""
+    if api_key and not all(32 <= ord(char) < 127 for char in api_key):
+        # ขึ้นบรรทัดใหม่/อักขระนอก ASCII ใส่ใน header ไม่ได้ (ถ้าปล่อยไป urllib จะ error แบบอ่านไม่รู้เรื่องตอนส่ง) ไม่แสดงค่าคีย์
+        raise PowerAutomateError("POWER_AUTOMATE_API_KEY มีอักขระที่ใช้ไม่ได้ (ขึ้นบรรทัดใหม่ แท็บ หรือตัวอักษรนอก ASCII) ตรวจค่าในไฟล์ .env")
     if not data:
         raise PowerAutomateError(f"ไฟล์ '{file_name}' ว่างเปล่า (0 ไบต์): เลือกไฟล์ใหม่แล้วลองอีกครั้ง")
     max_mb = get_env_int("POWER_AUTOMATE_MAX_FILE_MB", DEFAULT_POWER_AUTOMATE_MAX_FILE_MB)

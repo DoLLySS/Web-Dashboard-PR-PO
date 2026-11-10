@@ -25,6 +25,8 @@ ROW_B = "static/local_uploads/2026/Mar/19/งานB/PR_B.pdf"
         ("static\\local_uploads\\2026\\a.pdf", ["2026", "a.pdf"]),
         ("a.pdf", ["a.pdf"]),  # โครงเก่า ไม่มีโฟลเดอร์ย่อย
         ("static/local_uploads/../../secret.txt", None),
+        ("static/local_uploads/./././x/a.pdf", None),
+        ("static/local_uploads/2026/./a.pdf", None),
         ("static/local_uploads/2026//a.pdf", None),
         ("static/local_uploads/", None),
         ("", None),

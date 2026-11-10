@@ -45,6 +45,32 @@ def _pick_free_file_name(target_directory: Path, file_name: str) -> str:
     return file_name
 
 
+def _write_without_overwriting(target_directory: Path, file_name: str, file_bytes: bytes) -> str:
+    """เขียนไฟล์ใหม่โดยไม่ทับไฟล์ใด: เปิดแบบ "สร้างใหม่เท่านั้น" ถ้าชื่อถูกคนอื่นตัดหน้าไปแล้วลองชื่อถัดไป (_1, _2, ...)
+
+    การเลือกชื่อว่างแล้วค่อยเขียนแยกกันไม่ปลอดภัยเมื่ออัปโหลดพร้อมกันหลายคน (ทั้งคู่เลือกชื่อเดียวกันแล้วทับกัน)
+    ถ้าเขียนไม่ครบ (ดิสก์เต็ม ฯลฯ) จะลบไฟล์ที่ค้างครึ่งเดียวทิ้ง
+
+    Raises:
+        OSError: เขียนไม่ได้
+    """
+    candidate = Path(file_name)
+    counter = 0
+    while True:
+        try:
+            with open(target_directory / file_name, "xb") as handle:
+                try:
+                    handle.write(file_bytes)
+                except OSError:
+                    handle.close()
+                    (target_directory / file_name).unlink(missing_ok=True)
+                    raise
+            return file_name
+        except FileExistsError:
+            counter += 1
+            file_name = f"{candidate.stem}_{counter}{candidate.suffix}"
+
+
 def save_document_locally(file_bytes: bytes, file_name: str, sub_folders: Optional[list[str]] = None) -> str:
     """บันทึกไฟล์ลง local_uploads/<sub_folders>/ แล้วคืนที่อยู่ไฟล์ (เทียบจากโฟลเดอร์โปรเจค) เพื่อเก็บลงฐานข้อมูล
 
@@ -74,8 +100,9 @@ def save_document_locally(file_bytes: bytes, file_name: str, sub_folders: Option
         if same_name_file.is_file() and same_name_file.read_bytes() == file_bytes:
             stored_file_name = cleaned_name  # ไฟล์เดิมเนื้อเหมือนกันทุกไบต์ ใช้ไฟล์เดิม ไม่สร้าง _1
         else:
-            stored_file_name = _pick_free_file_name(target_directory, cleaned_name)
-            (target_directory / stored_file_name).write_bytes(file_bytes)
+            stored_file_name = _write_without_overwriting(
+                target_directory, _pick_free_file_name(target_directory, cleaned_name), file_bytes
+            )
     except OSError as error:
         raise LocalStorageError(
             "บันทึกไฟล์ไม่สำเร็จ: ตรวจว่าดิสก์ไม่เต็ม และโฟลเดอร์ local_uploads/ ไม่ถูกล็อกหรือเป็นแบบอ่านอย่างเดียว"
@@ -219,7 +246,12 @@ def remove_desktop_copy(folder_parts: list[str], file_names: Optional[list[str]]
         return
     desktop = get_desktop_directory()
     folder = desktop.joinpath(*folder_parts)
-    if not folder_parts or ".." in folder_parts or folder.is_symlink():
+    desktop_root = desktop.resolve()
+    resolved_folder = folder.resolve()
+    unsafe_part = any(part in ("", ".", "..") for part in folder_parts)
+    unsafe_name = any(Path(name).name != name or name in ("", ".", "..") for name in (file_names or []))
+    outside_desktop = desktop_root not in resolved_folder.parents  # ต้องอยู่ใต้ Desktop เท่านั้น (ไม่ใช่ตัว Desktop เอง)
+    if not folder_parts or unsafe_part or unsafe_name or outside_desktop or folder.is_symlink():
         raise OSError(f"ไม่ลบ path บน Desktop: {'/'.join(folder_parts)}")
     if file_names is None:
         if folder.exists():

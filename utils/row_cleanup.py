@@ -6,10 +6,10 @@
 ไฟล์นี้ไม่เรียก Streamlit โดยตรง
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from config.logging_setup import get_logger
 from data.database import delete_transactions, get_all_file_paths, get_transaction
 from utils import file_removal
 from utils.file_removal import ROW_FOLDER_DEPTH, FileRemovalPlan
@@ -21,7 +21,7 @@ from utils.local_storage import (
     remove_upload_folder,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -31,6 +31,7 @@ class CleanupReport:
     deleted_count: int = 0
     removed_folders: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)  # โฟลเดอร์/ไฟล์ที่ลบไม่สำเร็จ
+    skipped_ids: list[int] = field(default_factory=list)  # id ที่อ่านแถวไม่ได้ (หรือถูกลบไปแล้ว) จึงไม่ได้ลบ ไม่เช่นนั้นไฟล์ของแถวนั้นจะกำพร้า
     kept_files: list[str] = field(default_factory=list)  # ไฟล์ของแถวที่ลบ แต่เก็บไว้เพราะแถวอื่น (รวมแถวที่ถูกซ่อน) ยังอ้างถึง
 
 
@@ -38,6 +39,7 @@ def _remove_files(files: list[tuple[str, ...]], folder: tuple[str, ...], report:
     for parts in files:
         try:
             remove_stored_file(list(parts))
+            logger.info("ลบไฟล์ถาวร %s", "/".join(parts))
         except OSError as error:
             logger.error("ลบไฟล์ไม่สำเร็จ %s: %s", "/".join(parts), type(error).__name__)
             report.failed.append("/".join(parts))
@@ -54,6 +56,7 @@ def _remove_folder(folder: tuple[str, ...], report: CleanupReport) -> None:
     try:
         remove_upload_folder(list(folder))
         report.removed_folders.append(label)
+        logger.info("ลบโฟลเดอร์ถาวร %s", label)
     except OSError as error:
         logger.error("ลบโฟลเดอร์ไม่สำเร็จ %s: %s", label, type(error).__name__)
         report.failed.append(label)
@@ -100,8 +103,19 @@ def delete_rows_and_files(transaction_ids: list[int]) -> CleanupReport:
     Returns:
         จำนวนแถวที่ลบ โฟลเดอร์ที่ลบ และรายการที่ลบไม่สำเร็จ
     """
-    rows = [row for row in (get_transaction(row_id) for row_id in transaction_ids) if row]
-    report = CleanupReport(deleted_count=delete_transactions(transaction_ids))
+    rows: list[dict] = []
+    skipped_ids: list[int] = []
+    for row_id in transaction_ids:
+        row = get_transaction(row_id)
+        if row:
+            rows.append(row)
+        else:
+            skipped_ids.append(row_id)
+            logger.warning("ไม่ลบแถว id=%s: อ่านแถวไม่ได้หรือถูกลบไปแล้ว", row_id)
+    report = CleanupReport(skipped_ids=skipped_ids)
+    if not rows:
+        return report
+    report.deleted_count = delete_transactions([row["id"] for row in rows])
     if not report.deleted_count:
         return report
 

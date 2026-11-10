@@ -31,6 +31,7 @@ from config.logging_setup import get_logger
 from config.styles import FONT_FAMILY, PALETTE
 from data.database import STATUS_PENDING, get_category_counts, get_transactions
 from ui_common import build_css
+from utils.csv_export import dataframe_to_csv_bytes
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,8 @@ UNSPECIFIED_CATEGORY_LABEL: str = "ไม่ระบุ"
 
 # แสดง Top Vendors กี่อันดับ
 TOP_VENDOR_LIMIT: int = 10
+EXPORT_EXCLUDED_COLUMNS: tuple[str, ...] = ("file_path", "is_deleted")  # คอลัมน์ภายในของระบบ ไม่ต้องอยู่ในไฟล์ที่ส่งออก
+EXPORT_ID_COLUMNS: frozenset[str] = frozenset({"tel", "tax_id", "pr_run_no", "qt_no"})  # รหัสที่ต้องคง 0 นำหน้าใน Excel
 
 # ถ้าช่วงวันที่ที่เลือกยาวเกินกี่วัน กราฟแนวโน้มจะรวมเป็นรายเดือนแทนรายวัน
 DAILY_CHART_MAX_DAYS: int = 62
@@ -1324,7 +1327,8 @@ def build_export_csv(start_date: date, end_date: date) -> bytes:
     transactions = get_transactions(start_date=start_date.isoformat(), end_date=end_date.isoformat())
     if not transactions:
         return b""
-    return pd.DataFrame(transactions).to_csv(index=False).encode("utf-8-sig")
+    export_table = pd.DataFrame(transactions).drop(columns=list(EXPORT_EXCLUDED_COLUMNS), errors="ignore")
+    return dataframe_to_csv_bytes(export_table, EXPORT_ID_COLUMNS)
 
 
 def render(start_date: date, end_date: date) -> None:
