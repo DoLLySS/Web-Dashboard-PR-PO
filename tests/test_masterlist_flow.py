@@ -352,3 +352,46 @@ def test_submit_does_not_touch_network_when_masterlist_not_configured(isolated_s
 
     assert result.masterlist_sent is False and "ยังไม่ได้ตั้งค่า" in result.masterlist_message
     assert ml_flow.requests == []
+
+
+# ---------------------------------------------------------------------------
+# สรุปผลหลังอัปโหลดต้องบอกเมื่อ Master-List ส่งไม่สำเร็จ (ไม่เงียบ)
+# ---------------------------------------------------------------------------
+
+
+def _summary_for(results: list) -> str:
+    from pages_ui.overview import build_upload_summary
+    from utils.upload_processor import KIND_ATTACHED, KIND_CREATED, ItemOutcome, UploadReport
+
+    items = [ItemOutcome(KIND_CREATED, f"pr{i}.pdf", f"งาน {i}", result) for i, result in enumerate(results)]
+    return build_upload_summary(UploadReport(items=items))
+
+
+def test_upload_summary_reports_masterlist_failure_once_per_message(isolated_storage: Path, ml_flow: FakeFlow) -> None:
+    ml_flow.replies = [Reply(status=500, body=b"{}")]
+    first = submit_record(make_fields(description="A"), [("20260319_PR_A.pdf", b"a")])
+    second = submit_record(make_fields(description="B"), [("20260319_PR_B.pdf", b"b")])
+
+    summary = _summary_for([first, second])
+
+    assert summary.count("HTTP 500") == 1 and "ส่งไม่สำเร็จ 2 แถว" in summary  # ข้อความเดียวกันรวมเป็นบรรทัดเดียว
+    assert "ส่งเข้า Master-List แล้ว" not in summary
+    assert_no_ml_secret(summary)
+
+
+def test_upload_summary_counts_sent_and_failed_separately(isolated_storage: Path, ml_flow: FakeFlow) -> None:
+    ok = submit_record(make_fields(description="A"), [("20260319_PR_A.pdf", b"a")])
+    ml_flow.replies = [Reply(status=500, body=b"{}")]
+    failed = submit_record(make_fields(description="B"), [("20260319_PR_B.pdf", b"b")])
+
+    summary = _summary_for([ok, failed])
+
+    assert "ส่งเข้า Master-List แล้ว 1 แถว" in summary and "HTTP 500" in summary
+
+
+def test_upload_summary_stays_quiet_when_masterlist_not_configured(isolated_storage: Path) -> None:
+    result = submit_record(make_fields(), [(PR_NAME, b"pr-content")])
+
+    summary = _summary_for([result])
+
+    assert "Master-List" not in summary  # ป้ายบนหน้าอัปโหลดบอกอยู่แล้วว่ายังไม่ตั้งค่า ไม่ต้องเตือนทุกครั้ง

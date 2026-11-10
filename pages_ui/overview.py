@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -2697,9 +2698,15 @@ def build_upload_summary(report: UploadReport) -> str:
     results = report.results
     storage_notes = list(dict.fromkeys(r.storage_message for r in results if r.storage_status in ("skipped", "error")))
     sections.extend(f"⚠️ {note}" for note in storage_notes)
-    sent_count = sum(1 for result in results if result.masterlist_sent)
-    if created and sent_count:
+    created_results = [item.result for item in created if item.result is not None and item.result.transaction_id is not None]
+    sent_count = sum(1 for result in created_results if result.masterlist_sent)
+    if sent_count:
         sections.append(f"📤 ส่งเข้า Master-List แล้ว {sent_count} แถว")
+    if is_masterlist_configured():  # ถ้ายังไม่ตั้งค่า ป้ายบนหน้าอัปโหลดบอกอยู่แล้ว ไม่เตือนซ้ำทุกครั้ง
+        failures = Counter(result.masterlist_message for result in created_results if not result.masterlist_sent)
+        sections.extend(
+            f"⚠️ Master-List ส่งไม่สำเร็จ {count} แถว (แถวและไฟล์บันทึกในเครื่องแล้ว): {message}" for message, count in failures.items()
+        )
     return "\n\n".join(sections) or "ℹ️ ไม่ได้บันทึกรายการใด"
 
 
