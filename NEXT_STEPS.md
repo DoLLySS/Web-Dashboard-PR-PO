@@ -46,10 +46,14 @@
 ## 4. งานถัดไป
 
 **จัดระเบียบโค้ด (ไม่เปลี่ยนพฤติกรรม)**
-- ลบโค้ดที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file`
+- ลบโค้ดที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file` (และตรวจเพิ่ม: `ui_grid.render_readonly_grid`, `overview.TABLE_COLUMN_HELP`, `database.delete_transaction` ที่ใช้ในเทสต์เท่านั้น)
 - ตัดสินใจเรื่องโค้ด Windows และโหมด Desktop export ใน `pages_ui/overview.py` และ `utils/local_storage.py`
 - เพิ่ม ruff ใน `requirements-dev.txt` และแตก `pages_ui/overview.py` (ประมาณ 3,300 บรรทัด) เป็นโมดูลย่อย
 - เพิ่มเทสต์ `data/database.py`, `utils/text_extractor.py`, `utils/excel_export.py` และการคำนวณใน `pages_ui/dashboard.py`
+
+**ส่งล้มกลางชุด ทาง B (หลัง IT ยืนยัน `requestId` ของ Flow จริง):** คอลัมน์ "ไฟล์ที่ยังไม่ขึ้นออนไลน์" + ปุ่มส่งซ้ำเฉพาะที่ค้าง + แถบเตือนค้าง (ตอนนี้ทำทาง A: เก็บลิงก์ไฟล์ที่ส่งแล้วและบอกไฟล์ที่ค้างตอนอัปโหลด)
+
+**ต้องให้เจ้าของงานตัดสินใจ:** การรวมแถวด้วยคีย์ Description+Company+Tel (ข้อ 9 ของรีวิว) และ "ลบถาวร" vs หน้าว่างของไฟล์ DB/ชุดสำรอง (`secure_delete`, ข้อ 25) รายการทำทีหลังอื่น ๆ ดู `handoff/03_PENDING_ACTIONS.md`
 
 **ฟีเจอร์ที่รอตัดสินใจ:** Excel หนึ่งไฟล์หลายแถว, OCR, เก็บไฟล์ที่รอเลือกแถวลงดิสก์ชั่วคราว, กันไฟล์ซ้ำด้วย hash, หน้าดู Audit Log, แจ้งเตือน Overdue ทางอีเมลหรือ LINE
 
