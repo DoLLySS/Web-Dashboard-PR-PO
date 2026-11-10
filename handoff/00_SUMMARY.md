@@ -60,10 +60,11 @@
 | `masterlist_code.tar.gz` | `bd2c3e58ad5bda179154c737db8168aa8ec7285c4dc727f200a1e4f1d0a8b27a` |
 | `masterlist_tools.tar.gz` (เครื่องมือรันเดี่ยว 5 ไฟล์) | `3f506311da88c53f0b7900c26dc512aa3eba01fcb878cf7eafe9b8b26e062de2` |
 
-ตรวจ: `sha256sum masterlist_code.tar.gz masterlist_tools.tar.gz` แล้วเทียบค่าข้างบน (`masterlist_code.tar.gz` ไม่รวม `handoff/` และ `.vscode/` เพราะ `handoff/` มี checksum นี้อยู่ในตัว; `masterlist_tools.tar.gz` ไม่เปลี่ยนเพราะ 5 ไฟล์นั้นไม่ได้แก้)
+ตรวจ: `sha256sum masterlist_code.tar.gz masterlist_tools.tar.gz` แล้วเทียบค่าข้างบน (`masterlist_code.tar.gz` ไม่รวม `handoff/` และ `.vscode/` เพราะ `handoff/` มี checksum นี้อยู่ในตัว; `masterlist_tools.tar.gz` ไม่เปลี่ยนเพราะ 5 ไฟล์นั้นไม่ได้แก้; เอกสาร 04 เป็นเอกสารล้วน ไม่มีโค้ดเปลี่ยน จึงไม่ต้องสร้าง tarball ใหม่ ไฟล์ `SHA256SUMS` ในแพ็กรวม checksum ของเอกสาร 00–04 ด้วย)
 
 ## 6. อ่านต่อ
 
 - `01_RUNBOOK_REAL_DATA.md` — ขั้นตอนบนข้อมูลจริง (หัวหน้า)
 - `02_S0_IT_REQUEST.md` — คำถามถึง IT เรื่อง Power Automate
 - `03_PENDING_ACTIONS.md` — งานค้างแยกตามผู้รับผิดชอบ
+- `04_BUILD_FLOWS_GUIDE.md` — คู่มือสร้าง Flow จริงทีละขั้น 2 ตัว (ส่งไฟล์ / ส่งแถว Master-List) สำหรับ IT ยังไม่เคยลองกับ Flow จริง ส่วนปลายทาง Master-List รอ IT ตอบ
