@@ -1,6 +1,6 @@
 # งานค้างแยกตามผู้รับผิดชอบ
 
-ณ commit `2ce30d5` (ยังไม่ push)
+ณ commit `36aa060` (ยังไม่ push)
 
 ## งานของคนอื่น
 
@@ -11,6 +11,30 @@
 | **ผู้ดูแลเซิร์ฟเวอร์** | ขึ้นเซิร์ฟเวอร์ Linux (systemd, nginx+WebSocket, HTTPS, firewall, cron `scripts/backup.py`) และตัดสินใจเรื่องล็อกอิน/SSO | ยังไม่มีเซิร์ฟเวอร์ ตัวอย่างใน `DEPLOY.md` ยังไม่ได้ทดสอบ ตอนนี้ไม่มีล็อกอิน |
 | **เจ้าของงาน** | ยืนยันวันที่เริ่มนับ 14 วัน (`OVERDUE_RULE` ใน `config/constants.py`), ตัดสินใจเรื่อง Excel หลายแถวต่อไฟล์ และ OCR | ยังไม่มีคำตอบ |
 
+## ต้องให้เจ้าของงานตัดสินใจก่อนแก้
+
+| ข้อ | เรื่อง | ทำไมต้องตัดสินใจ |
+|---|---|---|
+| 9 | การรวมแถวใช้คีย์ Description+Company+Tel อย่างเดียว (`upload_processor.py`, `pr_reader.py`) | ซื้อซ้ำรายการเดิมเดือนถัดไปจะรวมเข้าแถวเก่า และ PR ที่เป็นภาพสแกน (ไม่มีคีย์) สร้างแถวใหม่ทุกครั้งที่อัปโหลดซ้ำ ต้องบอกว่าควรแยกด้วยเลข PR/วันที่หรือไม่ |
+| 25 | "ลบถาวร" ไม่ได้ลบข้อมูลออกจากหน้าว่างของไฟล์ฐานข้อมูล (`data/database.py` ไม่เปิด `secure_delete`) และชุดสำรองเก่า 14 ชุดยังมีข้อมูลแถวที่ลบ | ถ้า "ลบถาวร" ต้องเป็นหลักประกันความเป็นส่วนตัว ต้องเปิด `secure_delete` + VACUUM และกำหนดอายุชุดสำรอง |
+
+## งานต่อเนื่องจากข้อ 7 (ส่งล้มกลางชุด) — ทาง B
+
+รอบนี้ทำทาง A แล้ว (เก็บลิงก์ไฟล์ที่ส่งสำเร็จ + ข้อความบอกไฟล์ที่ค้าง) ทาง B ทำหลัง **IT ยืนยันว่า Flow กันสร้างซ้ำด้วย `requestId` ได้จริง**: เพิ่มคอลัมน์ "ไฟล์ที่ยังไม่ขึ้นออนไลน์" ต่อแถว (ต้อง migration), ปุ่ม "ส่งซ้ำเฉพาะที่ค้าง" และแถบเตือนค้างในตาราง
+
+## ทำทีหลัง (ไม่ได้แก้ในรอบนี้)
+
+| ข้อ | เรื่อง | ไฟล์ |
+|---|---|---|
+| 8 | ไฟล์ที่จับคู่ PR ได้และไม่มีคำของเอกสารอื่นถูกนับเป็นใบกำกับ; `is_tax_invoice` ค้นทั้งเนื้อหา | `upload_processor.py` |
+| 10 | อ่าน Excel/PDF ไม่จำกัดขนาด/จำนวนหน้า (ไฟล์ซิปบอมบ์/PDF หลายพันหน้าทำให้เซสชันค้าง) | `pr_reader.py`, `text_extractor.py` |
+| 13 | ตัวกัน "แก้ซ้ำ" ใช้ตำแหน่งแถวแทน id | `pages_ui/overview.py` |
+| 14 | ตรวจ "โฟลเดอร์ยังมีแถวอื่นใช้ไหม" หลัง commit ลบ (เกิดยาก) | `row_cleanup.py`, `file_removal.py` |
+| 16 | สำรองไม่รวม `data/local_uploads` (รุ่นเก่า) | `scripts/backup.py` |
+| 17 | ไฟล์ใน `static/local_uploads` เปิดได้โดยไม่ล็อกอิน (ต้องแก้ด้วย SSO/proxy) | `local_storage.py` |
+| 18, 21, 23, 24, 26–29 | เรื่องเล็ก (ความเสี่ยงต่ำ–กลาง) เช่น ชื่อไฟล์ไทยยาวเกิน 255 ไบต์, ยอดอุปกรณ์สองหน้าไม่เท่ากัน, escape ชื่อไฟล์ใน markdown | ดูรายงานรีวิวโครงการ |
+| 11 (ส่วน extractor) | ส่วนของ `text_extractor` ที่ข้ามไว้ในรอบ 2 | `text_extractor.py` |
+
 ## ขั้นตอนต่อไปของ Power Automate (หลัง IT ตอบ)
 
 - S4 สร้าง Flow จริง
@@ -20,7 +44,7 @@
 ## งานโค้ดที่เลื่อนไว้ (ไม่ทำรอบนี้)
 
 - S2b ส่ง Master-List ผ่าน Flow (`utils/masterlist_client.py`)
-- ลบฟังก์ชันที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file`
+- ลบฟังก์ชันที่ไม่มีใครเรียก: `ui_common.render_equipment_table`, `submit_pipeline.find_pr_folder_by_description`, `text_extractor.extract_fields_from_file` (ตรวจเพิ่ม: `ui_grid.render_readonly_grid` เรียกจาก `render_equipment_table` เท่านั้น จึงไม่มีใครใช้ถ้าลบตัวนั้น, ค่าคงที่ `overview.TABLE_COLUMN_HELP` ไม่มีใครอ้าง, `database.delete_transaction` ใช้ในเทสต์เท่านั้น)
 - ตัดสินใจเรื่องโค้ด Windows / Desktop export ใน `pages_ui/overview.py`, `utils/local_storage.py`
 - เพิ่ม ruff ใน `requirements-dev.txt`
 - แตก `pages_ui/overview.py` (ราว 3,300 บรรทัด)
