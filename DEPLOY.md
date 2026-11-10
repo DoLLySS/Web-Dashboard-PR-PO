@@ -87,7 +87,7 @@ server {
 4. **Firewall** เปิดพอร์ตให้เฉพาะเครือข่ายภายในบริษัท ถ้าใช้ proxy ให้แอปฟังที่ `127.0.0.1` ตามตัวอย่าง
 5. **สำรองข้อมูล** ตั้ง cron ให้รัน `scripts/backup.py` รันได้ขณะแอปทำงาน เก็บ 14 ชุดล่าสุด (ปรับด้วย `--keep`) ปลายทางควรอยู่คนละดิสก์กับข้อมูลจริง และห้ามอยู่ใน `static/` วิธีกู้คืนอยู่ในหัวข้อ 5
    ```
-   30 1 * * * cd /opt/masterlist && venv/bin/python scripts/backup.py --dest /mnt/backup/masterlist >> logs/backup.log 2>&1
+   30 1 * * * cd /opt/masterlist && venv/bin/python scripts/backup.py --db <ไฟล์ฐานข้อมูลจริง> --dest /mnt/backup/masterlist >> logs/backup.log 2>&1
    ```
 6. **ความลับ** ตั้ง `.env` และไฟล์ key (เช่น Google Service Account) เป็น `chmod 600` ให้บัญชีที่รันแอปอ่านได้คนเดียว
 

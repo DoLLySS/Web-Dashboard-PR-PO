@@ -2,7 +2,8 @@
 
 แอปส่งไฟล์ทีละไฟล์ไปที่ URL ของ Flow แล้ว Flow สร้างโฟลเดอร์ ปี/เดือน/วัน/ชื่อ ในไลบรารี และตอบลิงก์ไฟล์กลับ
 ข้อตกลงกับ Flow (ยังต้องยืนยันกับ Flow จริง ดู handoff/02_S0_IT_REQUEST.md):
-    คำขอ  POST JSON  {"folderParts": ["2026","Mar","19","ชื่อ"], "fileName": "...", "contentBase64": "...", "sha256": "..."}
+    คำขอ  POST JSON  {"requestId": "<uuid>", "folderParts": ["2026","Mar","19","ชื่อ"], "fileName": "...", "contentBase64": "...", "sha256": "..."}
+          requestId เท่ากันทุกครั้งที่ retry ของไฟล์เดียว (Flow ควรใช้กันสร้างไฟล์ซ้ำ) fileName ผ่าน sanitize_file_name แล้ว
           header X-Api-Key (ถ้าตั้ง POWER_AUTOMATE_API_KEY)
     คำตอบ 200 JSON   {"fileUrl": "https://...", "folderUrl": "https://..."}  หรือ  {"error": "ข้อความ"}
 
@@ -22,6 +23,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -40,7 +42,11 @@ URL_SETTING: str = "POWER_AUTOMATE_UPLOAD_URL"
 API_KEY_SETTING: str = "POWER_AUTOMATE_API_KEY"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})  # อนุญาต http เฉพาะเครื่องตัวเอง (ทดสอบ)
 MAX_RESPONSE_BYTES: int = 64 * 1024
-RETRY_STATUS_CODES: frozenset[int] = frozenset({429, 502, 503, 504})
+# retry เฉพาะกรณีที่ Flow ยังไม่ได้เริ่มทำงานแน่ ๆ (ถูกจำกัดอัตรา/ปิดชั่วคราว) ส่วน 502/504 อาจเกิดขณะ Flow ทำงานต่อจนสร้างไฟล์เสร็จ จึงไม่ retry
+RETRY_STATUS_CODES: frozenset[int] = frozenset({429, 503})
+FILE_MAYBE_CREATED_HINT: str = "ไฟล์อาจถูกสร้างบน SharePoint ไปแล้ว ตรวจในไลบรารีก่อนส่งซ้ำ (ไฟล์เก็บในเครื่องแล้ว)"
+FALLBACK_FILE_NAME: str = "document"
+UNSAFE_FILE_NAME_CHARS: re.Pattern[str] = re.compile(r'[#%:*?"<>|/\\\x00-\x1f\x7f]')
 MAX_RETRIES: int = 2
 RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 3.0)
 MAX_RETRY_AFTER_SECONDS: float = 10.0
@@ -122,6 +128,15 @@ def _parse_json_object(body: bytes) -> Optional[dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def sanitize_file_name(name: str) -> str:
+    """ชื่อไฟล์ที่ SharePoint รับได้: แทนอักขระต้องห้าม (# % : * ? " < > | / \\ และอักขระควบคุม) ด้วย _ ตัดจุด/ช่องว่างท้ายชื่อ
+
+    ภาษาไทยและช่องว่างกลางชื่อคงเดิม ถ้าไม่เหลืออะไรเลยใช้ "document"
+    """
+    cleaned = UNSAFE_FILE_NAME_CHARS.sub("_", name).strip().rstrip(". ")
+    return cleaned or FALLBACK_FILE_NAME
+
+
 def _retry_delay(attempt: int, retry_after: Optional[str]) -> float:
     delay = RETRY_DELAYS_SECONDS[min(attempt, len(RETRY_DELAYS_SECONDS) - 1)]
     if retry_after and retry_after.strip().isdigit():
@@ -130,9 +145,9 @@ def _retry_delay(attempt: int, retry_after: Optional[str]) -> float:
 
 
 def _send(request: urllib.request.Request, host: str, timeout: int) -> tuple[int, bytes]:
-    """ส่งคำขอ (retry เฉพาะ 429/502/503/504) คืน (สถานะ, เนื้อหาคำตอบ)
+    """ส่งคำขอ (retry เฉพาะ 429/503) คืน (สถานะ, เนื้อหาคำตอบ)
 
-    ไม่ retry เมื่อรอนานเกินกำหนด เพราะ Flow อาจสร้างไฟล์ไปแล้ว การส่งซ้ำจะทำให้ได้ไฟล์ซ้ำ
+    ไม่ retry เมื่อรอนานเกินกำหนด / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว การส่งซ้ำจะทำให้ได้ไฟล์ซ้ำ
     """
     handlers: list[Any] = [_NoRedirect()]
     if host in LOOPBACK_HOSTS:
@@ -166,7 +181,7 @@ def _send(request: urllib.request.Request, host: str, timeout: int) -> tuple[int
             raise PowerAutomateError("เชื่อมต่อ Flow ไม่ได้: ตรวจอินเทอร์เน็ต/ไฟร์วอลล์ และค่า POWER_AUTOMATE_UPLOAD_URL") from error
         except OSError as error:
             logger.warning("ติดต่อ Power Automate ไม่สำเร็จ (host=%s): %s", host, type(error).__name__)
-            raise PowerAutomateError("ติดต่อ Flow ไม่สำเร็จ: การเชื่อมต่อหลุดระหว่างส่ง ลองใหม่อีกครั้ง") from error
+            raise PowerAutomateError(f"ติดต่อ Flow ไม่สำเร็จ: การเชื่อมต่อหลุดระหว่างส่ง {FILE_MAYBE_CREATED_HINT}") from error
         if status in RETRY_STATUS_CODES and attempt < MAX_RETRIES:
             time.sleep(_retry_delay(attempt, retry_after))
             continue
@@ -200,8 +215,9 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
     timeout = get_env_int("POWER_AUTOMATE_TIMEOUT_SECONDS", DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS)
 
     payload = {
+        "requestId": str(uuid.uuid4()),  # คงเดิมทุกครั้งที่ retry ของไฟล์นี้ ให้ Flow ตรวจซ้ำและไม่สร้างไฟล์ซ้ำ
         "folderParts": list(folder_parts),
-        "fileName": file_name,
+        "fileName": sanitize_file_name(file_name),
         "contentBase64": base64.b64encode(data).decode("ascii"),
         "sha256": hashlib.sha256(data).hexdigest(),
     }
@@ -227,13 +243,14 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
     if status >= 400:
         logger.warning("Flow ตอบสถานะ %s (host=%s)", status, host)
         detail = f": {flow_message}" if flow_message else ""
-        raise PowerAutomateError(f"Flow ตอบกลับข้อผิดพลาด (HTTP {status}){detail}")
+        hint = f" {FILE_MAYBE_CREATED_HINT}" if status in (502, 504) else ""
+        raise PowerAutomateError(f"Flow ตอบกลับข้อผิดพลาด (HTTP {status}){detail}{hint}")
     if flow_message:
         raise PowerAutomateError(f"Flow แจ้งว่าส่งไฟล์ไม่สำเร็จ: {flow_message}")
     if reply is None or not _is_http_url(reply.get("fileUrl")):
         raise PowerAutomateError(
             f"Flow ตอบกลับรูปแบบไม่ถูกต้อง (HTTP {status}): ต้องตอบ JSON ที่มี fileUrl เป็นลิงก์ http(s) "
-            "ตรวจ Response action ของ Flow"
+            f"ตรวจ Response action ของ Flow; {FILE_MAYBE_CREATED_HINT}"
         )
     folder_url = reply.get("folderUrl")
     if folder_url is not None and not _is_http_url(folder_url):

@@ -7,6 +7,8 @@ import base64
 import hashlib
 import json
 import logging
+import re
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,7 +30,7 @@ from utils.storage_backend import (
     upload_files_and_folder_url,
     upload_files_to_storage,
 )
-from utils.submit_pipeline import RecordFields, submit_record
+from utils.submit_pipeline import RecordFields, attach_files_to_record, find_pr_folder_candidates, submit_record
 
 SECRET_SIGNATURE = "SIG-SECRET-9f3a"
 API_KEY = "KEY-SECRET-77c1"
@@ -43,6 +45,7 @@ class Reply:
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
+    drop: bool = False  # ตัดการเชื่อมต่อทันทีหลังรับคำขอ (จำลองการเชื่อมต่อหลุดระหว่างส่ง)
 
 
 @dataclass
@@ -73,6 +76,10 @@ class FakeFlow:
                 reply = outer.responder(recorded) if outer.responder else outer.replies[index]
                 if reply.delay:
                     time.sleep(reply.delay)
+                if reply.drop:
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
                 try:
                     self.send_response(reply.status)
                     for key, value in reply.headers.items():
@@ -281,6 +288,75 @@ def test_gives_up_after_the_retry_limit(flow: FakeFlow) -> None:
     assert len(flow.requests) == flow_api.MAX_RETRIES + 1
 
 
+@pytest.mark.parametrize("status", [502, 504])
+def test_gateway_errors_are_not_retried_because_the_file_may_exist(flow: FakeFlow, status: int) -> None:
+    """502/504 อาจเกิดขณะ Flow ยังทำงานต่อจนสร้างไฟล์เสร็จ การส่งซ้ำจึงทำให้ได้ไฟล์ซ้ำ"""
+    flow.replies = [Reply(status=status, body=b"{}")]
+
+    with pytest.raises(PowerAutomateError, match=f"HTTP {status}"):
+        upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    assert len(flow.requests) == 1 and flow.sleeps == []  # type: ignore[attr-defined]
+
+
+def test_only_429_and_503_are_retried() -> None:
+    assert flow_api.RETRY_STATUS_CODES == frozenset({429, 503})
+
+
+def test_request_id_stays_the_same_across_retries_and_differs_between_uploads(flow: FakeFlow) -> None:
+    ok = Reply(body=json.dumps({"fileUrl": FILE_URL}).encode())
+    flow.replies = [Reply(status=503, body=b"{}"), ok, ok]
+
+    upload_file_to_flow("a.pdf", b"x", FOLDER)
+    upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    ids = [request.json()["requestId"] for request in flow.requests]
+    assert len(ids) == 3 and ids[0] == ids[1] != ids[2]
+    assert all(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", value) for value in ids)
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "expected"),
+    [
+        ("ใบกำกับภาษี 01.pdf", "ใบกำกับภาษี 01.pdf"),
+        ("a.pdf", "a.pdf"),
+        ('PR#1 50%: "x"*?<>|.pdf', "PR_1 50__ _x______.pdf"),
+        ("../../etc/passwd", ".._.._etc_passwd"),
+        ("a\\b/c.pdf", "a_b_c.pdf"),
+        ("report.pdf. ", "report.pdf"),
+        ("tab\there\n.pdf", "tab_here_.pdf"),
+        ("...", "document"),
+        ("", "document"),
+    ],
+)
+def test_file_name_sent_to_the_flow_is_safe_for_sharepoint(flow: FakeFlow, raw_name: str, expected: str) -> None:
+    upload_file_to_flow(raw_name, b"x", FOLDER)
+
+    assert flow.requests[0].json()["fileName"] == expected
+
+
+def test_connection_dropped_while_sending_warns_the_file_may_exist(flow: FakeFlow) -> None:
+    flow.replies = [Reply(drop=True)]
+
+    with pytest.raises(PowerAutomateError) as error:
+        upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    assert "ตรวจในไลบรารีก่อนส่งซ้ำ" in str(error.value)
+    assert_no_secret(str(error.value))
+    assert len(flow.requests) == 1  # ไม่ retry
+
+
+@pytest.mark.parametrize("reply", [Reply(status=202, body=b""), Reply(body=b"<html>ok</html>"), Reply(body=b"{}")])
+def test_success_status_without_file_url_warns_the_file_may_exist(flow: FakeFlow, reply: Reply) -> None:
+    flow.replies = [reply]
+
+    with pytest.raises(PowerAutomateError) as error:
+        upload_file_to_flow("a.pdf", b"x", FOLDER)
+
+    assert "รูปแบบไม่ถูกต้อง" in str(error.value) and "ตรวจในไลบรารีก่อนส่งซ้ำ" in str(error.value)
+    assert_no_secret(str(error.value))
+
+
 def test_timeout_is_not_retried_because_the_file_may_exist(flow: FakeFlow, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POWER_AUTOMATE_TIMEOUT_SECONDS", "1")
     flow.replies = [Reply(delay=2.5, body=b"{}")]
@@ -434,6 +510,20 @@ def test_saved_row_links_to_the_folder_returned_by_the_flow(isolated_storage: Pa
     assert result.storage_links[0] == FOLDER_URL
     assert len(flow.requests) == 1 and flow.requests[0].json()["folderParts"][:3] == ["2026", "Mar", "19"]
     assert list(isolated_storage.rglob("*.pdf"))  # ไฟล์ในเครื่องยังอยู่
+
+
+def test_flow_receives_the_stored_file_name_when_a_same_named_file_has_other_content(isolated_storage: Path, flow: FakeFlow) -> None:
+    """ชื่อซ้ำเนื้อต่าง: ไฟล์ในเครื่องเป็น _1 ไฟล์ออนไลน์ต้องใช้ชื่อเดียวกัน ไม่เช่นนั้นทับไฟล์เดิมบน SharePoint"""
+    submit_record(make_fields(), [("20260319_PR_Addin_NB.pdf", b"pr-content")])
+    match = find_pr_folder_candidates()[0]
+    attach_files_to_record(match, [("quote.pdf", b"first")])
+
+    result = attach_files_to_record(find_pr_folder_candidates()[0], [("quote.pdf", b"second")])
+
+    assert result.attached_file_names == ["quote_1.pdf"]
+    sent_names = [request.json()["fileName"] for request in flow.requests]
+    assert sent_names == ["20260319_PR_Addin_NB.pdf", "quote.pdf", "quote_1.pdf"]
+    assert sorted(sent_names) == sorted(path.name for path in isolated_storage.rglob("*.pdf"))
 
 
 def test_flow_failure_keeps_the_row_and_local_file_and_hides_the_url(isolated_storage: Path, flow: FakeFlow, logs: LogCollector) -> None:

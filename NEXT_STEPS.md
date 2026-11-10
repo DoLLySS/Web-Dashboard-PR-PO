@@ -23,11 +23,11 @@
 6. ต้องส่งข้อมูลแถวเข้า Master-List ด้วยหรือไม่ และเมื่อลบแถวต้องลบไฟล์ออนไลน์ด้วยหรือไม่
 
 **S1 — กำหนดรูปแบบการส่ง**
-- คำขอต่อ 1 ไฟล์: `{folderParts[], fileName, contentBase64, sha256}`
+- คำขอต่อ 1 ไฟล์: `{requestId, folderParts[], fileName, contentBase64, sha256}` (`requestId` เป็น UUID ที่เท่ากันทุกครั้งที่ retry ให้ Flow กันสร้างไฟล์ซ้ำ; `fileName` ผ่านการแทนอักขระต้องห้ามของ SharePoint แล้ว)
 - คำตอบ: `{fileUrl, folderUrl}` หรือ `{error}`
 - URL ของ Flow มีลายเซ็นลับในตัว ถือเป็นรหัสผ่าน เก็บใน `.env` (`POWER_AUTOMATE_UPLOAD_URL`) ห้ามลง log หรือ Git และเพิ่ม header `X-Api-Key` (`POWER_AUTOMATE_API_KEY`) ให้ Flow ตรวจซ้ำ
 
-**S2 — เขียนโค้ด: เสร็จ** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` (ส่งทีละไฟล์, ลิงก์โฟลเดอร์มาจากคำตอบของ Flow, ไม่เปิดเผย URL/คีย์, ไม่ตาม redirect, retry เฉพาะ 429/502/503/504, ไม่ retry เมื่อ timeout) ยังไม่ได้ทำ: ส่ง Master-List ผ่าน `utils/masterlist_client.py` (S2b)
+**S2 — เขียนโค้ด: เสร็จ** `utils/power_automate_api.py` และ backend `powerautomate` ใน `utils/storage_backend.py` (ส่งทีละไฟล์, ลิงก์โฟลเดอร์มาจากคำตอบของ Flow, ไม่เปิดเผย URL/คีย์, ไม่ตาม redirect, retry เฉพาะ 429/503, ไม่ retry เมื่อ timeout / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว) ยังไม่ได้ทำ: ส่ง Master-List ผ่าน `utils/masterlist_client.py` (S2b)
 
 **S3 — เทสต์กับเซิร์ฟเวอร์ปลอม: เสร็จ** `tests/test_power_automate.py` ครอบคลุมสำเร็จ, 4xx/5xx, retry, timeout, JSON เพี้ยน, redirect, URL ไม่ปลอดภัย, ความลับไม่โผล่ใน log, ส่งไม่สำเร็จแล้วแถวและไฟล์ในเครื่องยังอยู่
 

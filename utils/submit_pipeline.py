@@ -351,7 +351,7 @@ def _store_files(
             local_path = save_document_locally(file_bytes, file_name, folder_parts)
             if local_path not in (known_paths or []) and local_path not in local_paths:
                 local_paths.append(local_path)
-                new_files.append((file_name, file_bytes))
+                new_files.append((Path(local_path).name, file_bytes))  # ชื่อที่เก็บจริง (อาจเป็น _1) ไม่ใช่ชื่อที่ผู้ใช้เลือก
     except LocalStorageError as error:
         result.error = str(error)
         return None

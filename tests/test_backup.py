@@ -284,3 +284,20 @@ def test_tool_modules_import_only_the_standard_library(module: str) -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert imported <= set(sys.stdlib_module_names) | allowed_local, imported - set(sys.stdlib_module_names)
+
+
+def test_main_prints_the_database_it_uses(source: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """ผู้ใช้ต้องเห็นว่าสำรองไฟล์ฐานข้อมูลไหน จะได้จับได้ทันทีถ้าชี้ผิดไฟล์"""
+    db_path, upload_directory = source
+
+    assert main(["--db", str(db_path), "--uploads", str(upload_directory), "--dest", str(tmp_path / "out")]) == 0
+
+    assert f"ฐานข้อมูล: {db_path}" in capsys.readouterr().out
+
+
+def test_deploy_cron_example_names_the_database_explicitly() -> None:
+    """สคริปต์ไม่อ่าน .env จึงต้องระบุ --db ในตัวอย่าง cron ไม่เช่นนั้นจะสำรองไฟล์ data/masterlist.db ที่อาจไม่ใช่ไฟล์จริง"""
+    lines = [line for line in (PROJECT_ROOT / "DEPLOY.md").read_text(encoding="utf-8").splitlines() if "scripts/backup.py" in line and "cd " in line]
+
+    assert lines, "ไม่พบตัวอย่าง cron ใน DEPLOY.md"
+    assert all("--db" in line for line in lines)
