@@ -37,6 +37,7 @@ DEFAULT_SHAREPOINT_FOLDER_PATH: str = "Shared Documents/PR-PO"
 # Power Automate: รอ Flow ตอบกี่วินาที และไฟล์ใหญ่สุด (MB) ที่ส่งผ่าน Flow (ปรับตามเพดานของ Flow เมื่อ IT ตอบ)
 DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS: int = 120
 DEFAULT_POWER_AUTOMATE_MAX_FILE_MB: int = 50
+DEFAULT_MASTERLIST_TIMEOUT_SECONDS: int = 30  # ส่งแค่ข้อความ 13 ฟิลด์ ไม่ต้องรอนานเท่าส่งไฟล์
 
 # ใช้ชื่อขึ้นต้นเดียวกับ logger ของโปรเจค (ดู config/logging_setup.py) แต่ไม่ import ตรง ๆ เพื่อกัน import วนกัน
 _logger = logging.getLogger("masterlist.config.settings")

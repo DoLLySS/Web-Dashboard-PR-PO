@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -67,6 +67,38 @@ class FlowUpload:
     folder_url: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class FlowTarget:
+    """Flow ปลายทาง 1 ตัวและข้อความที่เกี่ยวกับสิ่งที่ส่ง (ไฟล์ขึ้น SharePoint / แถวเข้า Master-List) ใช้แกนส่ง HTTP เดียวกัน"""
+
+    url_setting: str
+    key_setting: str
+    timeout_setting: str
+    default_timeout: int
+    maybe_created_hint: str  # ต่อท้ายข้อความเมื่อไม่รู้ว่า Flow สร้างของไปแล้วหรือยัง (timeout / 502 / 504 / การเชื่อมต่อหลุด)
+    what: str  # สิ่งที่ส่ง ใช้ในข้อความ เช่น "ไฟล์" / "รายการ"
+    kept_hint: str  # ข้อความในวงเล็บเมื่อส่งไม่สำเร็จ บอกว่าข้อมูลยังอยู่ในเครื่อง
+
+
+FILE_TARGET: FlowTarget = FlowTarget(
+    url_setting=URL_SETTING,
+    key_setting=API_KEY_SETTING,
+    timeout_setting="POWER_AUTOMATE_TIMEOUT_SECONDS",
+    default_timeout=DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS,
+    maybe_created_hint=FILE_MAYBE_CREATED_HINT,
+    what="ไฟล์",
+    kept_hint="ไฟล์เก็บในเครื่องแล้ว",
+)
+
+
+@dataclass(frozen=True)
+class FlowResponse:
+    """คำตอบที่ผ่านการตรวจร่วมแล้ว (สถานะ 2xx และไม่มี error) body เป็น None ถ้าไม่ใช่ JSON object"""
+
+    status: int
+    body: Optional[dict[str, Any]]
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """ไม่ตาม redirect: URL ของ Flow มีลายเซ็นลับ ห้ามส่งต่อไปที่อื่น"""
 
@@ -79,15 +111,15 @@ def is_power_automate_configured() -> bool:
     return bool(get_env_text(URL_SETTING))
 
 
-def _load_url() -> str:
+def _load_url(target: FlowTarget = FILE_TARGET) -> str:
     """อ่าน URL ของ Flow และตรวจรูปแบบ: ต้องเป็น https (ยกเว้นเครื่องตัวเองเพื่อทดสอบ)
 
     Raises:
         PowerAutomateError: ไม่ได้ตั้งค่า หรือรูปแบบไม่ถูกต้อง (ไม่แสดงค่า URL ในข้อความ)
     """
-    url = get_env_text(URL_SETTING)
+    url = get_env_text(target.url_setting)
     if not url:
-        raise PowerAutomateError(f"ยังไม่ได้ตั้งค่า Power Automate: ไม่พบ {URL_SETTING} ในไฟล์ .env แล้วรีสตาร์ทแอป")
+        raise PowerAutomateError(f"ยังไม่ได้ตั้งค่า Power Automate: ไม่พบ {target.url_setting} ในไฟล์ .env แล้วรีสตาร์ทแอป")
     try:
         parsed = urlparse(url)
         host = parsed.hostname
@@ -95,7 +127,7 @@ def _load_url() -> str:
         host = None
         parsed = urlparse("")
     if not host or not (parsed.scheme == "https" or (parsed.scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise PowerAutomateError(f"{URL_SETTING} ไม่ถูกต้อง: ต้องขึ้นต้นด้วย https:// และมีชื่อเซิร์ฟเวอร์ ตรวจค่าในไฟล์ .env")
+        raise PowerAutomateError(f"{target.url_setting} ไม่ถูกต้อง: ต้องขึ้นต้นด้วย https:// และมีชื่อเซิร์ฟเวอร์ ตรวจค่าในไฟล์ .env")
     return url
 
 
@@ -145,7 +177,7 @@ def _retry_delay(attempt: int, retry_after: Optional[str]) -> float:
     return min(delay, MAX_RETRY_AFTER_SECONDS)
 
 
-def _send(request: urllib.request.Request, host: str, timeout: int) -> tuple[int, bytes]:
+def _send(request: urllib.request.Request, host: str, timeout: int, target: FlowTarget = FILE_TARGET) -> tuple[int, bytes]:
     """ส่งคำขอ (retry เฉพาะ 429/503) คืน (สถานะ, เนื้อหาคำตอบ)
 
     ไม่ retry เมื่อรอนานเกินกำหนด / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว การส่งซ้ำจะทำให้ได้ไฟล์ซ้ำ
@@ -170,25 +202,90 @@ def _send(request: urllib.request.Request, host: str, timeout: int) -> tuple[int
                 error.close()
         except TimeoutError as error:
             raise PowerAutomateError(
-                f"Flow ตอบช้าเกิน {timeout} วินาที จึงหยุดรอ ไฟล์อาจถูกสร้างบน SharePoint ไปแล้ว "
-                "ตรวจในไลบรารีก่อนส่งซ้ำ (ไฟล์เก็บในเครื่องแล้ว)"
+                f"Flow ตอบช้าเกิน {timeout} วินาที จึงหยุดรอ {target.maybe_created_hint}"
             ) from error
         except urllib.error.URLError as error:
             if isinstance(error.reason, TimeoutError):
                 raise PowerAutomateError(
-                    f"เชื่อมต่อ Flow ไม่ทันภายใน {timeout} วินาที ตรวจอินเทอร์เน็ตแล้วลองใหม่ (ไฟล์เก็บในเครื่องแล้ว)"
+                    f"เชื่อมต่อ Flow ไม่ทันภายใน {timeout} วินาที ตรวจอินเทอร์เน็ตแล้วลองใหม่ ({target.kept_hint})"
                 ) from error
             logger.warning("เชื่อมต่อ Power Automate ไม่ได้ (host=%s): %s", host, type(error.reason).__name__)
-            raise PowerAutomateError("เชื่อมต่อ Flow ไม่ได้: ตรวจอินเทอร์เน็ต/ไฟร์วอลล์ และค่า POWER_AUTOMATE_UPLOAD_URL") from error
+            raise PowerAutomateError(f"เชื่อมต่อ Flow ไม่ได้: ตรวจอินเทอร์เน็ต/ไฟร์วอลล์ และค่า {target.url_setting}") from error
         except (OSError, http.client.HTTPException) as error:
             # HTTPException (เช่น คำตอบที่ไม่ใช่ HTTP) ไม่ใช่ OSError แต่เกิดหลังส่งคำขอไปแล้วเช่นกัน
             logger.warning("ติดต่อ Power Automate ไม่สำเร็จ (host=%s): %s", host, type(error).__name__)
-            raise PowerAutomateError(f"ติดต่อ Flow ไม่สำเร็จ: การเชื่อมต่อหลุดระหว่างส่ง {FILE_MAYBE_CREATED_HINT}") from error
+            raise PowerAutomateError(f"ติดต่อ Flow ไม่สำเร็จ: การเชื่อมต่อหลุดระหว่างส่ง {target.maybe_created_hint}") from error
         if status in RETRY_STATUS_CODES and attempt < MAX_RETRIES:
             time.sleep(_retry_delay(attempt, retry_after))
             continue
         return status, body
     raise AssertionError("unreachable")  # pragma: no cover - ลูปด้านบนคืนค่าหรือ raise เสมอ
+
+
+@dataclass(frozen=True)
+class PreparedCall:
+    """ค่าที่อ่านและตรวจแล้วก่อนส่ง (URL / คีย์ / timeout) ห้ามพิมพ์หรือ log ทั้งก้อน เพราะมีความลับ"""
+
+    target: FlowTarget
+    url: str = field(repr=False)
+    api_key: str = field(repr=False)
+    host: str
+    timeout: int
+
+
+def prepare_flow_call(target: FlowTarget) -> PreparedCall:
+    """อ่านค่าตั้ง URL / คีย์ / timeout ของ Flow แล้วตรวจก่อนสร้างคำขอ
+
+    Raises:
+        PowerAutomateError: ไม่ได้ตั้งค่า / URL ไม่ปลอดภัย / คีย์มีอักขระที่ใช้ไม่ได้ (ไม่แสดงค่าลับในข้อความ)
+    """
+    url = _load_url(target)
+    api_key = get_env_text(target.key_setting)
+    if api_key and not all(32 <= ord(char) < 127 for char in api_key):
+        # ขึ้นบรรทัดใหม่/อักขระนอก ASCII ใส่ใน header ไม่ได้ (ถ้าปล่อยไป urllib จะ error แบบอ่านไม่รู้เรื่องตอนส่ง) ไม่แสดงค่าคีย์
+        raise PowerAutomateError(f"{target.key_setting} มีอักขระที่ใช้ไม่ได้ (ขึ้นบรรทัดใหม่ แท็บ หรือตัวอักษรนอก ASCII) ตรวจค่าในไฟล์ .env")
+    timeout = get_env_int(target.timeout_setting, target.default_timeout)
+    return PreparedCall(target=target, url=url, api_key=api_key, host=urlparse(url).hostname or "", timeout=timeout)
+
+
+def post_json_to_flow(prepared: PreparedCall, payload: dict[str, Any]) -> FlowResponse:
+    """POST JSON ไปที่ Flow แล้วตรวจคำตอบส่วนที่ใช้ร่วมกัน (สถานะ / ขนาด / error ที่ Flow แจ้ง)
+
+    retry เฉพาะ 429/503 (payload เดิมจึงมี requestId เดิม) คืนเฉพาะคำตอบ 2xx ที่ Flow ไม่ได้แจ้ง error
+    ผู้เรียกตรวจรูปแบบเนื้อหาเอง (fileUrl / ok)
+
+    Raises:
+        PowerAutomateError: ส่งไม่สำเร็จหรือ Flow ปฏิเสธ (ข้อความไทย ไม่มี URL / คีย์)
+    """
+    target = prepared.target
+    secrets = (prepared.url, prepared.api_key)
+    headers = {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"}
+    if prepared.api_key:
+        headers["X-Api-Key"] = prepared.api_key
+    request = urllib.request.Request(
+        prepared.url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST"
+    )
+
+    status, body = _send(request, prepared.host, prepared.timeout, target)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise PowerAutomateError("Flow ตอบกลับข้อมูลใหญ่ผิดปกติ จึงไม่รับ ตรวจ Response ของ Flow")
+    reply = _parse_json_object(body)
+    flow_message = _clean_message((reply or {}).get("error"), secrets)
+
+    if 300 <= status < 400:
+        raise PowerAutomateError("Flow ตอบเปลี่ยนเส้นทาง (redirect) ซึ่งไม่รองรับ ตรวจ URL ของ Flow")
+    if status in (401, 403):
+        raise PowerAutomateError(f"Flow ปฏิเสธการเรียก: ตรวจ {target.key_setting} และสิทธิ์เรียกใช้ Flow")
+    if status == 404:
+        raise PowerAutomateError("ไม่พบ Flow: URL อาจเก่าหรือ Flow ถูกปิด/ลบ ตรวจกับผู้ดูแล Flow")
+    if status >= 400:
+        logger.warning("Flow ตอบสถานะ %s (host=%s)", status, prepared.host)
+        detail = f": {flow_message}" if flow_message else ""
+        hint = f" {target.maybe_created_hint}" if status in (502, 504) else ""
+        raise PowerAutomateError(f"Flow ตอบกลับข้อผิดพลาด (HTTP {status}){detail}{hint}")
+    if flow_message:
+        raise PowerAutomateError(f"Flow แจ้งว่าส่ง{target.what}ไม่สำเร็จ: {flow_message}")
+    return FlowResponse(status=status, body=reply)
 
 
 def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) -> FlowUpload:
@@ -202,13 +299,7 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
     Raises:
         PowerAutomateError: ตั้งค่าไม่ถูกต้อง / ไฟล์ว่างหรือใหญ่เกิน / Flow ปฏิเสธ ล้มเหลว หรือตอบรูปแบบไม่ถูกต้อง
     """
-    url = _load_url()
-    api_key = get_env_text(API_KEY_SETTING)
-    secrets = (url, api_key)
-    host = urlparse(url).hostname or ""
-    if api_key and not all(32 <= ord(char) < 127 for char in api_key):
-        # ขึ้นบรรทัดใหม่/อักขระนอก ASCII ใส่ใน header ไม่ได้ (ถ้าปล่อยไป urllib จะ error แบบอ่านไม่รู้เรื่องตอนส่ง) ไม่แสดงค่าคีย์
-        raise PowerAutomateError("POWER_AUTOMATE_API_KEY มีอักขระที่ใช้ไม่ได้ (ขึ้นบรรทัดใหม่ แท็บ หรือตัวอักษรนอก ASCII) ตรวจค่าในไฟล์ .env")
+    prepared = prepare_flow_call(FILE_TARGET)
     if not data:
         raise PowerAutomateError(f"ไฟล์ '{file_name}' ว่างเปล่า (0 ไบต์): เลือกไฟล์ใหม่แล้วลองอีกครั้ง")
     max_mb = get_env_int("POWER_AUTOMATE_MAX_FILE_MB", DEFAULT_POWER_AUTOMATE_MAX_FILE_MB)
@@ -217,7 +308,6 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
             f"ไฟล์ '{file_name}' ใหญ่เกิน {max_mb} MB ส่งผ่าน Power Automate ไม่ได้ (เก็บในเครื่องแล้ว) "
             "ถ้า Flow รับไฟล์ใหญ่ได้ ปรับ POWER_AUTOMATE_MAX_FILE_MB ใน .env"
         )
-    timeout = get_env_int("POWER_AUTOMATE_TIMEOUT_SECONDS", DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS)
 
     payload = {
         "requestId": str(uuid.uuid4()),  # คงเดิมทุกครั้งที่ retry ของไฟล์นี้ ให้ Flow ตรวจซ้ำและไม่สร้างไฟล์ซ้ำ
@@ -226,40 +316,16 @@ def upload_file_to_flow(file_name: str, data: bytes, folder_parts: list[str]) ->
         "contentBase64": base64.b64encode(data).decode("ascii"),
         "sha256": hashlib.sha256(data).hexdigest(),
     }
-    headers = {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"}
-    if api_key:
-        headers["X-Api-Key"] = api_key
-    request = urllib.request.Request(
-        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST"
-    )
-
-    status, body = _send(request, host, timeout)
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise PowerAutomateError("Flow ตอบกลับข้อมูลใหญ่ผิดปกติ จึงไม่รับ ตรวจ Response ของ Flow")
-    reply = _parse_json_object(body)
-    flow_message = _clean_message((reply or {}).get("error"), secrets)
-
-    if 300 <= status < 400:
-        raise PowerAutomateError("Flow ตอบเปลี่ยนเส้นทาง (redirect) ซึ่งไม่รองรับ ตรวจ URL ของ Flow")
-    if status in (401, 403):
-        raise PowerAutomateError("Flow ปฏิเสธการเรียก: ตรวจ POWER_AUTOMATE_API_KEY และสิทธิ์เรียกใช้ Flow")
-    if status == 404:
-        raise PowerAutomateError("ไม่พบ Flow: URL อาจเก่าหรือ Flow ถูกปิด/ลบ ตรวจกับผู้ดูแล Flow")
-    if status >= 400:
-        logger.warning("Flow ตอบสถานะ %s (host=%s)", status, host)
-        detail = f": {flow_message}" if flow_message else ""
-        hint = f" {FILE_MAYBE_CREATED_HINT}" if status in (502, 504) else ""
-        raise PowerAutomateError(f"Flow ตอบกลับข้อผิดพลาด (HTTP {status}){detail}{hint}")
-    if flow_message:
-        raise PowerAutomateError(f"Flow แจ้งว่าส่งไฟล์ไม่สำเร็จ: {flow_message}")
+    response = post_json_to_flow(prepared, payload)
+    reply = response.body
     if reply is None or not _is_http_url(reply.get("fileUrl")):
         raise PowerAutomateError(
-            f"Flow ตอบกลับรูปแบบไม่ถูกต้อง (HTTP {status}): ต้องตอบ JSON ที่มี fileUrl เป็นลิงก์ http(s) "
+            f"Flow ตอบกลับรูปแบบไม่ถูกต้อง (HTTP {response.status}): ต้องตอบ JSON ที่มี fileUrl เป็นลิงก์ http(s) "
             f"ตรวจ Response action ของ Flow; {FILE_MAYBE_CREATED_HINT}"
         )
     folder_url = reply.get("folderUrl")
     if folder_url is not None and not _is_http_url(folder_url):
-        logger.warning("Flow ตอบ folderUrl ที่ไม่ใช่ลิงก์ http(s) จึงไม่ใช้ (host=%s)", host)
+        logger.warning("Flow ตอบ folderUrl ที่ไม่ใช่ลิงก์ http(s) จึงไม่ใช้ (host=%s)", prepared.host)
         folder_url = None
-    logger.info("ส่งไฟล์ '%s' ผ่าน Power Automate สำเร็จ (host=%s)", file_name, host)
+    logger.info("ส่งไฟล์ '%s' ผ่าน Power Automate สำเร็จ (host=%s)", file_name, prepared.host)
     return FlowUpload(file_url=reply["fileUrl"].strip(), folder_url=folder_url.strip() if folder_url else None)
