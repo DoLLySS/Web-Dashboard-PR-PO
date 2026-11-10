@@ -515,6 +515,32 @@ def test_failure_on_second_file_names_it_and_stops(flow: FakeFlow) -> None:
     assert_no_secret(str(error.value))
 
 
+def test_failure_mid_batch_keeps_links_of_files_already_sent_and_lists_the_rest(flow: FakeFlow) -> None:
+    ok = lambda name: Reply(body=json.dumps({"fileUrl": f"https://x.test/{name}", "folderUrl": FOLDER_URL}).encode())  # noqa: E731
+    flow.replies = [ok("a.pdf"), Reply(status=500, body=b"{}"), ok("c.pdf")]
+
+    with pytest.raises(StorageError) as error:
+        upload_files_and_folder_url([("a.pdf", b"1"), ("b.pdf", b"2"), ("c.pdf", b"3")], FOLDER)
+
+    assert error.value.uploaded_links == ["https://x.test/a.pdf"]
+    assert error.value.folder_url == FOLDER_URL
+    message = str(error.value)
+    assert "ส่งแล้ว: a.pdf" in message and "ยังไม่ได้ส่ง: b.pdf, c.pdf" in message
+    assert "ตรวจใน SharePoint" in message
+    assert len(flow.requests) == 2  # ไฟล์ที่ 3 ไม่ถูกส่ง
+    assert_no_secret(message)
+
+
+def test_failure_on_first_file_has_no_links_and_no_sent_list(flow: FakeFlow) -> None:
+    flow.replies = [Reply(status=500, body=b"{}")]
+
+    with pytest.raises(StorageError) as error:
+        upload_files_and_folder_url([("a.pdf", b"1"), ("b.pdf", b"2")], FOLDER)
+
+    assert error.value.uploaded_links == [] and error.value.folder_url is None
+    assert "ส่งแล้ว:" not in str(error.value) and "ยังไม่ได้ส่ง: a.pdf, b.pdf" in str(error.value)
+
+
 def test_no_files_means_no_request(flow: FakeFlow) -> None:
     assert upload_files_and_folder_url([], FOLDER) == ([], None)
     assert flow.requests == []
@@ -563,6 +589,37 @@ def test_flow_failure_keeps_the_row_and_local_file_and_hides_the_url(isolated_st
     assert_no_secret(result.storage_message + "\n".join(logs.lines))
     assert get_transaction(result.transaction_id)["sharepoint_url"] in (None, "")
     assert list(isolated_storage.rglob("*.pdf"))
+
+
+def test_mid_batch_failure_still_saves_the_link_of_the_first_file_sent(isolated_storage: Path, flow: FakeFlow) -> None:
+    ok = Reply(body=json.dumps({"fileUrl": "https://x.test/first.pdf"}).encode())
+    flow.replies = [ok, Reply(status=500, body=b"{}"), ok]
+
+    result = submit_record(
+        make_fields(),
+        [("20260319_PR_Addin_NB.pdf", b"pr"), ("quote_b.pdf", b"b"), ("quote_c.pdf", b"c")],
+    )
+
+    assert result.transaction_id is not None and result.storage_status == "error"
+    assert "ยังไม่ได้ส่ง: quote_b.pdf, quote_c.pdf" in result.storage_message
+    assert get_transaction(result.transaction_id)["sharepoint_url"] == "https://x.test/first.pdf"
+    assert len(flow.requests) == 2
+    assert len(list(isolated_storage.rglob("*.pdf"))) == 3  # ไฟล์ในเครื่องครบ
+
+
+def test_mid_batch_failure_when_attaching_keeps_the_first_link_on_the_existing_row(isolated_storage: Path, flow: FakeFlow) -> None:
+    submit_record(make_fields(), [("20260319_PR_Addin_NB.pdf", b"pr-content")])
+    match = find_pr_folder_candidates()[0]
+    ok = Reply(body=json.dumps({"fileUrl": "https://x.test/q1.pdf"}).encode())
+    before = len(flow.requests)
+    flow.replies = [ok] * before + [ok, Reply(status=500, body=b"{}")]  # ตอบตามลำดับคำขอรวม
+
+    result = attach_files_to_record(match, [("q1.pdf", b"1"), ("q2.pdf", b"2")])
+
+    assert result.storage_status == "error" and "ยังไม่ได้ส่ง: q2.pdf" in result.storage_message
+    assert len(flow.requests) - before == 2
+    assert result.attached_file_names == ["q1.pdf", "q2.pdf"]
+    assert result.storage_links == ["https://x.test/q1.pdf"]  # ลิงก์ที่ส่งสำเร็จไม่หาย
 
 
 def test_not_configured_flow_is_skipped_not_an_error(isolated_storage: Path, monkeypatch: pytest.MonkeyPatch) -> None:

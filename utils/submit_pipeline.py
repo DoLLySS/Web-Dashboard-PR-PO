@@ -378,6 +378,8 @@ def _store_files(
             logger.error("ส่งไฟล์ไปที่เก็บออนไลน์ไม่สำเร็จ: %s", type(error).__name__)
             result.storage_status = "error"
             result.storage_message = str(error)
+            # ไฟล์ที่ส่งสำเร็จก่อนล้มกลางชุด: เก็บลิงก์ไว้ให้แถว (sharepoint_url) ไม่ให้หาย
+            result.storage_links = ([error.folder_url] if error.folder_url else []) + error.uploaded_links
     return local_paths
 
 

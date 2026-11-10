@@ -26,7 +26,15 @@ MAX_FOLDER_NAME_LENGTH: int = 80
 
 
 class StorageError(Exception):
-    """ข้อผิดพลาดการส่งไฟล์ไปที่เก็บไฟล์ออนไลน์ (ข้อความเป็นภาษาไทย แสดงให้ผู้ใช้ได้เลย)"""
+    """ข้อผิดพลาดการส่งไฟล์ไปที่เก็บไฟล์ออนไลน์ (ข้อความเป็นภาษาไทย แสดงให้ผู้ใช้ได้เลย)
+
+    ถ้าล้มกลางชุด uploaded_links/folder_url คือของไฟล์ที่ส่งสำเร็จไปแล้ว (ไม่ให้หายไปกับ error)
+    """
+
+    def __init__(self, message: str, uploaded_links: Optional[list[str]] = None, folder_url: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.uploaded_links: list[str] = list(uploaded_links or [])
+        self.folder_url: Optional[str] = folder_url
 
 
 def get_active_backend() -> str:
@@ -157,12 +165,17 @@ def _upload_to_power_automate(files: list[tuple[str, bytes]], folder_parts: list
     """ส่งทีละไฟล์ตามลำดับ หยุดที่ไฟล์แรกที่ล้มเหลว (ข้อความบอกชื่อไฟล์) คืน (ลิงก์ไฟล์, ลิงก์โฟลเดอร์ที่ Flow ตอบ)"""
     links: list[str] = []
     folder_url: Optional[str] = None
-    for name, data in files:
+    for index, (name, data) in enumerate(files):
         try:
             uploaded = upload_file_to_flow(name, data, folder_parts)
         except PowerAutomateError as error:
             sent = f" (ส่งสำเร็จแล้ว {len(links)} ไฟล์ก่อนหน้า)" if links else ""
-            raise StorageError(f"ส่งไฟล์ '{name}' ไม่สำเร็จ{sent}: {error}") from error
+            summary = (
+                f" ส่งแล้ว: {', '.join(n for n, _ in files[:index])}." if index else ""
+            ) + f" ยังไม่ได้ส่ง: {', '.join(n for n, _ in files[index:])}. ตรวจใน SharePoint ก่อนส่งซ้ำ เพื่อไม่ให้ไฟล์ซ้ำ"
+            raise StorageError(
+                f"ส่งไฟล์ '{name}' ไม่สำเร็จ{sent}: {error}{summary}", uploaded_links=links, folder_url=folder_url
+            ) from error
         links.append(uploaded.file_url)
         folder_url = folder_url or uploaded.folder_url
     return links, folder_url
