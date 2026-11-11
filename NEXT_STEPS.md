@@ -10,7 +10,7 @@
 
 ## 2. เชื่อม SharePoint ผ่าน Power Automate
 
-**ไม่ใช้ `utils/sharepoint_api.py` แล้ว** โค้ดนั้นล็อกอินแบบ Client ID/Secret ผ่าน Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026 ([MC693863](https://mc.merill.net/message/MC693863))
+**ลบ `utils/sharepoint_api.py` และ `Office365-REST-Python-Client` ออกแล้ว** (ล็อกอินแบบ Client ID/Secret ผ่าน Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026; ค่า `STORAGE_BACKEND=sharepoint` จึงตกไปใช้ gdrive) ([MC693863](https://mc.merill.net/message/MC693863))
 
 แนวทาง: แอปส่งไฟล์ไปที่ HTTP trigger ของ Flow แล้ว Flow สร้างโฟลเดอร์ `ปี/เดือน/วัน/ชื่อ` ใน Document Library และตอบลิงก์กลับ ไฟล์ในเครื่องยังเป็นต้นฉบับ ถ้าส่งออนไลน์ไม่สำเร็จ แถวและไฟล์ในเครื่องยังอยู่ และระบบแจ้งเตือน
 
@@ -37,8 +37,7 @@
 
 **S5 — ทดสอบกับไลบรารีว่าง:** รัน `venv/bin/python scripts/check_flow.py` (ส่งไฟล์ทดสอบเล็ก ๆ ไปโฟลเดอร์ `_connection_test`) ก่อน แล้วทดสอบทั้งแอปบนสำเนาข้อมูล ทั้งชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ และกรณี Flow ปิดหรือล้มเหลว
 
-**S6 — เปิดใช้งาน:** ตั้งค่าใน `.env` ตัดสินใจเรื่องการย้ายไฟล์เดิมขึ้น SharePoint และนโยบายการลบไฟล์ออนไลน์ จากนั้นพิจารณาลบ `utils/sharepoint_api.py` พร้อม `Office365-REST-Python-Client`
-
+**S6 — เปิดใช้งาน:** ตั้งค่าใน `.env` ตัดสินใจเรื่องการย้ายไฟล์เดิมขึ้น SharePoint และนโยบายการลบไฟล์ออนไลน์
 ## 3. Google Drive (ใช้ทดสอบระหว่างยังไม่มี SharePoint)
 
 1. สร้าง Service Account ใน Google Cloud เปิด Drive API แล้วเก็บไฟล์ JSON key ไว้นอกโปรเจกต์

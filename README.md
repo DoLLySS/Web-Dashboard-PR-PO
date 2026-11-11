@@ -54,7 +54,6 @@ venv/bin/python -m streamlit run app.py
 เปิดเบราว์เซอร์ที่ http://localhost:8501 ครั้งแรกระบบจะสร้างไฟล์ `data/masterlist.db` ให้เอง และรันได้โดยไม่ต้องมีไฟล์ `.env`
 
 ```bash
-venv/bin/python generate_mock_data.py                 # ไม่บังคับ: ใส่ข้อมูลจำลอง ทำเฉพาะตอนฐานข้อมูลยังว่าง
 venv/bin/pip install -r requirements-dev.txt          # สำหรับนักพัฒนา
 venv/bin/python -m pytest -q                          # รันเทสต์ ไม่แตะข้อมูลจริงและไม่ส่งข้อมูลออนไลน์
 ```
@@ -97,7 +96,6 @@ Web-Dashboard-PR-PO/
 │   ├── gdrive_api.py      # Google Drive
 │   ├── power_automate_api.py # ส่งไฟล์ผ่าน Power Automate ไปที่ SharePoint
 │   ├── file_removal.py    # ตรรกะลบไฟล์ใต้ local_uploads (ใช้ร่วมกับ scripts/)
-│   ├── sharepoint_api.py  # SharePoint แบบเดิม (ใช้ไม่ได้แล้ว ดู NEXT_STEPS.md)
 │   ├── masterlist_client.py # Master-List ผ่าน Flow (ทดสอบกับ Flow ปลอมเท่านั้น)
 │   └── excel_export.py    # Export Excel
 ├── data/
@@ -112,7 +110,6 @@ Web-Dashboard-PR-PO/
 ├── logs/                  # ไฟล์ Log (ไม่ขึ้น Git)
 ├── assets/                # รูปโลโก้
 ├── .streamlit/config.toml # ตั้งค่า Streamlit
-├── generate_mock_data.py  # สร้างข้อมูลจำลอง
 ├── requirements.txt       # Library พร้อมเวอร์ชัน
 ├── requirements-dev.txt   # Library สำหรับพัฒนา
 ├── .env.example           # แม่แบบไฟล์ตั้งค่า

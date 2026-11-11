@@ -39,7 +39,7 @@
 
 - S4 สร้าง Flow จริง ตาม `04_BUILD_FLOWS_GUIDE.md` (เขียนแล้ว รอ IT ลงมือ)
 - S5 ทดสอบกับไลบรารีว่างด้วย `scripts/check_flow.py` แล้วทดสอบทั้งแอปบนสำเนาข้อมูล (ชื่อไฟล์ซ้ำ ชื่อภาษาไทย ไฟล์ใหญ่ Flow ปิด/ล้มเหลว)
-- S6 เปิดใช้: ตั้ง `.env`, ตัดสินใจเรื่องย้ายไฟล์เดิมขึ้น SharePoint และนโยบายลบไฟล์ออนไลน์, แล้วพิจารณาลบ `utils/sharepoint_api.py` พร้อม `Office365-REST-Python-Client`
+- S6 เปิดใช้: ตั้ง `.env`, ตัดสินใจเรื่องย้ายไฟล์เดิมขึ้น SharePoint และนโยบายลบไฟล์ออนไลน์ (ลบ `utils/sharepoint_api.py` และ `Office365-REST-Python-Client` แล้ว)
 
 ## ค้างหลัง S2b (ส่ง Master-List ผ่าน Flow: เขียนและทดสอบกับ Flow ปลอมแล้ว)
 

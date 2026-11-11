@@ -75,7 +75,7 @@ server {
 | `POWER_AUTOMATE_TIMEOUT_SECONDS` / `POWER_AUTOMATE_MAX_FILE_MB` | `120` / `50` | รอ Flow กี่วินาที / ไฟล์ใหญ่สุดที่ส่งผ่าน Flow ปรับตามเพดานของ Flow |
 | `LOG_LEVEL` | `INFO` | ระดับ log ที่เขียนลง `logs/app.log` (หมุนไฟล์อัตโนมัติ) |
 
-**หมายเหตุ SharePoint:** อย่าตั้ง `STORAGE_BACKEND=sharepoint` โค้ดส่วนนั้นล็อกอินแบบ Client ID/Secret ผ่าน Azure ACS ซึ่ง Microsoft ประกาศเลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026 ([MC693863](https://mc.merill.net/message/MC693863)) ให้ใช้ `powerautomate` แทน ตอนนี้โค้ดฝั่งแอปเสร็จและทดสอบกับ Flow ปลอมแล้ว แต่ **ยังไม่เคยใช้กับ Flow จริง** ตรวจ Flow ด้วย `venv/bin/python scripts/check_flow.py` (ส่งไฟล์ทดสอบไปโฟลเดอร์ `_connection_test` เท่านั้น) ดู `NEXT_STEPS.md`
+**หมายเหตุ SharePoint:** ใช้ `STORAGE_BACKEND=powerautomate` เท่านั้น (โค้ดแบบ Client ID/Secret ผ่าน Azure ACS ถูกลบแล้ว เพราะ Microsoft เลิกใช้กับ SharePoint Online ตั้งแต่ 2 เม.ย. 2026 ([MC693863](https://mc.merill.net/message/MC693863)) และค่า `sharepoint` จะตกไปใช้ gdrive) ตอนนี้โค้ดฝั่งแอปเสร็จและทดสอบกับ Flow ปลอมแล้ว แต่ **ยังไม่เคยใช้กับ Flow จริง** ตรวจ Flow ด้วย `venv/bin/python scripts/check_flow.py` (ส่งไฟล์ทดสอบไปโฟลเดอร์ `_connection_test` เท่านั้น) ดู `NEXT_STEPS.md`
 
 ## 3. สิ่งที่ต้องตัดสินใจหรือตั้งค่าฝั่ง IT
 
