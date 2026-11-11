@@ -19,6 +19,7 @@
 import base64
 import hashlib
 import http.client
+import ipaddress
 import json
 import re
 import time
@@ -33,6 +34,7 @@ from config.logging_setup import get_logger
 from config.settings import (
     DEFAULT_POWER_AUTOMATE_MAX_FILE_MB,
     DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS,
+    get_env_flag,
     get_env_int,
     get_env_text,
 )
@@ -42,6 +44,12 @@ logger = get_logger(__name__)
 URL_SETTING: str = "POWER_AUTOMATE_UPLOAD_URL"
 API_KEY_SETTING: str = "POWER_AUTOMATE_API_KEY"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})  # อนุญาต http เฉพาะเครื่องตัวเอง (ทดสอบ)
+# IP ภายในตาม RFC 1918 เท่านั้น (ไม่ใช้ is_private เพราะรวม link-local 169.254.x ซึ่งเป็นที่อยู่ metadata ของคลาวด์ และช่วงอื่นที่ไม่ใช่เครือข่ายบริษัท)
+PRIVATE_HTTP_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 MAX_RESPONSE_BYTES: int = 64 * 1024
 # retry เฉพาะกรณีที่ Flow ยังไม่ได้เริ่มทำงานแน่ ๆ (ถูกจำกัดอัตรา/ปิดชั่วคราว) ส่วน 502/504 อาจเกิดขณะ Flow ทำงานต่อจนสร้างไฟล์เสร็จ จึงไม่ retry
 RETRY_STATUS_CODES: frozenset[int] = frozenset({429, 503})
@@ -78,6 +86,7 @@ class FlowTarget:
     maybe_created_hint: str  # ต่อท้ายข้อความเมื่อไม่รู้ว่า Flow สร้างของไปแล้วหรือยัง (timeout / 502 / 504 / การเชื่อมต่อหลุด)
     what: str  # สิ่งที่ส่ง ใช้ในข้อความ เช่น "ไฟล์" / "รายการ"
     kept_hint: str  # ข้อความในวงเล็บเมื่อส่งไม่สำเร็จ บอกว่าข้อมูลยังอยู่ในเครื่อง
+    allow_http_setting: str = ""  # ชื่อตัวแปรเปิด/ปิดที่อนุญาต http ไป IP ภายใน (ว่าง = ไม่มีตัวเลือกนี้ บังคับ https เสมอ)
 
 
 FILE_TARGET: FlowTarget = FlowTarget(
@@ -111,8 +120,26 @@ def is_power_automate_configured() -> bool:
     return bool(get_env_text(URL_SETTING))
 
 
+def _is_private_ip_host(host: str) -> bool:
+    """host เป็น IPv4 ภายในตาม RFC 1918 หรือไม่ (ชื่อโฮสต์ไม่ผ่าน เพราะชี้ไปที่ไหนก็ได้)"""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv4Address) and any(address in network for network in PRIVATE_HTTP_NETWORKS)
+
+
+def _http_allowed(target: FlowTarget, scheme: str, host: str) -> bool:
+    """http ผ่านเมื่อเป็นเครื่องตัวเอง หรือ (เปิดตัวเลือกของ target นั้นไว้ และเป็น IP ภายใน)"""
+    if scheme != "http":
+        return False
+    if host in LOOPBACK_HOSTS:
+        return True
+    return bool(target.allow_http_setting) and get_env_flag(target.allow_http_setting) and _is_private_ip_host(host)
+
+
 def _load_url(target: FlowTarget = FILE_TARGET) -> str:
-    """อ่าน URL ของ Flow และตรวจรูปแบบ: ต้องเป็น https (ยกเว้นเครื่องตัวเองเพื่อทดสอบ)
+    """อ่าน URL ของ Flow และตรวจรูปแบบ: ต้องเป็น https (ยกเว้นเครื่องตัวเองเพื่อทดสอบ และ http ไป IP ภายในเมื่อ target นั้นเปิดตัวเลือกไว้)
 
     Raises:
         PowerAutomateError: ไม่ได้ตั้งค่า หรือรูปแบบไม่ถูกต้อง (ไม่แสดงค่า URL ในข้อความ)
@@ -126,7 +153,7 @@ def _load_url(target: FlowTarget = FILE_TARGET) -> str:
     except ValueError:
         host = None
         parsed = urlparse("")
-    if not host or not (parsed.scheme == "https" or (parsed.scheme == "http" and host in LOOPBACK_HOSTS)):
+    if not host or not (parsed.scheme == "https" or _http_allowed(target, parsed.scheme, host)):
         raise PowerAutomateError(f"{target.url_setting} ไม่ถูกต้อง: ต้องขึ้นต้นด้วย https:// และมีชื่อเซิร์ฟเวอร์ ตรวจค่าในไฟล์ .env")
     return url
 
@@ -183,8 +210,8 @@ def _send(request: urllib.request.Request, host: str, timeout: int, target: Flow
     ไม่ retry เมื่อรอนานเกินกำหนด / 502 / 504 / การเชื่อมต่อหลุด เพราะ Flow อาจสร้างไฟล์ไปแล้ว การส่งซ้ำจะทำให้ได้ไฟล์ซ้ำ
     """
     handlers: list[Any] = [_NoRedirect()]
-    if host in LOOPBACK_HOSTS:
-        handlers.append(urllib.request.ProxyHandler({}))  # เครื่องตัวเองไม่ต้องผ่าน proxy ของระบบ
+    if request.type == "http":  # http ผ่านการตรวจมาแล้วว่าเป็นเครื่องตัวเองหรือ IP ภายในเท่านั้น ไม่ต้องผ่าน proxy ของระบบ
+        handlers.append(urllib.request.ProxyHandler({}))
     opener = urllib.request.build_opener(*handlers)
     for attempt in range(MAX_RETRIES + 1):
         retry_after: Optional[str] = None
@@ -245,7 +272,11 @@ def prepare_flow_call(target: FlowTarget) -> PreparedCall:
         # ขึ้นบรรทัดใหม่/อักขระนอก ASCII ใส่ใน header ไม่ได้ (ถ้าปล่อยไป urllib จะ error แบบอ่านไม่รู้เรื่องตอนส่ง) ไม่แสดงค่าคีย์
         raise PowerAutomateError(f"{target.key_setting} มีอักขระที่ใช้ไม่ได้ (ขึ้นบรรทัดใหม่ แท็บ หรือตัวอักษรนอก ASCII) ตรวจค่าในไฟล์ .env")
     timeout = get_env_int(target.timeout_setting, target.default_timeout)
-    return PreparedCall(target=target, url=url, api_key=api_key, host=urlparse(url).hostname or "", timeout=timeout)
+    host = urlparse(url).hostname or ""
+    if url.lower().startswith("http://") and host not in LOOPBACK_HOSTS:
+        # ไม่ใส่ URL เต็ม (มีลายเซ็น/โทเคน) และไม่ใส่คีย์ลง log
+        logger.warning("%s ใช้ http ส่งข้อมูลแบบไม่เข้ารหัสไปที่ IP ภายใน (host=%s) ใช้ทดสอบเท่านั้น ก่อนใช้จริงต้องเปลี่ยนเป็น https", target.url_setting, host)
+    return PreparedCall(target=target, url=url, api_key=api_key, host=host, timeout=timeout)
 
 
 def post_json_to_flow(prepared: PreparedCall, payload: dict[str, Any]) -> FlowResponse:

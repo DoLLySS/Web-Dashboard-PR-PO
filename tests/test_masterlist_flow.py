@@ -271,6 +271,134 @@ def test_unsafe_or_malformed_url_is_rejected_without_leaking_it(monkeypatch: pyt
     assert sent is False and "MASTERLIST_API_URL" in message and url not in message
 
 
+# ---------------------------------------------------------------------------
+# MASTERLIST_ALLOW_HTTP: รับ http เฉพาะ IP ภายใน และเฉพาะ Master-List (ทุกเทสต์ในหมวดนี้ดัก _send ไว้ ไม่มีอะไรออกเครือข่าย)
+# ---------------------------------------------------------------------------
+
+PRIVATE_HTTP_URL = "http://10.1.2.3:8080/api/masterlist?token=PATH-SECRET-1"
+
+
+@pytest.fixture
+def stub_send(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """แทน _send: จดว่าถูกเรียกด้วย URL / host ใด แล้วตอบ {"ok": true} โดยไม่ต่อเครือข่าย"""
+    calls: list[tuple[str, str]] = []
+
+    def fake_send(request, host, timeout, target=None):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN202
+        calls.append((request.full_url, host))
+        return 200, b'{"ok": true}'
+
+    monkeypatch.setattr(flow_api, "_send", fake_send)
+    return calls
+
+
+@pytest.mark.parametrize("host", ["10.1.2.3", "10.0.0.1", "10.255.255.254", "172.16.0.5", "172.31.255.1", "192.168.1.10", "192.168.0.1"])
+def test_allow_http_on_accepts_private_ip(stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    monkeypatch.setenv("MASTERLIST_API_URL", f"http://{host}:8080/api?token=PATH-SECRET-1")
+    sent, message = send()
+    assert sent is True and message == ""
+    assert [call[1] for call in stub_send] == [host]
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "off", "no", "maybe"])
+def test_allow_http_off_by_default_or_falsy_rejects_private_ip(stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", value)
+    monkeypatch.setenv("MASTERLIST_API_URL", PRIVATE_HTTP_URL)
+    sent, message = send()
+    assert sent is False and "MASTERLIST_API_URL" in message and "https://" in message
+    assert "10.1.2.3" not in message and "PATH-SECRET-1" not in message
+    assert stub_send == []
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "8.8.8.8",  # IP สาธารณะ
+        "172.15.255.255",  # ติดขอบล่างของ 172.16/12
+        "172.32.0.1",  # เลยขอบบนของ 172.16/12
+        "11.0.0.1",
+        "192.169.1.1",
+        "100.64.0.1",  # CGNAT ไม่ใช่ IP ภายในตาม RFC 1918
+        "169.254.169.254",  # link-local (metadata ของคลาวด์) ต้องไม่ผ่าน
+        "0.0.0.0",
+        "intranet.local",  # ชื่อโฮสต์ ไม่ใช่ IP: ไม่รับ (ชื่อชี้ไปที่ไหนก็ได้)
+        "flow.example.com",
+        "[fc00::1]",  # IPv6 ภายใน ยังไม่รองรับ
+    ],
+)
+def test_allow_http_on_still_rejects_non_private_hosts(stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    url = f"http://{host}/api?token=PATH-SECRET-1"
+    monkeypatch.setenv("MASTERLIST_API_URL", url)
+    sent, message = send()
+    assert sent is False and "MASTERLIST_API_URL" in message
+    assert "PATH-SECRET-1" not in message and host.strip("[]") not in message
+    assert stub_send == []
+
+
+def test_allow_http_does_not_break_https(stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    monkeypatch.setenv("MASTERLIST_API_URL", "https://prod-00.example.com/workflows/x?sig=PATH-SECRET-1")
+    assert send() == (True, "")
+    assert stub_send[0][1] == "prod-00.example.com"
+
+
+def test_loopback_http_still_works_without_the_flag(ml_flow: FakeFlow) -> None:
+    assert send() == (True, "")
+
+
+def test_allow_http_does_not_apply_to_the_file_flow(monkeypatch: pytest.MonkeyPatch, stub_send: list[tuple[str, str]]) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    monkeypatch.setenv("POWER_AUTOMATE_UPLOAD_URL", "http://10.1.2.3/upload?sig=PATH-SECRET-1")
+    with pytest.raises(flow_api.PowerAutomateError, match="POWER_AUTOMATE_UPLOAD_URL") as error:
+        flow_api.upload_file_to_flow("a.pdf", b"x", ["2026"])
+    assert "10.1.2.3" not in str(error.value) and "PATH-SECRET-1" not in str(error.value)
+    assert stub_send == []
+
+
+def test_plain_http_to_private_ip_logs_an_unencrypted_warning_without_secrets(
+    stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch, logs: LogCollector  # noqa: F811
+) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    monkeypatch.setenv("MASTERLIST_API_URL", PRIVATE_HTTP_URL)
+    monkeypatch.setenv("MASTERLIST_API_KEY", ML_KEY)
+    assert send() == (True, "")
+    text = "\n".join(logs.lines)
+    assert "ไม่เข้ารหัส" in text and "MASTERLIST_API_URL" in text
+    assert PRIVATE_HTTP_URL not in text and "PATH-SECRET-1" not in text and "/api/masterlist" not in text
+    assert ML_KEY not in text
+
+
+def test_https_and_loopback_do_not_log_the_unencrypted_warning(
+    stub_send: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch, logs: LogCollector  # noqa: F811
+) -> None:
+    monkeypatch.setenv("MASTERLIST_ALLOW_HTTP", "1")
+    for url in ("https://prod-00.example.com/x?sig=1", "http://127.0.0.1:9/x?sig=1"):
+        monkeypatch.setenv("MASTERLIST_API_URL", url)
+        assert send() == (True, "")
+    assert not any("ไม่เข้ารหัส" in line for line in logs.lines)
+
+
+def test_http_to_private_ip_bypasses_the_system_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """IP ภายในต้องไม่ถูกส่งผ่าน proxy ของระบบ (เหมือนเครื่องตัวเอง) ดักที่ build_opener จึงไม่ต่อเครือข่าย"""
+    import urllib.request
+
+    captured: list[list[object]] = []
+
+    class StopHere(Exception):
+        pass
+
+    def fake_build_opener(*handlers: object) -> object:
+        captured.append(list(handlers))
+        raise StopHere
+
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+    request = urllib.request.Request("http://10.1.2.3/x", data=b"{}")
+    with pytest.raises(StopHere):
+        flow_api._send(request, "10.1.2.3", 5)
+    assert any(isinstance(handler, urllib.request.ProxyHandler) for handler in captured[0])
+
+
 def test_key_with_newline_is_rejected_without_leaking_it(ml_flow: FakeFlow, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MASTERLIST_API_KEY", "bad\nkey-VALUE")
     sent, message = send()

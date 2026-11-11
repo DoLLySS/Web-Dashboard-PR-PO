@@ -5,6 +5,7 @@
           requestId สร้างใหม่ต่อการส่ง 1 แถว และเท่าเดิมทุกครั้งที่ retry (Flow ควรใช้กันสร้างแถวซ้ำ)
     คำตอบ 200 JSON  {"ok": true}  หรือ  {"error": "ข้อความ"}
 ตั้งค่าใน .env: MASTERLIST_API_URL (มีลายเซ็นลับ ถือเป็นรหัสผ่าน), MASTERLIST_API_KEY (ไม่บังคับ), MASTERLIST_TIMEOUT_SECONDS (ค่าเริ่มต้น 30)
+          MASTERLIST_ALLOW_HTTP=1 (ค่าเริ่มต้นปิด) ให้ใช้ http:// ไป IP ภายใน 10.x / 172.16-31.x / 192.168.x ได้ (ส่งแบบไม่เข้ารหัส ใช้ทดสอบเท่านั้น; มีผลเฉพาะ Master-List)
 ส่งเฉพาะฟิลด์ที่ Master-List ต้องการ (เท่ากับคอลัมน์ในตาราง Overview) ไม่ส่งไฟล์ ไม่ส่ง path ในเครื่อง
 """
 
@@ -26,6 +27,7 @@ MASTERLIST_TARGET: FlowTarget = FlowTarget(
     maybe_created_hint="รายการอาจถูกสร้างใน Master-List ไปแล้ว ตรวจใน Master-List ก่อนส่งซ้ำ (รายการเก็บในเครื่องแล้ว)",
     what="รายการ",
     kept_hint="รายการเก็บในเครื่องแล้ว",
+    allow_http_setting="MASTERLIST_ALLOW_HTTP",
 )
 
 # ฟิลด์ที่ Master-List ต้องการ (ตรงกับ TABLE_COLUMNS ใน pages_ui/overview.py) แก้ที่นี่ที่เดียวเมื่อ API กำหนดฟิลด์แล้ว
