@@ -6,7 +6,7 @@ import pytest
 
 from utils.storage_backend import (
     BACKEND_GDRIVE,
-    BACKEND_SHAREPOINT,
+    BACKEND_POWER_AUTOMATE,
     MAX_FOLDER_NAME_LENGTH,
     PR_TOKEN_PATTERN,
     UNKNOWN_VENDOR_FOLDER,
@@ -77,7 +77,13 @@ def test_sanitize_folder_name_handles_empty_and_long_names() -> None:
 
 @pytest.mark.parametrize(
     ("configured_value", "expected"),
-    [("sharepoint", BACKEND_SHAREPOINT), ("SharePoint", BACKEND_SHAREPOINT), ("gdrive", BACKEND_GDRIVE), ("อื่นๆ", BACKEND_GDRIVE)],
+    [
+        ("powerautomate", BACKEND_POWER_AUTOMATE),
+        ("Power-Automate", BACKEND_POWER_AUTOMATE),
+        ("sharepoint", BACKEND_GDRIVE),  # แบบเดิม (ACS) เลิกใช้แล้ว ค่านี้ตกไปใช้ gdrive
+        ("gdrive", BACKEND_GDRIVE),
+        ("อื่นๆ", BACKEND_GDRIVE),
+    ],
 )
 def test_active_backend_follows_setting(configured_value: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """ค่าที่ไม่รู้จักใช้ gdrive และไม่สนตัวพิมพ์"""

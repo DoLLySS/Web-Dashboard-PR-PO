@@ -32,8 +32,6 @@ DEFAULT_DB_TIMEOUT_SECONDS: int = 10
 # โหมดบันทึกของ SQLite: DELETE = ค่าเดิมของ SQLite (ปลอดภัยกับโฟลเดอร์ที่ OneDrive ซิงก์)
 # WAL = รองรับผู้ใช้หลายคนพร้อมกันดีกว่า ใช้ได้เฉพาะเมื่อไฟล์ DB อยู่ดิสก์ในเครื่อง Server (ห้ามอยู่ network share / OneDrive)
 DEFAULT_DB_JOURNAL_MODE: str = "DELETE"
-# โฟลเดอร์ปลายทางบน SharePoint (เทียบจาก root ของ Site)
-DEFAULT_SHAREPOINT_FOLDER_PATH: str = "Shared Documents/PR-PO"
 # Power Automate: รอ Flow ตอบกี่วินาที และไฟล์ใหญ่สุด (MB) ที่ส่งผ่าน Flow (ปรับตามเพดานของ Flow เมื่อ IT ตอบ)
 DEFAULT_POWER_AUTOMATE_TIMEOUT_SECONDS: int = 120
 DEFAULT_POWER_AUTOMATE_MAX_FILE_MB: int = 50

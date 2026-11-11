@@ -1,6 +1,6 @@
 """เชื่อมต่อ Google Drive (Service Account): อัปโหลดไฟล์เอกสารลงโฟลเดอร์ซ้อนชั้น แล้วคืนลิงก์ของไฟล์
 
-ใช้ทดสอบแทน SharePoint ระหว่างรอสิทธิ์ ตั้งค่าผ่านไฟล์ .env (ห้ามใส่ key ในโค้ด และ .env ถูกกันไม่ให้ขึ้น Git แล้ว):
+ปลายทางสำรองเมื่อไม่ได้ใช้ Power Automate ตั้งค่าผ่านไฟล์ .env (ห้ามใส่ key ในโค้ด และ .env ถูกกันไม่ให้ขึ้น Git แล้ว):
     GDRIVE_SERVICE_ACCOUNT_FILE  path ของไฟล์ JSON key ของ Service Account (ไฟล์ key ต้องอยู่นอก Git)
     GDRIVE_ROOT_FOLDER_ID        ID ของโฟลเดอร์ราก (แชร์ให้อีเมลของ Service Account แบบ Editor)
 

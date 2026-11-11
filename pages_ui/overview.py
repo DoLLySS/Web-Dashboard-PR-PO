@@ -14,7 +14,7 @@
     หน้าต่าง "เพิ่มข้อมูล / อัปโหลดเอกสาร" มีแท็บ [กรอก Form | Upload File] (ย้ายมาจากแผงด้านขวาเดิม ไม่เปลี่ยน Logic)
 
 ไฟล์เอกสารถูกบันทึกลงโฟลเดอร์ static/local_uploads/ (utils/local_storage.py) แล้วเก็บที่อยู่ไฟล์ลงฐานข้อมูล
-ส่วนเชื่อม SharePoint ปิดไว้ก่อน เตรียมไว้สำหรับเชื่อมต่อในอนาคต (utils/sharepoint_api.py, ค้นหา "SharePoint ปิดไว้")
+ส่งไฟล์ขึ้น SharePoint ผ่าน Power Automate (utils/power_automate_api.py) เมื่อ STORAGE_BACKEND=powerautomate และตั้งค่าครบ
 ส่วนที่ยังไม่ได้ทำ: OCR สำหรับรูปภาพ
 """
 
@@ -72,7 +72,7 @@ from utils.local_storage import (
 )
 from utils.masterlist_client import is_masterlist_configured
 from utils.row_cleanup import delete_rows_and_files
-from utils.storage_backend import BACKEND_POWER_AUTOMATE, BACKEND_SHAREPOINT, get_active_backend, is_storage_configured
+from utils.storage_backend import BACKEND_POWER_AUTOMATE, get_active_backend, is_storage_configured
 from utils.submit_pipeline import (
     FolderMatch,
     RecordFields,
@@ -2547,7 +2547,7 @@ def _inject_drag_feedback_script() -> None:
 
 def _storage_destination_label() -> str:
     """ชื่อที่เก็บไฟล์ออนไลน์ที่ใช้อยู่ตาม STORAGE_BACKEND (ใช้บนการ์ดอัปโหลด)"""
-    return "SharePoint" if get_active_backend() in (BACKEND_SHAREPOINT, BACKEND_POWER_AUTOMATE) else "Drive"
+    return "SharePoint" if get_active_backend() == BACKEND_POWER_AUTOMATE else "Drive"
 
 
 def _render_upload_card_heading(icon: str, title: str, hint: str, badge: str) -> None:
