@@ -30,11 +30,8 @@ from utils.local_storage import (
 from utils.masterlist_client import build_masterlist_payload, send_to_masterlist
 from utils.storage_backend import (
     PR_TOKEN_PATTERN,
-    SIGNED_SUFFIX_PATTERN,
     StorageError,
-    build_dated_folder_name,
-    build_storage_folder_parts,
-    sanitize_folder_name,
+    build_storage_path,
     is_storage_configured,
     upload_files_and_folder_url,
 )
@@ -410,15 +407,7 @@ def resolve_row_folder(transaction: dict[str, Any], file_names: list[str]) -> tu
     if existing:
         return existing, False
     when = _parse_row_date(transaction)
-    has_pr_file = any(
-        PR_TOKEN_PATTERN.search(name) or SIGNED_SUFFIX_PATTERN.search(name.rsplit(".", 1)[0]) for name in file_names
-    )
-    if has_pr_file:
-        folder_name = build_dated_folder_name(when, file_names)
-    else:
-        pr_no = str(transaction.get("pr_run_no") or "").strip()
-        folder_name = sanitize_folder_name(f"{when:%Y%m%d}_{pr_no}" if pr_no else f"{when:%Y%m%d}")
-    return build_storage_folder_parts(when, folder_name), True
+    return build_storage_path(when, file_names, str(transaction.get("pr_run_no") or "")), True
 
 
 def attach_files_to_record(match: FolderMatch, files: list[tuple[str, bytes]]) -> SubmitResult:
@@ -480,9 +469,7 @@ def store_files_for_new_record(
 
     if existing_folder_parts:
         template.existing_folder = "/".join(existing_folder_parts)
-    folder_parts = existing_folder_parts or build_storage_folder_parts(
-        when, build_dated_folder_name(when, [name for name, _ in files])
-    )
+    folder_parts = existing_folder_parts or build_storage_path(when, [name for name, _ in files])
     return StoredFiles(_store_files(files, folder_parts, when, template), template)
 
 

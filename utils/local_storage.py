@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from config.settings import get_env_flag
 from utils import file_removal
-from utils.storage_backend import build_folder_name_from_files, build_storage_folder_parts
+from utils.storage_backend import build_storage_path
 
 # เปิดเมื่อรันบนเครื่องของผู้ใช้เองเท่านั้น (LOCAL_DESKTOP_EXPORT=1 ใน .env): ตอน Upload สร้างโฟลเดอร์บน Desktop + คัดลอกไฟล์ให้อัตโนมัติ
 # ส่วนไอคอน File แค่เปิดโฟลเดอร์นั้นใน Explorer; บน Server ต้องปิด เพราะโค้ดทำงานที่เครื่อง Server ผู้ใช้จะไม่เห็นไฟล์
@@ -309,8 +309,7 @@ def _build_desktop_target_directory(sources: list[Path], when: datetime) -> Path
     # ใช้โครงโฟลเดอร์ที่ไฟล์อยู่จริง (ตรงกับตอนอัปโหลด แม้เป็นไฟล์ที่เพิ่มเข้าโฟลเดอร์เดิมทีหลัง) ไฟล์เก่าที่ไม่มีโฟลเดอร์ย่อยตั้งจากชื่อไฟล์และ when
     first_parent = sources[0].parent
     if first_parent in (UPLOAD_DIRECTORY, LEGACY_UPLOAD_DIRECTORY):
-        folder_name = build_folder_name_from_files([source.name for source in sources])
-        return get_desktop_directory().joinpath(*build_storage_folder_parts(when, folder_name))
+        return get_desktop_directory().joinpath(*build_storage_path(when, [source.name for source in sources]))
     return get_desktop_directory().joinpath(*first_parent.relative_to(UPLOAD_DIRECTORY).parts)
 
 
