@@ -9,7 +9,8 @@ streamlit-aggrid==1.2.1.post2  # ตารางระดับ Enterprise (ui_g
 
 # --- อ่านไฟล์เอกสาร (utils/text_extractor.py) ---
 pdfplumber==0.11.10    # อ่านข้อความจาก PDF
-openpyxl==3.1.5        # อ่านไฟล์ Excel .xlsx
+openpyxl==3.1.5        # อ่านไฟล์ Excel .xlsx (และสร้างไฟล์ในตัวแปลงใบเสนอราคา)
+Pillow==13.0.0         # ใส่รูปโลโก้/ลายเซ็นใน Excel (utils/quotation_converter/excel_generator.py)
 xlrd==2.0.2            # อ่านไฟล์ Excel .xls เก่า
 
 # --- ค่าตั้งค่า .env ---

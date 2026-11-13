@@ -14,7 +14,7 @@ from config.constants import FILTER_END_DATE_KEY, FILTER_START_DATE_KEY
 from config.logging_setup import get_logger
 from config.styles import inject_global_styles
 from data.database import init_db
-from pages_ui import dashboard, overview
+from pages_ui import dashboard, overview, quotation_converter
 from sidebar_ui import MenuItem, render_sidebar
 
 # ---------------------------------------------------------------------------
@@ -31,6 +31,14 @@ MENU_GROUPS: dict[str, list[MenuItem]] = {
             "Overview", ":material/description:", overview.render, "ภาพรวมรายการ PR/PO และใบกำกับภาษี"
         ),  # ไอคอนรูปเอกสาร
         MenuItem("Dashboard", ":material/bar_chart:", dashboard.render, "สรุปยอดซื้อและแนวโน้ม"),  # ไอคอนรูปกราฟ
+    ],
+    "Tools": [
+        MenuItem(
+            "Quotation to Excel",
+            ":material/request_quote:",
+            quotation_converter.render,
+            "แปลงใบเสนอราคา PDF เป็นฟอร์ม PR (Excel) ประมวลผลในหน่วยความจำ ไม่ส่งออก",
+        ),
     ],
 }
 

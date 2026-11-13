@@ -11,3 +11,9 @@ backups/
 # ไฟล์ Log ที่ระบบสร้างขึ้น (เก็บเฉพาะโฟลเดอร์ logs/ ไว้ด้วย .gitkeep)
 logs/*
 !logs/.gitkeep
+
+# ตัวแปลงใบเสนอราคา: ลายเซ็นจริงห้ามเข้า Git (วางเองบนแต่ละเครื่อง ดู utils/quotation_converter/assets/README.md)
+utils/quotation_converter/assets/signature_requested.png
+# เอกสารจริง (ใบเสนอราคา PDF / Excel ที่แปลงแล้ว) ห้ามขึ้น Repo
+*.pdf
+*.xlsx
