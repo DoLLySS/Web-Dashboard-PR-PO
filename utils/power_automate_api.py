@@ -60,6 +60,10 @@ MAX_RETRIES: int = 2
 RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 3.0)
 MAX_RETRY_AFTER_SECONDS: float = 10.0
 MAX_FLOW_MESSAGE_LENGTH: int = 200
+MAX_FLOW_ERROR_DETAIL_LENGTH: int = 600  # รายละเอียด error ของ HTTP >= 400 (เช่น 422 บอกว่าฟิลด์ไหนผิด) ยาวกว่าข้อความ error ปกติ
+ERROR_DETAIL_KEYS: tuple[str, ...] = ("error", "detail", "details", "errors", "message")
+MIN_MASKED_VALUE_LENGTH: int = 4  # ค่าข้อมูลในคำขอที่สั้นกว่านี้ไม่ mask (ไม่งั้นข้อความ error อ่านไม่ออก)
+MAX_MASKED_VALUE_LENGTH: int = 500  # ข้ามก้อนใหญ่ เช่น contentBase64 ของไฟล์
 BYTES_PER_MB: int = 1024 * 1024
 
 
@@ -158,7 +162,7 @@ def _load_url(target: FlowTarget = FILE_TARGET) -> str:
     return url
 
 
-def _clean_message(value: Any, secrets: tuple[str, ...]) -> str:
+def _clean_message(value: Any, secrets: tuple[str, ...], limit: int = MAX_FLOW_MESSAGE_LENGTH) -> str:
     """ข้อความ error จาก Flow แบบปลอดภัย: ตัด HTML / อักขระควบคุม / ค่าลับที่อาจสะท้อนกลับมา และจำกัดความยาว"""
     if not isinstance(value, str):
         return ""
@@ -167,7 +171,63 @@ def _clean_message(value: Any, secrets: tuple[str, ...]) -> str:
         if secret:
             text = text.replace(secret, "***")
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()[:MAX_FLOW_MESSAGE_LENGTH]
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _payload_secrets(payload: Any) -> tuple[str, ...]:
+    """ค่าข้อความทั้งหมดในคำขอ (ข้อมูล PR) ที่ต้อง mask หากเซิร์ฟเวอร์สะท้อนกลับมาในข้อความ error เรียงยาวไปสั้น"""
+    found: set[str] = set()
+
+    def collect(node: Any) -> None:
+        if isinstance(node, str):
+            if MIN_MASKED_VALUE_LENGTH <= len(node) <= MAX_MASKED_VALUE_LENGTH:
+                found.add(node)
+        elif isinstance(node, dict):
+            for item in node.values():
+                collect(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                collect(item)
+
+    collect(payload)
+    return tuple(sorted(found, key=len, reverse=True))
+
+
+def _mask_tree(node: Any, secrets: tuple[str, ...]) -> Any:
+    """mask ค่าลับในทุก string (และ key) ของโครงสร้าง JSON ที่ parse แล้ว ก่อนแปลงกลับเป็นข้อความ
+    เพื่อให้ค่าที่มี " \\ หรือขึ้นบรรทัดใหม่ไม่หลุดเพราะถูก escape ตอน json.dumps"""
+    if isinstance(node, str):
+        for secret in secrets:
+            if secret:
+                node = node.replace(secret, "***")
+        return node
+    if isinstance(node, dict):
+        return {_mask_tree(k, secrets): _mask_tree(v, secrets) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_mask_tree(item, secrets) for item in node]
+    return node
+
+
+def _detail_text(value: Any, secrets: tuple[str, ...]) -> str:
+    """ข้อความปลอดภัยจากค่า JSON ใด ๆ: mask ก่อนแปลง แล้วทำความสะอาดอีกรอบ"""
+    if value is None or value == "" or value == [] or value == {}:
+        return ""
+    masked = _mask_tree(value, secrets)
+    if not isinstance(masked, str):
+        try:
+            masked = json.dumps(masked, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return ""
+    return _clean_message(masked, secrets, MAX_FLOW_ERROR_DETAIL_LENGTH)
+
+
+def _extract_error_detail(reply: Any, secrets: tuple[str, ...]) -> str:
+    """รายละเอียด error จากคำตอบ JSON: dict อ่าน error / detail / details / errors / message ส่วน array หรือชนิดอื่นใช้ทั้งก้อน
+    (string หรือโครงสร้างซ้อน) ผ่านการ mask และทำความสะอาดแล้ว"""
+    if not isinstance(reply, dict):
+        return _detail_text(reply, secrets)
+    parts = [text for key in ERROR_DETAIL_KEYS if (text := _detail_text(reply.get(key), secrets))]
+    return " | ".join(parts)[:MAX_FLOW_ERROR_DETAIL_LENGTH]
 
 
 def _is_http_url(value: Any) -> bool:
@@ -180,11 +240,16 @@ def _is_http_url(value: Any) -> bool:
         return False
 
 
-def _parse_json_object(body: bytes) -> Optional[dict[str, Any]]:
+def _parse_json_value(body: bytes) -> Any:
+    """JSON ชนิดใดก็ได้ (object / array / ตัวเลข / ข้อความ / null) คืน None ถ้า parse ไม่ได้"""
     try:
-        parsed = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
+
+
+def _parse_json_object(body: bytes) -> Optional[dict[str, Any]]:
+    parsed = _parse_json_value(body)
     return parsed if isinstance(parsed, dict) else None
 
 
@@ -289,7 +354,7 @@ def post_json_to_flow(prepared: PreparedCall, payload: dict[str, Any]) -> FlowRe
         PowerAutomateError: ส่งไม่สำเร็จหรือ Flow ปฏิเสธ (ข้อความไทย ไม่มี URL / คีย์)
     """
     target = prepared.target
-    secrets = (prepared.url, prepared.api_key)
+    secrets = (prepared.url, prepared.api_key, *_payload_secrets(payload))
     headers = {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"}
     if prepared.api_key:
         headers["X-Api-Key"] = prepared.api_key
@@ -310,8 +375,9 @@ def post_json_to_flow(prepared: PreparedCall, payload: dict[str, Any]) -> FlowRe
     if status == 404:
         raise PowerAutomateError("ไม่พบ Flow: URL อาจเก่าหรือ Flow ถูกปิด/ลบ ตรวจกับผู้ดูแล Flow")
     if status >= 400:
-        logger.warning("Flow ตอบสถานะ %s (host=%s)", status, prepared.host)
-        detail = f": {flow_message}" if flow_message else ""
+        error_detail = _extract_error_detail(_parse_json_value(body), secrets)  # mask URL / คีย์ / ค่าข้อมูลในคำขอแล้ว จึง log ได้
+        logger.warning("Flow ตอบสถานะ %s (host=%s)%s", status, prepared.host, f": {error_detail}" if error_detail else "")
+        detail = f": {error_detail}" if error_detail else ""
         hint = f" {target.maybe_created_hint}" if status in (502, 504) else ""
         raise PowerAutomateError(f"Flow ตอบกลับข้อผิดพลาด (HTTP {status}){detail}{hint}")
     if flow_message:

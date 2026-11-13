@@ -226,7 +226,7 @@ def test_flow_error_message_is_cleaned_and_secrets_are_masked(flow: FakeFlow) ->
     text = str(error.value)
     assert "ไลบรารีเต็ม" in text and "<" not in text and "\n" not in text
     assert_no_secret(text)
-    assert len(text) < 400
+    assert len(text) < 700  # รายละเอียด error ของ HTTP >= 400 จำกัดที่ MAX_FLOW_ERROR_DETAIL_LENGTH (600)
 
 
 def test_error_field_in_a_200_reply_is_a_failure(flow: FakeFlow) -> None:

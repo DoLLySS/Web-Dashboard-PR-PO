@@ -80,8 +80,8 @@ def assert_no_ml_secret(text: str) -> None:
     assert ML_KEY not in text
 
 
-def send() -> tuple[bool, str]:
-    sent, message = send_to_masterlist(build_masterlist_payload(RECORD))
+def send(request_id: str | None = None) -> tuple[bool, str]:
+    sent, message = send_to_masterlist(build_masterlist_payload(RECORD), request_id=request_id)
     return sent, message or ""
 
 
@@ -117,6 +117,12 @@ def test_each_send_gets_a_new_request_id(ml_flow: FakeFlow) -> None:
     send()
     ids = {request.json()["requestId"] for request in ml_flow.requests}
     assert len(ids) == 2
+
+
+def test_explicit_request_id_is_used_as_given(ml_flow: FakeFlow) -> None:
+    fixed = "11111111-2222-4333-8444-555555555555"
+    assert send(request_id=fixed)[0] is True and send(request_id=fixed)[0] is True
+    assert [request.json()["requestId"] for request in ml_flow.requests] == [fixed, fixed]
 
 
 def test_item_url_in_reply_is_optional(ml_flow: FakeFlow) -> None:
@@ -227,6 +233,135 @@ def test_500_with_error_text_shows_a_cleaned_flow_message(ml_flow: FakeFlow) -> 
     assert "<b>" not in message
     assert_no_ml_secret(message)
     assert len(ml_flow.requests) == 1
+
+
+FASTAPI_422 = {"detail": [{"loc": ["body", "record", "pr_run_no"], "msg": "none is not an allowed value", "type": "type_error.none.not_allowed"}]}
+
+
+def test_422_detail_list_shows_which_field_is_wrong(ml_flow: FakeFlow, logs: LogCollector) -> None:  # noqa: F811
+    ml_flow.replies = [Reply(status=422, body=json.dumps(FASTAPI_422).encode())]
+
+    sent, message = send()
+
+    assert sent is False and "HTTP 422" in message
+    assert "pr_run_no" in message and "none is not an allowed value" in message
+    assert any("422" in line and "pr_run_no" in line for line in logs.lines)  # log มีรายละเอียดด้วย
+    assert len(ml_flow.requests) == 1  # 4xx ไม่ retry
+
+
+@pytest.mark.parametrize("key", ["errors", "details", "message", "detail"])
+def test_422_other_detail_keys_are_shown(ml_flow: FakeFlow, key: str) -> None:
+    ml_flow.replies = [Reply(status=422, body=json.dumps({key: "วันที่ผิดรูปแบบ", "error": "ข้อมูลไม่ถูกต้อง"}).encode())]
+
+    sent, message = send()
+
+    assert sent is False and "ข้อมูลไม่ถูกต้อง" in message and "วันที่ผิดรูปแบบ" in message
+
+
+def test_422_detail_is_truncated_and_cleaned(ml_flow: FakeFlow) -> None:
+    ml_flow.replies = [Reply(status=422, body=json.dumps({"detail": "<i>x</i>\n" + "ยาว" * 1000}).encode())]
+
+    _, message = send()
+
+    assert "<i>" not in message and "\n" not in message
+    assert len(message) < flow_api.MAX_FLOW_ERROR_DETAIL_LENGTH + 100
+
+
+def test_422_echoed_record_values_url_and_key_are_masked_in_message_and_log(ml_flow: FakeFlow, logs: LogCollector) -> None:  # noqa: F811
+    echo = {"detail": [{"msg": "bad value", "input": RECORD["vendor"], "ctx": f"{RECORD['description']} {RECORD['tax_id']} {ml_flow.url} {ML_KEY}"}]}
+    ml_flow.replies = [Reply(status=422, body=json.dumps(echo, ensure_ascii=False).encode())]
+
+    sent, message = send()
+
+    assert sent is False and "bad value" in message
+    combined = message + "\n" + "\n".join(logs.lines)
+    for value in (RECORD["vendor"], RECORD["description"], RECORD["tax_id"]):
+        assert value not in combined
+    assert "***" in message
+    assert_no_ml_secret(combined)
+
+
+TRICKY_DESCRIPTION = 'NB "Alpha" X100\nขนาด 15\\16 นิ้ว'
+
+
+def test_422_echoed_value_with_quotes_backslash_and_newline_is_masked(ml_flow: FakeFlow, logs: LogCollector) -> None:  # noqa: F811
+    echo = {"detail": [{"msg": "bad value", "input": TRICKY_DESCRIPTION}], "message": TRICKY_DESCRIPTION}
+    ml_flow.replies = [Reply(status=422, body=json.dumps(echo, ensure_ascii=False).encode())]
+
+    sent, message = send_to_masterlist(build_masterlist_payload({**RECORD, "description": TRICKY_DESCRIPTION}))
+    message = message or ""
+
+    assert sent is False and "bad value" in message and "***" in message
+    combined = message + "\n" + "\n".join(logs.lines)
+    escaped = json.dumps(TRICKY_DESCRIPTION, ensure_ascii=False)[1:-1]
+    for leaked in (TRICKY_DESCRIPTION, escaped, "Alpha", "15\\16", "15\\\\16"):
+        assert leaked not in combined
+
+
+@pytest.mark.parametrize("body", [
+    json.dumps([{"loc": ["body", "record", "pr_run_no"], "msg": "field required", "input": "NB Alpha X100"}]),
+    json.dumps(["pr_run_no is required", "NB Alpha X100"]),
+])
+def test_422_array_reply_shows_masked_detail_without_crashing(ml_flow: FakeFlow, logs: LogCollector, body: str) -> None:  # noqa: F811
+    ml_flow.replies = [Reply(status=422, body=body.encode())]
+
+    sent, message = send()
+
+    assert sent is False and "HTTP 422" in message and "pr_run_no" in message
+    combined = message + "\n" + "\n".join(logs.lines)
+    assert RECORD["description"] not in combined and "***" in message
+    assert_no_ml_secret(combined)
+
+
+@pytest.mark.parametrize("body", [b"", b"{}", b"[]", b"null", b"42", b'""', b"not json", b"<html>boom</html>"])
+def test_422_without_any_detail_does_not_crash(ml_flow: FakeFlow, body: bytes) -> None:
+    ml_flow.replies = [Reply(status=422, body=body)]
+
+    sent, message = send()
+
+    assert sent is False
+    assert "HTTP 422" in message
+    assert not message.rstrip().endswith(":")
+    assert "boom" not in message
+
+
+def test_400_error_from_masterlist_shows_which_field_is_wrong(ml_flow: FakeFlow, logs: LogCollector) -> None:  # noqa: F811
+    ml_flow.replies = [Reply(status=400, body=json.dumps({"error": "record.vendor: too long (max 300)"}).encode())]
+
+    sent, message = send()
+
+    assert sent is False and "HTTP 400" in message and "record.vendor: too long (max 300)" in message
+    assert any("400" in line and "record.vendor" in line for line in logs.lines)
+    assert len(ml_flow.requests) == 1  # 4xx ไม่ retry
+
+
+def test_400_error_echoing_record_values_is_masked(ml_flow: FakeFlow, logs: LogCollector) -> None:  # noqa: F811
+    ml_flow.replies = [Reply(status=400, body=json.dumps({"error": f"record.vendor: invalid {RECORD['vendor']} ({ML_KEY})"}, ensure_ascii=False).encode())]
+
+    sent, message = send()
+
+    combined = message + "\n" + "\n".join(logs.lines)
+    assert sent is False and "record.vendor" in message and "***" in message
+    assert RECORD["vendor"] not in combined
+    assert_no_ml_secret(combined)
+
+
+@pytest.mark.parametrize(("field", "limit"), [("vendor", 300), ("description", 5000), ("invoice_status", 100), ("date", 64)])
+def test_value_over_known_limit_is_not_sent_and_value_is_not_shown(ml_flow: FakeFlow, logs: LogCollector, field: str, limit: int) -> None:  # noqa: F811
+    too_long = "ก" * (limit + 1)
+
+    sent, message = send_to_masterlist(build_masterlist_payload({**RECORD, field: too_long}))
+
+    assert sent is False and field in message and str(limit + 1) in message and str(limit) in message
+    assert too_long not in message and too_long not in "\n".join(logs.lines)
+    assert ml_flow.requests == []  # ไม่ยิงคำขอที่รู้ว่าถูกปฏิเสธ
+
+
+@pytest.mark.parametrize(("field", "limit"), [("vendor", 300), ("description", 5000), ("invoice_status", 100), ("date", 64)])
+def test_value_exactly_at_limit_is_sent(ml_flow: FakeFlow, field: str, limit: int) -> None:
+    sent, _ = send_to_masterlist(build_masterlist_payload({**RECORD, field: "ก" * limit}))
+
+    assert sent is True and len(ml_flow.requests) == 1
 
 
 def test_200_with_error_field_fails(ml_flow: FakeFlow) -> None:
