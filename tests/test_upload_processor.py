@@ -77,7 +77,7 @@ def test_pr_pdf_creates_row_immediately_with_values_from_file(isolated_storage: 
     assert row["total_price"] == 47080.0  # ราคารวมหลังภาษี (Grand Total)
     assert row["unit_price"] == 44000.0
     assert row["vendor"] == "Alpha Trading Co Ltd"
-    assert row["tel"] == "092-849-6930"
+    assert row["tel"] == "02-000-0000"
     assert row["category"] == "Notebook"
     assert set(folders_with_files(isolated_storage)) == {"2026/Mar/19/20260319_Addin_NB Lenovo"}
 

@@ -53,7 +53,7 @@ def build_pdf(pages: list[list[tuple[float, float, str]]]) -> bytes:
 def pr_form_items(
     items: list[tuple[str, str]],
     vendor: str = "Alpha Trading Co Ltd",
-    tel: Optional[str] = "092-849-6930",
+    tel: Optional[str] = "02-000-0000",
     dates: tuple[str, str, str] = ("19-Mar-26", "19-Mar-2026", "19-Mar-2026"),
     with_grand_total: bool = True,
 ) -> list[tuple[float, float, str]]:
@@ -64,7 +64,7 @@ def pr_form_items(
         (30, 135, "Name):"),
         (195, 135, "Requester Person"),
         (92, 150, "(Tel.):"),
-        (189, 150, "099-0547405"),
+        (189, 150, "081-000-0000"),
         (35, 207, "No."),
         (164, 207, "Description"),
         (324, 207, "Qty."),
@@ -101,7 +101,7 @@ def pr_form_items(
 def make_pr_pdf(
     items: list[tuple[str, str]],
     vendor: str = "Alpha Trading Co Ltd",
-    tel: Optional[str] = "092-849-6930",
+    tel: Optional[str] = "02-000-0000",
     dates: tuple[str, str, str] = ("19-Mar-26", "19-Mar-2026", "19-Mar-2026"),
     extra_pages: int = 0,
     with_grand_total: bool = True,
@@ -120,7 +120,7 @@ def make_text_pdf(text: str) -> bytes:
 def make_pr_excel(
     items: list[tuple[str, float]],
     vendor: str = "Alpha Trading Co Ltd",
-    tel: Optional[str] = "092-849-6930",
+    tel: Optional[str] = "02-000-0000",
     when: datetime = datetime(2026, 3, 19),
     with_grand_total: bool = True,
 ) -> bytes:
@@ -131,7 +131,7 @@ def make_pr_excel(
     sheet["B7"] = "Purchase Request (PR)"
     sheet["AE7"] = "PR Run No.:"
     sheet["B11"] = "โทรศัพท์ (Tel.):"
-    sheet["I11"] = "099-0547405"
+    sheet["I11"] = "081-000-0000"
     sheet["B14"], sheet["E14"], sheet["W14"], sheet["Z14"] = "No.", "Description", "Qty.", "Unit Price"
     for index, (description, price) in enumerate(items):
         row = 16 + index * 2

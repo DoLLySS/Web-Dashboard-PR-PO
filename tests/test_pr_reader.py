@@ -28,7 +28,7 @@ def test_pdf_reads_the_five_values() -> None:
     assert document.description == "Notebook Lenovo ThinkPad E14 G7"
     assert document.unit_price == 29500.0
     assert document.vendor == "Alpha Trading Co Ltd"
-    assert document.tel == "092-849-6930"  # ไม่ใช่ 099-0547405 ของผู้ร้องขอ
+    assert document.tel == "02-000-0000"  # ไม่ใช่ 081-000-0000 ของผู้ร้องขอ
     assert document.date == "2026-03-19"
 
 
@@ -108,8 +108,8 @@ def test_missing_tel_gives_no_identity_key() -> None:
 
 def test_identity_key_ignores_thai_vowel_spelling_and_phone_format() -> None:
     """PDF กับ Excel สะกดสระไทยต่างกันได้ (เทียบเฉพาะพยัญชนะ) และเบอร์ใส่ขีดต่างกันได้"""
-    excel_key = build_identity_key("Notebook X", "บริษัท แอด อิน บิซิเนส จำกัด", "092-849-6930")
-    pdf_key = build_identity_key("notebook  x", "บรษิ ัท แอด อนิ บซิ เินส จ ำกดั", "0928496930")
+    excel_key = build_identity_key("Notebook X", "บริษัท แอด อิน บิซิเนส จำกัด", "02-000-0000")
+    pdf_key = build_identity_key("notebook  x", "บรษิ ัท แอด อนิ บซิ เินส จ ำกดั", "020000000")
     assert excel_key == pdf_key and excel_key is not None
 
 
